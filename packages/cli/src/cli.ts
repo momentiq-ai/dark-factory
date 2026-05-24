@@ -134,9 +134,9 @@ function printVersion(meta: PackageMeta): void {
 function notImplemented(sub: string): number {
   process.stderr.write(
     `df: subcommand "${sub}" is not implemented in this alpha build.\n` +
-      `    Phase B/C ship services as library + Python-wrapped subcommands;\n` +
-      `    "${sub}" lands in Phase E.\n` +
-      `    Run \"df --help\" for the planned command list.\n`,
+      `    Phase B/C/D ship services as library + Python-wrapped subcommands;\n` +
+      `    Phase E adds reusable workflow stubs (status-check, critic);\n` +
+      `    "${sub}" lands in Phase F or later (see \`df --help\`).\n`,
   );
   return 2;
 }
