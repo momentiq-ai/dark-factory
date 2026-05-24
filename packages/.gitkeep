@@ -1,0 +1,3 @@
+# Packages directory — populated by cycle 331.1 Phase B (services #1/#2/#3) onward.
+# - packages/cli/      — @momentiq/dark-factory-cli  (Phase B)
+# - packages/schemas/  — @momentiq/dark-factory-schemas (Phase C)

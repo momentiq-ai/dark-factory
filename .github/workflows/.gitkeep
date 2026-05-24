@@ -1,0 +1,2 @@
+# Reusable workflows ship in cycle 331.1 Phase E.
+# Each will be callable as: uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@v0.1.0

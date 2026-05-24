@@ -1,0 +1,8 @@
+# Dark Factory CODEOWNERS
+# All paths default to PJ for initial extraction phase.
+# Per cycle 331.1, individual service extraction phases (B-F) may add per-service owners.
+
+* @alien8d
+
+# Cycle docs that mirror sage3c's
+docs/roadmap/ @alien8d

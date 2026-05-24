@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Test output
+coverage/
+.nyc_output/
+test-results/
+htmlcov/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log
+
+# Environment
+.env
+.env.*
+!.env.example
+.doppler*
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*.pem
+
+# Temporary
+*.tmp
+*.temp
+tmp/
+temp/
+_tmp/
+
+# Agent review runtime artifacts (per cycle 318.3 / ADR 2026-05-local-cursor-critic-host-execution)
+.agent-review/runs/
+
+# Claude Code worktrees
+.claude/worktrees/
