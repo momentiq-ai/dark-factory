@@ -1,0 +1,30 @@
+{
+  "name": "@momentiq/dark-factory-schemas",
+  "version": "0.1.0-alpha.0",
+  "description": "Dark Factory schemas — TypeScript types and JSON Schemas for darkfactory.yaml, evidence, and cycle-doc trailers",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "type-check": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  }
+}

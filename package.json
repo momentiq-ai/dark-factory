@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "type-check": "npm run type-check --workspaces --if-present",
     "test": "npm test --workspaces --if-present"
   },
   "engines": {

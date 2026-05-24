@@ -1,0 +1,151 @@
+{
+  "generatedAt": "2026-05-15T13:36:13.233Z",
+  "sdkVersion": "0.130.0",
+  "codexCliVersion": "codex-cli 0.125.0",
+  "authMode": "chatgpt",
+  "workingDirectory": "<redacted: repo-root>/tools/agent-review",
+  "threadId": "019e2bd9-eb70-70f1-b338-5e95164c6004",
+  "durationMs": 14367,
+  "notes": [
+    "Phase A.2 spike — captured against the real Codex SDK + CLI (subscription auth via ~/.codex/auth.json).",
+    "Two probes: (1) thread.runStreamed() to capture the event-stream shape, (2) thread.run() to confirm the non-streaming Turn shape.",
+    "The streamed probe asked the agent a question that REQUIRED tool use to answer (file listing); the run probe asked a question answerable from prompt alone.",
+    "Confirms (a) outputSchema delivers schema-validated JSON in turn.finalResponse, (b) Codex.config can carry forced_login_method + show_raw_agent_reasoning + model_reasoning_effort as CLI --config overrides, (c) ThreadOptions.sandboxMode=read-only + approvalPolicy=never lets the agent run shell commands but not write files.",
+    "WARNING: even with networkAccessEnabled: false AND sandboxMode: read-only, the agent CAN execute shell commands locally (read-only sandbox blocks WRITES only). The Codex adapter relies on read-only sandbox + no-network defense-in-depth, not on disabling tool use entirely.",
+    "Re-spike is manual (not automated): construct a Codex client + thread + run() against this repo with subscription auth and capture event shapes. Phase A did not add a spike script under tools/agent-review/src/spikes/ because the SDK shape is stable enough that ad-hoc re-spike (similar to how this fixture was produced) is sufficient. A future cycle that adds a Makefile target should land the script under tools/agent-review/src/spikes/codex-models-list-2026-05.ts alongside the gemini/grok siblings."
+  ],
+  "streamed": {
+    "eventTypes": [
+      "thread.started",
+      "turn.started",
+      "item.started",
+      "item.completed",
+      "turn.completed"
+    ],
+    "itemTypes": [
+      "command_execution",
+      "agent_message"
+    ],
+    "usage": {
+      "input_tokens": 44027,
+      "cached_input_tokens": 23808,
+      "output_tokens": 140,
+      "reasoning_output_tokens": 19
+    },
+    "finalAgentMessageText": "{\"sawDiff\":true,\"sample\":\"src/git.ts\"}",
+    "sampleEvents": [
+      {
+        "type": "thread.started",
+        "payload": {
+          "type": "thread.started",
+          "thread_id": "019e2bd9-eb70-70f1-b338-5e95164c6004"
+        }
+      },
+      {
+        "type": "turn.started",
+        "payload": { "type": "turn.started" }
+      },
+      {
+        "type": "item.started",
+        "payload": {
+          "type": "item.started",
+          "item": {
+            "id": "item_0",
+            "type": "command_execution",
+            "command": "/bin/zsh -lc \"pwd && rg --files -0 | tr '\\\\0' '\\\\n' | head -20\"",
+            "aggregated_output": "",
+            "exit_code": null,
+            "status": "in_progress"
+          }
+        }
+      },
+      {
+        "type": "item.completed",
+        "payload": {
+          "type": "item.completed",
+          "item": {
+            "id": "item_1",
+            "type": "agent_message",
+            "text": "{\"sawDiff\":true,\"sample\":\"src/git.ts\"}"
+          }
+        }
+      },
+      {
+        "type": "turn.completed",
+        "payload": {
+          "type": "turn.completed",
+          "usage": {
+            "input_tokens": 44027,
+            "cached_input_tokens": 23808,
+            "output_tokens": 140,
+            "reasoning_output_tokens": 19
+          }
+        }
+      }
+    ]
+  },
+  "run": {
+    "threadId": "019e2bda-5a50-7133-acff-1e7c03d21ff6",
+    "finalResponse": "{\"ok\":true,\"num\":7}",
+    "usage": {
+      "input_tokens": 21777,
+      "cached_input_tokens": 2432,
+      "output_tokens": 41,
+      "reasoning_output_tokens": 20
+    },
+    "items": [
+      {
+        "id": "item_0",
+        "type": "agent_message",
+        "text": "{\"ok\":true,\"num\":7}"
+      }
+    ]
+  },
+  "sdkTypeShape": {
+    "Codex": {
+      "constructor": "new Codex(options?: CodexOptions)",
+      "CodexOptions": {
+        "codexPathOverride": "string (path to codex CLI binary)",
+        "baseUrl": "string (override API base URL)",
+        "apiKey": "string (override CODEX_API_KEY env)",
+        "config": "CodexConfigObject — flattened into --config key=value CLI args. e.g., {model_reasoning_effort:'high', forced_login_method:'chatgpt'}",
+        "env": "Record<string,string> (replaces process.env for the CLI subprocess; NOT merged)"
+      },
+      "methods": {
+        "startThread": "(options?: ThreadOptions) => Thread",
+        "resumeThread": "(id: string, options?: ThreadOptions) => Thread"
+      }
+    },
+    "Thread": {
+      "id": "string | null — populated AFTER first turn.runStreamed/.run resolves",
+      "methods": {
+        "run": "(input, turnOptions?) => Promise<Turn>",
+        "runStreamed": "(input, turnOptions?) => Promise<StreamedTurn>"
+      }
+    },
+    "Turn": {
+      "items": "ThreadItem[] — aggregated items emitted during the turn",
+      "finalResponse": "string — last agent_message text (schema-validated JSON when outputSchema set)",
+      "usage": "Usage | null"
+    },
+    "ThreadOptions": {
+      "model": "string (e.g., 'gpt-5.5-codex')",
+      "sandboxMode": "'read-only' | 'workspace-write' | 'danger-full-access'",
+      "approvalPolicy": "'never' | 'on-request' | 'on-failure' | 'untrusted'",
+      "modelReasoningEffort": "'minimal' | 'low' | 'medium' | 'high' | 'xhigh'",
+      "networkAccessEnabled": "boolean",
+      "workingDirectory": "string",
+      "skipGitRepoCheck": "boolean"
+    },
+    "TurnOptions": {
+      "outputSchema": "unknown — JSON Schema object enforcing structured response shape",
+      "signal": "AbortSignal"
+    },
+    "Usage": {
+      "input_tokens": "number",
+      "cached_input_tokens": "number",
+      "output_tokens": "number",
+      "reasoning_output_tokens": "number"
+    }
+  }
+}

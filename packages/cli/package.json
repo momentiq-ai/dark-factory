@@ -1,0 +1,59 @@
+{
+  "name": "@momentiq/dark-factory-cli",
+  "version": "0.1.0-alpha.0",
+  "description": "Dark Factory OSS CLI — multi-vendor adversarial critic orchestration (Cursor, Codex, Gemini, Grok) with min-complete-quorum aggregation and trusted-surface rebind",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./adapters": {
+      "types": "./dist/adapters/index.d.ts",
+      "import": "./dist/adapters/index.js"
+    },
+    "./policy": {
+      "types": "./dist/policy/index.d.ts",
+      "import": "./dist/policy/index.js"
+    },
+    "./trusted-surface": {
+      "types": "./dist/trusted-surface/index.d.ts",
+      "import": "./dist/trusted-surface/index.js"
+    }
+  },
+  "bin": {
+    "df": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "type-check": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.12",
+    "@google/genai": "^2.2.0",
+    "@momentiq/dark-factory-schemas": "*",
+    "@openai/codex-sdk": "^0.130.0",
+    "openai": "^6.37.0",
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.25.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@vitest/coverage-v8": "^2.1.9",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  }
+}
