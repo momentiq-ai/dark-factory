@@ -180,7 +180,7 @@ jobs:
           GH_TOKEN: ${{ secrets.BRANCH_PROTECTION_AUDIT_TOKEN }}
         run: |
           set -euo pipefail
-          ./packages/cli/dist/cli.js audit-branch-protection
+          node ./packages/cli/dist/cli.js audit-branch-protection
 
       - name: Summary
         if: always()

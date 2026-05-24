@@ -138,7 +138,7 @@ jobs:
         # this gate exists for SHAPE and to break the dogfood chicken-
         # and-egg — it provides NO real adversarial-critic gating yet.
         if: env.REQUESTED_VERSION == 'local'
-        run: ./packages/cli/dist/cli.js critic
+        run: node ./packages/cli/dist/cli.js critic
 
       - name: Summary
         if: always()

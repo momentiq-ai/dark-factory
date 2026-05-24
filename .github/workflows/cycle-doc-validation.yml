@@ -151,7 +151,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ./packages/cli/dist/cli.js validate-cycle-doc
+          node ./packages/cli/dist/cli.js validate-cycle-doc
 
       - name: Summary
         if: always()

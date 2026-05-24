@@ -108,7 +108,7 @@ jobs:
         # Phase E aggregator stub — exits 0. See `df status-check --help`
         # for the no-op contract documented at packages/cli/src/cli.ts.
         if: env.REQUESTED_VERSION == 'local'
-        run: ./packages/cli/dist/cli.js status-check
+        run: node ./packages/cli/dist/cli.js status-check
 
       - name: Summary
         if: always()
