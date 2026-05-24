@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "critics": [
+    {
+      "id": "cursor-local-chief-engineer",
+      "name": "Cursor Local Critic",
+      "adapter": "cursor-sdk",
+      "required": true,
+      "runtime": "local",
+      "model": { "id": "gpt-5.5", "params": [] }
+    }
+  ],
+  "aggregation": { "policy": "block-if-any", "blockingSeverities": ["blocker", "high"] },
+  "git": {
+    "hookPath": ".githooks",
+    "artifactDir": "agent-reviews",
+    "artifactScope": "git-common-dir"
+  },
+  "policy": {
+    "blockOnMissingReview": true,
+    "blockOnReviewError": true,
+    "allowEmergencyBypass": true,
+    "postCommitMode": "async"
+  },
+  "context": {
+    "guidanceFiles": [],
+    "promptFragments": [],
+    "maxChangedFileBytes": 1000,
+    "includeFullChangedFiles": true
+  },
+  "validation": {
+    "runBeforeReview": false,
+    "resultFile": "agent-reviews/quality-gates/latest.json",
+    "requiredQualityGates": ["true"],
+    "optionalQualityGates": []
+  },
+  "security": { "redactSecretsInDiagnostics": true, "treatDiffAsUntrustedInput": true }
+}
