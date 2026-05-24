@@ -1,0 +1,118 @@
+# schema-check — reusable workflow shape (cycle 331.1 Phase E).
+#
+# This satisfies the `schema-check` required-status-check context in
+# dark-factory's own main1 ruleset (id 16808560) and is published as a
+# reusable workflow for consumers (sage3c / cerebe-platform / external
+# repos) to invoke from their own CI in Phases G/H.
+#
+# Dark-factory itself has no schemas to drift against — `@momentiq/dark-
+# factory-schemas` is the SOURCE of schemas, and its `npm run build`
+# already type-checks the package as part of `npm run build --workspaces`
+# (run in this same job via the install step below). So on dark-factory's
+# own PRs this is effectively a "schemas package built cleanly" smoke
+# test, not a drift check.
+#
+# Sage3c's own `schema-check.yml` (which compares the committed
+# `web/types/api/openapi.json` to a freshly-exported one) is preserved
+# as-is during Phase G — sage3c keeps using its existing implementation
+# rather than `uses:`-ing this reusable shape, because the OpenAPI drift
+# logic is sage3c-specific. The dark-factory reusable shape exists to
+# satisfy dark-factory's own ruleset, not to subsume sage3c's drift gate.
+#
+# Dual trigger:
+#   1. `pull_request:` — runs on dark-factory's own PRs so the ruleset
+#      is satisfied here (context = the JOB NAME below).
+#   2. `workflow_call:` — consumers invoke this from their own workflows;
+#      consumer caller-job-id is the first segment of the resulting
+#      context, so consumers MUST name their caller job `schema-check:`
+#      for the rule to match.
+#
+# Security: input passes through env var (REQUESTED_VERSION) before any
+# run script references it, per
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+name: Schema Check
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+  workflow_call:
+    inputs:
+      cli-version:
+        description: |
+          Reserved for Phase G/H — only 'local' is wired today. See
+          pr-status-check.yml for the same contract.
+        type: string
+        required: false
+        default: 'local'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: schema-check-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  schema-check:
+    # IMPORTANT: this job name is the status-check context surfaced to
+    # the ruleset. Must match `required_status_checks.context: schema-check`
+    # exactly.
+    name: schema-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      REQUESTED_VERSION: ${{ inputs.cli-version || 'local' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install workspace (lockfile-strict)
+        if: env.REQUESTED_VERSION == 'local'
+        run: npm ci
+
+      - name: Build workspace (including schemas package)
+        # `@momentiq/dark-factory-schemas` is built here. If a future PR
+        # introduces a schema-drift detector (e.g. cycle 331.3 OSS-flip
+        # might ship a JSON Schema -> consumer-config validator), wire
+        # it into a follow-up step below.
+        if: env.REQUESTED_VERSION == 'local'
+        run: npm run build
+
+      - name: Reject pinned-version path until Phase B-PUBLISH ships
+        if: env.REQUESTED_VERSION != 'local'
+        run: |
+          set -euo pipefail
+          echo "::error::cli-version='$REQUESTED_VERSION' was requested but the pinned-version install path is not yet wired (cycle 331.1 Phase B-PUBLISH pending)." >&2
+          exit 1
+
+      - name: schema-check stub (Phase E)
+        # Dark-factory has no schemas to drift-check today. Future work:
+        # validate `darkfactory.yaml` consumer configs against the published
+        # JSON Schema once that lands (cycle 331.3 OSS-flip).
+        if: env.REQUESTED_VERSION == 'local'
+        run: |
+          set -euo pipefail
+          echo "schema-check: no-op stub (Phase E) — schemas package built cleanly above."
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## schema-check Summary"
+            echo ""
+            if [[ "$JOB_STATUS" == "success" ]]; then
+              echo "schema-check stub passed (Phase E — schemas package built; no drift detector wired yet)."
+            else
+              echo "schema-check stub failed — investigate workspace build."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

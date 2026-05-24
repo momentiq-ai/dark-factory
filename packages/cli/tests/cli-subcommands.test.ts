@@ -176,3 +176,48 @@ describe("df CLI — Phase D subcommands (services #6 + #8)", () => {
     expect(r.stderr).toContain("--files-stdin");
   });
 });
+
+describe("df CLI — Phase E reusable-workflow stubs", () => {
+  // Phase E ships `status-check` and `critic` as exit-0 stubs so the five
+  // reusable workflow shapes can satisfy dark-factory's own main1 ruleset
+  // (`PR Status Check`, `agent-critic`) while real implementations land
+  // in later phases. These tests pin the contract: stubs must exit 0
+  // and surface a structured no-op message so reviewers can tell the
+  // stub apart from real work — see cycle 331.1 Phase E in
+  // docs/roadmap/cycles/cycle331.1-extract-from-sage3c.md.
+  it("--help lists Phase E stubs", async () => {
+    const r = await runDfCli(["--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df status-check");
+    expect(r.stdout).toContain("df critic");
+  });
+
+  it("status-check exits 0 with a no-op stub message", async () => {
+    const r = await runDfCli(["status-check"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("no-op stub");
+  });
+
+  it("status-check ignores arbitrary trailing args (aggregator contract)", async () => {
+    const r = await runDfCli(["status-check", "--pr-number", "42", "extra"]);
+    expect(r.exitCode).toBe(0);
+  });
+
+  it("critic exits 0 with a no-op stub message + Phase F pointer", async () => {
+    const r = await runDfCli(["critic"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("no-op stub");
+    expect(r.stdout).toContain("Phase F");
+  });
+
+  it("critic ignores arbitrary trailing args", async () => {
+    const r = await runDfCli([
+      "critic",
+      "--config",
+      "darkfactory.yaml",
+      "--critics",
+      "cursor,codex",
+    ]);
+    expect(r.exitCode).toBe(0);
+  });
+});

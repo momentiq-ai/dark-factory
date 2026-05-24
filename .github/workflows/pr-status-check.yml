@@ -1,0 +1,127 @@
+# PR Status Check — reusable workflow shape (cycle 331.1 Phase E).
+#
+# This is the no-op aggregator gate. It satisfies the `PR Status Check`
+# required-status-check context in dark-factory's own main1 ruleset
+# (id 16808560) and is published as a reusable workflow for consumers
+# (sage3c / cerebe-platform / external repos) to invoke from their own
+# CI in Phases G/H.
+#
+# Dual trigger:
+#   1. `pull_request:` — runs on dark-factory's own PRs so the ruleset
+#      is satisfied here (the context emitted is the JOB NAME below).
+#   2. `workflow_call:` — consumers `uses:` this file from their own
+#      workflows. For consumers, the emitted context is
+#      `<consumer-caller-job-id> / <callee-job-name>`. The consumer
+#      MUST name their caller job exactly `pr-status-check:` (or
+#      whatever matches their ruleset) so the rule matches.
+#
+# Phase E posture: this is a pure aggregator stub that exits 0. There is
+# no real "PR status" logic to add — by design, this gate is a sentinel
+# that other workflows can satisfy by being green. Real aggregator logic
+# (if ever needed) lands in Phase F.
+#
+# Consumer pinning (Phase G/H):
+#   uses: momentiq-ai/dark-factory/.github/workflows/pr-status-check.yml@v0.1.0
+#
+# Versioning: per cycle 331.1 § Versioning policy, only exact `@vX.Y.Z`
+# tags are supported. Floating `@v0` / `@v0.1` tags are NOT created so
+# consumers cannot accidentally pin to a moving target.
+#
+# Security: this workflow takes no user-controllable string inputs that
+# get interpolated into shell. The single input (`cli-version`) is read
+# into an env var (REQUESTED_VERSION) before any run script references
+# it, per
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+name: PR Status Check
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+  workflow_call:
+    inputs:
+      cli-version:
+        description: |
+          CLI version to install. 'local' (default) builds from the
+          checked-out workspace — only valid when invoked from within
+          dark-factory itself. Consumers in Phase G/H must pass an
+          explicit semver tag (e.g. '0.1.0-alpha.3') once Phase B-PUBLISH
+          ships the npm package; the install path that uses a pinned
+          version will be wired alongside that publish.
+        type: string
+        required: false
+        default: 'local'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-status-check-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  pr-status-check:
+    # IMPORTANT: this job name is the status-check context surfaced to the
+    # ruleset. It MUST match the ruleset's `required_status_checks` context
+    # exactly. Renaming this changes the context and breaks the ruleset
+    # match.
+    name: PR Status Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # Read the input once into an env var so all subsequent steps can
+      # reference $REQUESTED_VERSION without re-interpolating untrusted-
+      # ish input into the shell command line.
+      REQUESTED_VERSION: ${{ inputs.cli-version || 'local' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install workspace (lockfile-strict)
+        # Phase E uses the workspace's own build artifact rather than a
+        # published tarball — the full integrity-verified `npm pack` flow
+        # lands in Phase B-PUBLISH (per cycle doc § Reusable workflow
+        # shapes). The 'local' branch is the only branch that exists
+        # today; the pinned-version branch lands with publish.
+        if: env.REQUESTED_VERSION == 'local'
+        run: npm ci
+
+      - name: Build workspace
+        if: env.REQUESTED_VERSION == 'local'
+        run: npm run build
+
+      - name: Reject pinned-version path until Phase B-PUBLISH ships
+        if: env.REQUESTED_VERSION != 'local'
+        run: |
+          set -euo pipefail
+          echo "::error::cli-version='$REQUESTED_VERSION' was requested but the pinned-version install path is not yet wired (cycle 331.1 Phase B-PUBLISH pending — see docs/roadmap/cycles/cycle331.1-extract-from-sage3c.md)." >&2
+          echo "::error::Pass cli-version='local' for now; consumers will be able to pin once the published-tarball install lands." >&2
+          exit 1
+
+      - name: Run status-check stub
+        # Phase E aggregator stub — exits 0. See `df status-check --help`
+        # for the no-op contract documented at packages/cli/src/cli.ts.
+        if: env.REQUESTED_VERSION == 'local'
+        run: node ./packages/cli/dist/cli.js status-check
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## PR Status Check Summary"
+            echo ""
+            if [[ "$JOB_STATUS" == "success" ]]; then
+              echo "PR Status Check stub passed (Phase E no-op aggregator)."
+            else
+              echo "PR Status Check stub failed — investigate workspace install or build."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

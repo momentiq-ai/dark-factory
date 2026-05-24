@@ -38,13 +38,18 @@ subcommands:
    `Cycle Ref` custom field on PR project items.
 
 After Phase D all nine services are present in the package. Phase E adds the
-reusable GitHub workflows that consumers wire up via `uses:`.
+reusable GitHub workflows that consumers wire up via `uses:`, plus stub
+subcommands (`status-check`, `critic`) so those workflows can satisfy the
+five required-status-check contexts in dark-factory's own ruleset while real
+critic / aggregator logic lands in Phase F.
 
 ## Status
 
-`0.1.0-alpha.2` — extracted from `momentiq-ai/sage3c:tools/agent-review/` +
-`scripts/ci/` per cycle 331.1 Phases B, C, and D. Library API is stable; the
-binary's `review`/`gate`/`doctor` subcommands are still stubs (Phase E).
+`0.1.0-alpha.3` — extracted from `momentiq-ai/sage3c:tools/agent-review/` +
+`scripts/ci/` per cycle 331.1 Phases B, C, D, and E. Library API is stable;
+the binary's `review`/`gate`/`doctor` subcommands are still stubs (Phase F);
+the Phase E stubs (`status-check`, `critic`) intentionally exit 0 so the
+reusable workflow shapes can break the dogfood chicken-and-egg.
 
 ## Install
 
@@ -104,8 +109,11 @@ df admit-pr --files docs/roadmap/cycles/cycle331.md,packages/cli/src/cli.ts
 > against an arbitrary repo will surface drift against contexts that
 > don't exist there.
 
-The Phase E subcommands (`review`, `gate`, `doctor`) are stubbed and exit 2
-with a "not implemented" message pointing at the library API.
+The Phase F subcommands (`review`, `gate`, `doctor`) are stubbed and exit 2
+with a "not implemented" message pointing at the library API. The Phase E
+stubs (`status-check`, `critic`) intentionally exit 0 so the five reusable
+workflows can satisfy dark-factory's own ruleset while real critic
+orchestration lands in Phase F.
 
 ## System requirements
 

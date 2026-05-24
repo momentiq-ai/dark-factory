@@ -1,0 +1,199 @@
+# branch-protection-audit — reusable workflow shape (cycle 331.1 Phase E).
+#
+# Satisfies the `branch-protection-audit` required-status-check context
+# in dark-factory's own main1 ruleset (id 16808560) and is published as
+# a reusable workflow for consumers (sage3c / cerebe-platform / external
+# repos) to invoke from their own CI in Phases G/H.
+#
+# Phase E posture: dark-factory ships its own ruleset at
+# `.github/rulesets/main.json` and would benefit from drift-auditing it
+# the same way sage3c audits `tools/branch-protection/spec.yaml`. But
+# dark-factory hasn't yet provisioned the GitHub-App token that
+# `df audit-branch-protection` needs (`BRANCH_PROTECTION_AUDIT_TOKEN` per
+# cycle 331.1 § Reusable workflow shapes). So Phase E's posture is:
+#   - On dark-factory's own PRs: no-op and pass. Audit runs once the
+#     `BRANCH_PROTECTION_AUDIT_TOKEN` secret is provisioned on
+#     dark-factory's GH Actions secrets (Phase F or earlier).
+#   - On consumer (workflow_call) invocations: fail closed if the
+#     gate is enabled in config AND the token is missing (matches the
+#     cycle-doc § "FAIL CLOSED in-job" invariant), pass if disabled.
+#
+# Real audit wiring (`df audit-branch-protection` already extracted to
+# `packages/cli/src/branch-protection/` in Phase C) is gated on the
+# secret being provisioned. The cycle doc's full integrity-bake + Doppler
+# fallback dance lands in Phase B-PUBLISH.
+#
+# Dual trigger:
+#   1. `pull_request:` — runs on dark-factory's own PRs so the ruleset
+#      is satisfied here (context = the JOB NAME below).
+#   2. `workflow_call:` — consumers `uses:` this from their own
+#      workflows. Consumer caller-job-id is the first segment of the
+#      resulting context; consumers MUST name their caller job
+#      `branch-protection-audit:` for the rule to match.
+#   3. `schedule:` — weekly cron at Monday 06:00 UTC catches passive
+#      drift on dark-factory's own ruleset. No-op until the audit
+#      token is provisioned.
+#   4. `workflow_dispatch:` — manual re-audit during incidents.
+#
+# Secrets surface (declared at workflow_call level for forward-
+# compatibility with the real audit — currently NOT read by the Phase E
+# stub):
+#   - BRANCH_PROTECTION_AUDIT_TOKEN: GitHub App installation token (or
+#     fine-grained PAT) with `Metadata: Read` + `Administration: Read`
+#     scopes. Declared `required: false` so the disable-via-config
+#     escape hatch is reachable per cycle doc § codex iter-final-N+3
+#     HIGH fix. Failure mode is FAIL CLOSED when the gate is enabled
+#     in config AND the token is missing.
+#
+# Security: all input values flow through env vars before any run script
+# references them, per
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+name: Branch Protection Audit
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  merge_group:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      cli-version:
+        description: |
+          Reserved for Phase G/H — only 'local' is wired today. See
+          pr-status-check.yml for the same contract.
+        type: string
+        required: false
+        default: 'local'
+      gate-enabled:
+        description: |
+          When 'false', the audit runs as a documented no-op (matches
+          the cycle-doc `gates.branch_protection_audit.enabled: false`
+          escape hatch). When 'true' AND the token is missing, the
+          workflow FAILS CLOSED.
+        type: string
+        required: false
+        default: 'true'
+    secrets:
+      BRANCH_PROTECTION_AUDIT_TOKEN:
+        description: |
+          GitHub App installation token (or fine-grained PAT) with
+          `Metadata: Read` + `Administration: Read` scopes. Required
+          when `gate-enabled: 'true'` (the default). The default-Actions
+          `GITHUB_TOKEN` does NOT have Administration permissions and
+          cannot substitute (cycle 331.1 § codex iter-final-N+2 HIGH).
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: branch-protection-audit-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-protection-audit:
+    # IMPORTANT: this job name is the status-check context surfaced to
+    # the ruleset. Must match `required_status_checks.context:
+    # branch-protection-audit` exactly.
+    name: branch-protection-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      REQUESTED_VERSION: ${{ inputs.cli-version || 'local' }}
+      GATE_ENABLED: ${{ inputs.gate-enabled || 'true' }}
+      EVENT_NAME: ${{ github.event_name }}
+      REPO_FULL_NAME: ${{ github.repository }}
+      AUDIT_TOKEN: ${{ secrets.BRANCH_PROTECTION_AUDIT_TOKEN }}
+    steps:
+      - name: merge_group fast-path
+        if: github.event_name == 'merge_group'
+        run: |
+          {
+            echo "## Branch Protection Audit — merge_group"
+            echo ""
+            echo "Audit runs on the originating PR (or the weekly cron); merge_group runs reuse that verdict."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v4
+        if: env.EVENT_NAME != 'merge_group'
+
+      - name: Setup Node 20
+        if: env.EVENT_NAME != 'merge_group'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install workspace (lockfile-strict)
+        if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION == 'local'
+        run: npm ci
+
+      - name: Build workspace
+        if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION == 'local'
+        run: npm run build
+
+      - name: Reject pinned-version path until Phase B-PUBLISH ships
+        if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION != 'local'
+        run: |
+          set -euo pipefail
+          echo "::error::cli-version='$REQUESTED_VERSION' was requested but the pinned-version install path is not yet wired (cycle 331.1 Phase B-PUBLISH pending)." >&2
+          exit 1
+
+      - name: Validate audit credential against gate config
+        # Implements the cycle-doc § "Failure mode is FAIL CLOSED in-job"
+        # invariant. When the audit gate is enabled (default) and the
+        # token is missing, exit non-zero with the structured error.
+        # When the gate is explicitly disabled via input, log and pass.
+        if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION == 'local'
+        run: |
+          set -euo pipefail
+          if [[ "$GATE_ENABLED" == "false" ]]; then
+            echo "branch-protection-audit: gate explicitly disabled via inputs.gate-enabled='false' — audit-disabled-by-config."
+            exit 0
+          fi
+          if [[ -z "$AUDIT_TOKEN" ]]; then
+            if [[ "$REPO_FULL_NAME" == "momentiq-ai/dark-factory" ]]; then
+              echo "::warning::BRANCH_PROTECTION_AUDIT_TOKEN is not provisioned on dark-factory yet — Phase E posture is to log-and-pass on dark-factory's own runs."
+              echo "  Provision the App token to enable the real audit; see cycle 331.1 § Reusable workflow shapes."
+              exit 0
+            fi
+            echo "::error::[required_secret_missing] BRANCH_PROTECTION_AUDIT_TOKEN" >&2
+            echo "::error::Audit gate is enabled (inputs.gate-enabled='true', default) but no token was provided." >&2
+            echo "::error::Provision a GitHub App installation token (or fine-grained PAT) with 'Metadata: Read' + 'Administration: Read' scopes." >&2
+            echo "::error::OR explicitly disable the gate by passing inputs.gate-enabled='false' from your caller workflow." >&2
+            exit 1
+          fi
+
+      - name: Run audit (real path, token present)
+        # Real audit invokes the Phase C-extracted service. The Python
+        # backend reads $GH_TOKEN — set it from the workflow_call secret.
+        # Skipped today on dark-factory because the token isn't
+        # provisioned and the validate-step above logs-and-passes; will
+        # run automatically once the token lands on dark-factory's GH
+        # Actions secrets.
+        if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION == 'local' && env.GATE_ENABLED == 'true' && env.AUDIT_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.BRANCH_PROTECTION_AUDIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          node ./packages/cli/dist/cli.js audit-branch-protection
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## branch-protection-audit Summary"
+            echo ""
+            if [[ "$JOB_STATUS" == "success" ]]; then
+              echo "branch-protection-audit passed."
+            else
+              echo "branch-protection-audit failed — see the audit output above (or [required_secret_missing] hint)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -8,9 +8,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "type-check": "npm run type-check --workspaces --if-present",
-    "test": "npm test --workspaces --if-present"
+    "build": "npm run build --workspace=@momentiq/dark-factory-schemas && npm run build --workspace=@momentiq/dark-factory-cli",
+    "type-check": "npm run type-check --workspace=@momentiq/dark-factory-schemas && npm run type-check --workspace=@momentiq/dark-factory-cli",
+    "test": "npm test --workspace=@momentiq/dark-factory-schemas && npm test --workspace=@momentiq/dark-factory-cli"
   },
   "engines": {
     "node": ">=20"
