@@ -110,6 +110,43 @@ export {
   type PythonScriptResult,
 } from "./cycle-tracker-sync/index.js";
 
+// Service #6 — Merge Queue Admission Policy (Phase D boundary).
+// Plan-vs-code PR classifier + merge-queue rule shape (the ruleset
+// contract that audit_branch_protection.py compares against).
+export {
+  classifyPrKind,
+  classifyPrKindFromFiles,
+  resolveChiefEngineerLogin,
+  evaluatePlanPrReviewGate,
+  defaultMergeQueueRule,
+  defaultMainRulesetShape,
+  defaultCeReviewRulesetShape,
+  PR_PLAN_DOC_PATTERN,
+  PR_DOC_ROOT,
+  type PrKind,
+  type PlanPrGateInputs,
+  type PlanPrGateVerdict,
+  type MergeQueueRule,
+  type RulesetShape,
+} from "./policy/merge-queue.js";
+
+// Service #8 — Audit / Compliance Trail (Phase D boundary).
+// `_runs.ndjson` sink + read/summarize helpers.
+export {
+  FileTelemetrySink,
+  MemoryTelemetrySink,
+  readTelemetryEvents,
+  summarizeTelemetry,
+  computeQuorumStats,
+  computeCriticAgreement,
+  type TelemetrySink,
+  type TelemetryStats,
+  type RetrySummary,
+  type CriticStats,
+  type CriticAgreement,
+  type QuorumStats,
+} from "./evidence/audit-trail.js";
+
 // Runner — drives the orchestrator end-to-end.
 export {
   runReview,

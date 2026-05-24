@@ -39,7 +39,7 @@ import {
 } from "./_assert-shim.js";
 import { applyEnvOverrides } from "../src/policy/config.js";
 import { parseAgentReviewConfig, type AgentReviewConfig } from "@momentiq/dark-factory-schemas";
-import { MemoryTelemetrySink } from "../src/telemetry.js";
+import { MemoryTelemetrySink } from "../src/evidence/audit-trail.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

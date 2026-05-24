@@ -78,3 +78,101 @@ describe("df CLI — Phase C subcommands", () => {
     expect(r.stderr).toContain("not implemented");
   });
 });
+
+describe("df CLI — Phase D subcommands (services #6 + #8)", () => {
+  it("--help lists Phase D subcommands", async () => {
+    const r = await runDfCli(["--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df audit stats");
+    expect(r.stdout).toContain("df admit-pr");
+  });
+
+  it("audit --help prints subcommand help", async () => {
+    const r = await runDfCli(["audit", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df audit");
+    expect(r.stdout).toContain("stats");
+  });
+
+  it("audit stats with no NDJSON exits 1 with a clear error", async () => {
+    // Run from a tmp dir so there is no .git/agent-reviews around.
+    const tmp = await new Promise<string>((res) => {
+      // tiny helper — avoid a Node.js fs import for one path.
+      res("/tmp");
+    });
+    const r = await new Promise<SpawnResult>((resolvePromise, rejectPromise) => {
+      const child = spawn(process.execPath, [CLI_PATH, "audit", "stats"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        cwd: tmp,
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.on("error", (err) => rejectPromise(err));
+      child.on("close", (code) => {
+        resolvePromise({ exitCode: code === null ? -1 : code, stdout, stderr });
+      });
+    });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("no audit trail found");
+  });
+
+  it("audit stats reads a supplied --path", async () => {
+    const { writeFileSync, mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const tmp = mkdtempSync(join(tmpdir(), "df-cli-audit-"));
+    const ndjson = join(tmp, "_runs.ndjson");
+    writeFileSync(
+      ndjson,
+      JSON.stringify({ event: "gate_passed" }) +
+        "\n" +
+        JSON.stringify({ event: "gate_bypassed", bypassReason: "test" }) +
+        "\n",
+      "utf8",
+    );
+    const r = await runDfCli(["audit", "stats", "--path", ndjson]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("gate passes:       1");
+    expect(r.stdout).toContain("gate bypasses:     1");
+  });
+
+  it("admit-pr --help prints classifier docs", async () => {
+    const r = await runDfCli(["admit-pr", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("admit-pr");
+    expect(r.stdout).toContain("plan");
+    expect(r.stdout).toContain("code");
+  });
+
+  it("admit-pr --files classifies a pure cycle doc as plan", async () => {
+    const r = await runDfCli([
+      "admit-pr",
+      "--files",
+      "docs/roadmap/cycles/cycle331.md",
+    ]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe("plan");
+  });
+
+  it("admit-pr --files classifies a code PR as code", async () => {
+    const r = await runDfCli([
+      "admit-pr",
+      "--files",
+      "docs/roadmap/cycles/cycle331.md,packages/cli/src/cli.ts",
+    ]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trim()).toBe("code");
+  });
+
+  it("admit-pr without flags exits 2 with usage hint", async () => {
+    const r = await runDfCli(["admit-pr"]);
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("--files-stdin");
+  });
+});
