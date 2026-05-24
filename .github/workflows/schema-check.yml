@@ -83,7 +83,7 @@ jobs:
         # might ship a JSON Schema -> consumer-config validator), wire
         # it into a follow-up step below.
         if: env.REQUESTED_VERSION == 'local'
-        run: npm run build --workspaces --if-present
+        run: npm run build
 
       - name: Reject pinned-version path until Phase B-PUBLISH ships
         if: env.REQUESTED_VERSION != 'local'

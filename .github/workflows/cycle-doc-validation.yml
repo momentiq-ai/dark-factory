@@ -103,7 +103,7 @@ jobs:
 
       - name: Build workspace
         if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION == 'local'
-        run: npm run build --workspaces --if-present
+        run: npm run build
 
       - name: Reject pinned-version path until Phase B-PUBLISH ships
         if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION != 'local'
