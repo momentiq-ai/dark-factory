@@ -26,7 +26,10 @@ import {
   writePending,
   type WriteResult,
 } from "./report.js";
-import type { TelemetrySink } from "./telemetry.js";
+// Service #8 — Audit Trail (Phase D boundary). Telemetry sink is the
+// runtime side of the `_runs.ndjson` audit log; the read/analyze side
+// lives in the same module so they evolve in lockstep.
+import type { TelemetrySink } from "./evidence/audit-trail.js";
 import type {
   CriticResult,
   GateBlock,

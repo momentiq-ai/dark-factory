@@ -4,8 +4,9 @@ Dark Factory OSS CLI — multi-vendor adversarial critic orchestration.
 
 ## What this package gives you
 
-The four Phase B + four Phase C services, today consumable as a TypeScript
-library and (for the four Python-backed services) as `df` subcommands:
+All nine Dark Factory services extracted from sage3c, today consumable as a
+TypeScript library and (for the Python-backed and Phase D services) as `df`
+subcommands:
 
 1. **Critic Orchestrator** (`./adapters/*`) — vendor-neutral adapter contract
    (`CriticAdapter`) with concrete adapters for Cursor SDK, OpenAI Codex SDK,
@@ -21,21 +22,29 @@ library and (for the four Python-backed services) as `df` subcommands:
    evidence path layout + runner that writes/reads evidence files atomically.
 5. **Cycle-Doc Trailer Validator** (`./cycle-doc-validator/*` + `df validate-cycle-doc`)
    — enforces per-PR `Cycle:` / `Issue:` / `ProjectItem:` trailer rules.
-6. **Branch-Protection Drift Detector** (`./branch-protection/*` + `df audit-branch-protection`)
+6. **Merge Queue Admission Policy** (`./policy/merge-queue.ts` + `df admit-pr`) —
+   plan-vs-code PR classifier (the same heuristic sage3c's plan-PR review gate
+   uses) + the typed ruleset shape (`defaultMainRulesetShape`,
+   `defaultCeReviewRulesetShape`, `defaultMergeQueueRule`) that consumers
+   declare so the branch-protection auditor can detect drift against it.
+7. **Branch-Protection Drift Detector** (`./branch-protection/*` + `df audit-branch-protection`)
    — compares a declarative `spec.yaml` against the live GitHub ruleset.
-7. **Cycle Tracker Sync + PR Attribution** (`./cycle-tracker-sync/*` + `df sync-trackers` + `df attribute-pr`)
+8. **Audit / Compliance Trail** (`./evidence/audit-trail.ts` + `df audit stats`) —
+   the `_runs.ndjson` NDJSON sink + read/summarize/agreement-rate/quorum-stats
+   helpers behind the legacy `make agent-review-stats`. Every critic run,
+   every gate verdict, every bypass invocation appends here.
+9. **Cycle Tracker Sync + PR Attribution** (`./cycle-tracker-sync/*` + `df sync-trackers` + `df attribute-pr`)
    — reconciles GitHub tracker issues with cycle docs + writes the
    `Cycle Ref` custom field on PR project items.
 
-Services #5, #6 (Merge Queue Admission Policy), #7, #8 (Audit Trail), and #9
-are the Dark Factory CI gates extracted from sage3c. Service #6 + #8 land in
-Phase D.
+After Phase D all nine services are present in the package. Phase E adds the
+reusable GitHub workflows that consumers wire up via `uses:`.
 
 ## Status
 
-`0.1.0-alpha.1` — extracted from `momentiq-ai/sage3c:tools/agent-review/` +
-`scripts/ci/` per cycle 331.1 Phases B and C. Library API is stable; the
-binary's `review`/`gate`/`doctor`/`audit` subcommands are still stubs (Phase E).
+`0.1.0-alpha.2` — extracted from `momentiq-ai/sage3c:tools/agent-review/` +
+`scripts/ci/` per cycle 331.1 Phases B, C, and D. Library API is stable; the
+binary's `review`/`gate`/`doctor` subcommands are still stubs (Phase E).
 
 ## Install
 
@@ -79,6 +88,11 @@ df validate-cycle-doc --help
 df audit-branch-protection --use-bundled-default-spec --repo owner/repo
 df sync-trackers --dry-run
 df attribute-pr  # env-driven; needs PR_NUMBER, PR_NODE_ID, PR_BODY_FILE, PROJECT_TOKEN
+
+# Phase D subcommands — pure-TS, parse flags directly.
+df audit stats --path .git/agent-reviews/_runs.ndjson
+df admit-pr --files-stdin   # newline-separated file paths on stdin
+df admit-pr --files docs/roadmap/cycles/cycle331.md,packages/cli/src/cli.ts
 ```
 
 > **Note on `--use-bundled-default-spec`**: the bundled `spec-default.yaml`
@@ -90,8 +104,8 @@ df attribute-pr  # env-driven; needs PR_NUMBER, PR_NODE_ID, PR_BODY_FILE, PROJEC
 > against an arbitrary repo will surface drift against contexts that
 > don't exist there.
 
-The Phase B/E subcommands (`review`, `gate`, `doctor`, `audit`) are stubbed
-and exit 2 with a "not implemented" message pointing at the library API.
+The Phase E subcommands (`review`, `gate`, `doctor`) are stubbed and exit 2
+with a "not implemented" message pointing at the library API.
 
 ## System requirements
 
