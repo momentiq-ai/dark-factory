@@ -13,7 +13,7 @@ import {
   gitShowFile,
   resolveCommit,
 } from "../git.js";
-import { readQualityGateEvidence } from "../quality-gates.js";
+import { readQualityGateEvidence } from "../evidence/index.js";
 import type {
   GuidanceFile,
   ReviewPacket,

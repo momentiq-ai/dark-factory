@@ -1,6 +1,6 @@
 {
   "name": "@momentiq/dark-factory-cli",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Dark Factory OSS CLI — multi-vendor adversarial critic orchestration (Cursor, Codex, Gemini, Grok) with min-complete-quorum aggregation and trusted-surface rebind",
   "license": "Apache-2.0",
   "type": "module",
@@ -22,6 +22,22 @@
     "./trusted-surface": {
       "types": "./dist/trusted-surface/index.d.ts",
       "import": "./dist/trusted-surface/index.js"
+    },
+    "./evidence": {
+      "types": "./dist/evidence/index.d.ts",
+      "import": "./dist/evidence/index.js"
+    },
+    "./cycle-doc-validator": {
+      "types": "./dist/cycle-doc-validator/index.d.ts",
+      "import": "./dist/cycle-doc-validator/index.js"
+    },
+    "./branch-protection": {
+      "types": "./dist/branch-protection/index.d.ts",
+      "import": "./dist/branch-protection/index.js"
+    },
+    "./cycle-tracker-sync": {
+      "types": "./dist/cycle-tracker-sync/index.d.ts",
+      "import": "./dist/cycle-tracker-sync/index.js"
     }
   },
   "bin": {
@@ -33,8 +49,11 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "pretest": "npm run build",
     "test": "vitest run",
+    "test:python": "python3 -m pytest tests/cycle-doc-validator tests/branch-protection tests/cycle-tracker-sync -q",
+    "test:all": "npm run test && npm run test:python",
     "test:watch": "vitest",
     "type-check": "tsc -p tsconfig.json --noEmit"
   },

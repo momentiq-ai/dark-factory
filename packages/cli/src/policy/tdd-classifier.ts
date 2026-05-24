@@ -17,7 +17,7 @@
 // suppresses when EVERY path is an exclusion, which is the docs-only case.
 
 import { matchAnyGlob } from "../glob.js";
-import type { CommitTrailers } from "../evidence.js";
+import type { CommitTrailers } from "../evidence/index.js";
 
 export interface TddClassifierConfig {
   productionGlobs: readonly string[];

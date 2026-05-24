@@ -10,7 +10,7 @@ import {
   expect_throws,
   expect_rejects,
 } from "./_assert-shim.js";
-import { parseCommitTrailers } from "../src/evidence.js";
+import { parseCommitTrailers } from "../src/evidence/index.js";
 import { classifyTdd, type TddClassifierConfig } from "../src/policy/tdd-classifier.js";
 
 const SAGE_CONFIG: TddClassifierConfig = {

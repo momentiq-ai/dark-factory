@@ -6,7 +6,7 @@ import {
   collectChangedPaths,
   perShaQualityGatePath,
   type CommitTrailers,
-} from "../evidence.js";
+} from "../evidence/index.js";
 import { matchAnyGlob } from "../glob.js";
 import {
   changedFiles,
@@ -16,7 +16,7 @@ import {
   diffHash,
   resolveCommit,
 } from "../git.js";
-import { parseCommitTrailers } from "../evidence.js";
+import { parseCommitTrailers } from "../evidence/index.js";
 import { resolveArtifactDir, resolveArtifactRoot, telemetryPath } from "../paths.js";
 import {
   isCriticCompleted,
