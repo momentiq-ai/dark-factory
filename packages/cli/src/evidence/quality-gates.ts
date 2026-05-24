@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { LoadedConfig } from "./policy/config.js";
-import { perShaQualityGatePath } from "./evidence.js";
+import type { LoadedConfig } from "../policy/config.js";
+import { perShaQualityGatePath } from "./per-sha.js";
 
 // Consumer-supplied env keys that should be scrubbed from gate subprocess
 // environments. This is the OSS-minimal allowlist; consumers needing
@@ -18,7 +18,7 @@ const DOPPLER_BOOTSTRAP_ALLOWLIST = Object.freeze([
 import {
   resolveArtifactRoot,
   resolveValidationResultPath,
-} from "./paths.js";
+} from "../paths.js";
 import {
   parseQualityGateEvidence,
   type QualityGateEvidence,

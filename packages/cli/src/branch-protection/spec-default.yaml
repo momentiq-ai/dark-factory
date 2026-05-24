@@ -1,0 +1,314 @@
+# tools/branch-protection/spec.yaml
+#
+# Single source of truth for `main` branch protection settings.
+#
+# Compared against the live state by `.github/workflows/branch-protection-audit.yml`
+# (CI workflow ships in Cycle 318.4; this file is the input contract).
+#
+# The live ground truth is a GitHub Repository Ruleset (id 6076292, name "main1"),
+# fetched via:
+#   gh api repos/momentiq-ai/sage3c/rulesets/6076292
+#
+# Schema notes:
+# - `schema_version: 1` — first version of this file. Bump on breaking changes.
+# - `branches.main.required_status_checks.contexts[]` — full set of CI contexts
+#   that MUST be required for a PR to merge to `main`. Each entry has a `status`
+#   of `required` (currently enforced) or `planned` (will be promoted by a
+#   future cycle, tracked in `.agent-review/RATCHETING.md`).
+# - `allowed_bypasses` / `forbidden_bypasses` — explicit enumerations. The CI
+#   audit step diffs against these lists; any new bypass surface that isn't on
+#   either list fails the audit.
+#
+# Sister cycles: cerebe-platform Cycle 70.2.
+# Cycle: 318.3 (initial), 318.4 (promotions + audit workflow)
+
+schema_version: 1
+
+# ---------------------------------------------------------------------------
+# Repository ruleset (GitHub modern rulesets — replaces classic branch protection)
+# ---------------------------------------------------------------------------
+ruleset:
+  id: 6076292
+  name: "main1"
+  enforcement: active
+  target: branch
+  conditions:
+    ref_name:
+      include:
+        - "refs/heads/main"
+      exclude: []
+
+branches:
+  main:
+    # Block deletion + force-push of `main`. Non-negotiable.
+    deletion_blocked: true
+    non_fast_forward_blocked: true
+
+    # Linear history — squash-merge only on `main`. Aligns with merge_queue method.
+    required_linear_history: true
+
+    required_pull_request_reviews:
+      # 0 because AI-PR-audit + agent-critic + Copilot code review substitute
+      # for human approval (AI-Native Manifesto §11). Thread resolution is the
+      # mechanism that surfaces blocking findings to humans.
+      required_approving_review_count: 0
+      dismiss_stale_reviews_on_push: false
+      require_code_owner_reviews: false
+      require_last_push_approval: false
+      required_review_thread_resolution: true
+      allowed_merge_methods:
+        - merge
+        - squash
+        - rebase
+
+    required_status_checks:
+      strict_required_status_checks_policy: true   # branch must be up to date with `main` before merging
+      do_not_enforce_on_create: false
+      contexts:
+        - context: "PR Status Check"
+          status: required
+          source: "github_actions"
+          integration_id: 15368
+          rationale: "Aggregator check; rolls up the per-job results from .github/workflows/pr.yml. Required since Cycle 312."
+        - context: "schema-check"
+          status: required
+          source: "github_actions"
+          rationale: "OpenAPI ↔ frontend type-shape parity. Required since Cycle 315.7."
+        # ----- promoted to required (issue #1385) -----
+        # Admin updated ruleset 6076292 to add the three contexts to
+        # required_status_checks; this file flip (planned → required) is
+        # the matching spec-side acknowledgment.
+        - context: "agent-critic"
+          status: required
+          workflow: ".github/workflows/agent-critic.yml"
+          rationale: "CI replay of local agent critic; closes the no-bridge enforcement loop. Promoted to required in issue #1385 after admin updated ruleset 6076292."
+        - context: "cycle-doc-validation"
+          status: required
+          workflow: ".github/workflows/cycle-doc-validation.yml"
+          rationale: "Enforces Cycle: / Issue: / ProjectItem: trailers per AI-Native Manifesto §10 (Spec-Driven Traceability). Promoted to required in issue #1385."
+        - context: "branch-protection-audit"
+          status: required
+          workflow: ".github/workflows/branch-protection-audit.yml"
+          rationale: "Compares this file against the live ruleset; fails on divergence. Runs on every spec-touching PR and on the weekly Monday-06:00-UTC cron. Promoted to required in issue #1385."
+        # ----- shipped in Cycle 322.4 (workflows exist; promotion deferred) -----
+        # Same pattern as the 318.4 block above: ship the workflows
+        # as observable + non-required, then a follow-up PR (post-
+        # admin ruleset update + post-team-creation) promotes them.
+        # See `post_322_4_promotion_sequence` at the bottom of this
+        # file for the staging plan. Cycle 322.4 also introduces the
+        # second ruleset `main-ce-review` (Chief Engineer review-only
+        # bypass lane); that ruleset's tracked desired-state lives at
+        # `.github/rulesets/main-ce-review.json` and is verified by
+        # the `verify-rulesets` workflow listed below.
+        - context: "verify-rulesets"
+          status: planned
+          target_cycle: "322.4"
+          workflow: ".github/workflows/verify-rulesets.yml"
+          rationale: "Diffs `.github/rulesets/*.json` against the live ruleset state. Catches drift on the two-ruleset architecture (`main` + `main-ce-review`) introduced by Cycle 322.4. Runs on every PR + merge_group + weekly cron. The Chief Engineer does NOT bypass this check (it lives on Ruleset A); a CE PR cannot merge with a drifted live ruleset."
+        - context: "plan-pr-review-gate"
+          status: planned
+          target_cycle: "322.4"
+          workflow: ".github/workflows/plan-pr-review-gate.yml"
+          rationale: "Enforces CLAUDE.md Phase 1 step 4–5 on plan PRs (cycle-doc only). Restructured per issue #1514: CE-authored plan PRs skip-pass (architect-loop is the review); non-CE plan PRs require an APPROVED review FROM THE CE specifically on the current head SHA. CE identity is read from `.github/agentic-engineers.json` on the BASE ref to prevent a non-CE author from monkey-patching the registry in their own PR to claim CE status. The CE bypass on Ruleset B (`main-ce-review`) cannot waive this because it lives on Ruleset A. The pre-#1514 'any non-author APPROVED' semantics failed every plan PR after Dark Factory's universal-no-human-review posture for code PRs was codified (no human or bot ever produces an APPROVED review); the restructured gate aligns with current operation AND retains forward-compatible value (autonomous agents authoring plan PRs are forced into CE review)."
+        # ----- shipped in Cycle 322.6 (workflow exists; promotion deferred) -----
+        # Same deferred-promotion pattern as 318.4 + 322.4 above.
+        # 322.6 closes the race exposed by Cycle 322's own Plan PR
+        # #1328 (which merged before Copilot's review fired): bot
+        # reviews land as `pull_request_review` events with
+        # state=`COMMENTED`, NOT as status checks, so the merge queue's
+        # required_status_checks logic never sees them. The new
+        # `bot-review-settle` workflow translates "all Code Critics in
+        # `.github/agentic-engineers.json` (read from BASE ref) have
+        # reviewed the current HEAD SHA" into a status check.
+        - context: "bot-review-settle"
+          status: planned
+          target_cycle: "322.6"
+          workflow: ".github/workflows/bot-review-settle.yml"
+          rationale: "Holds the merge queue until all Code Critics registered in `.github/agentic-engineers.json` (Cursor BugBot, OpenAI Codex, GitHub Copilot today) have posted at least one PR review on the current HEAD SHA, or a 7-min (configurable) fail-open timeout elapses. Closes the bot-review-race that allowed PR #1328 to merge before Copilot's review fired. The Chief Engineer does NOT bypass this check (lives on Ruleset A); CE PRs especially benefit from bot review since they lack human reviewers."
+
+    copilot_code_review:
+      enabled: true
+      review_on_push: false
+      review_draft_pull_requests: false
+
+    merge_queue:
+      enabled: true
+      merge_method: SQUASH
+      max_entries_to_build: 5
+      min_entries_to_merge: 1
+      max_entries_to_merge: 5
+      min_entries_to_merge_wait_minutes: 0
+      grouping_strategy: ALLGREEN     # all queued PRs must be green together; reduces re-runs vs HEADGREEN
+      check_response_timeout_minutes: 60
+
+    restrictions: null                # no user/team push restrictions
+
+# ---------------------------------------------------------------------------
+# Bypass surfaces — every legitimate skip path enumerated; every closed surface
+# explicitly forbidden. The CI audit step in 318.4 diffs the live workflows/
+# repo-vars against these lists.
+# ---------------------------------------------------------------------------
+allowed_bypasses:
+  - kind: workflow_call_only
+    workflows:
+      - ".github/workflows/quality-gate.yml"
+    rationale: "Reusable workflow; cannot trigger directly — only consumed by pr.yml as a `uses:` callee. Not a bypass per se; documented so the audit doesn't flag it."
+
+  - kind: docs_only_skip
+    workflows:
+      - "quality-gate"
+      - "backend-tests"
+      - "frontend-tests"
+      - "frontend-unit-tests"
+      - "evals"
+      - "parent-chat-eval"
+    rationale: "detect-changes paths-filter routes docs-only PRs around code-only checks. `quality-gate` is gated by `if: needs.detect-changes.outputs.docs_only != 'true'`; the per-language test jobs gate on the more granular `frontend`/`backend` outputs (true implies non-docs-only). All of these jobs `skip` rather than `fail` on a docs-only PR, which the ruleset accepts for required checks."
+    enforced_by: ".github/workflows/pr.yml — needs.detect-changes.outputs.docs_only / frontend / backend"
+
+  - kind: merge_group_fast_path
+    workflows:
+      - "cycle-doc-validation"
+      - "branch-protection-audit"
+      - "plan-pr-review-gate"
+      - "bot-review-settle"
+    rationale: "On `merge_group` events these workflows fast-path to success (writing a step summary, not re-running the validator). cycle-doc-validation needs PR-level data (title/body/labels) which is not exposed in merge_group context; branch-protection-audit's spec-vs-live reconciliation was already done on the originating PR and the weekly cron is the authoritative passive-drift gate; plan-pr-review-gate's classification + review check needs PR-level data (file list, reviews) and was already evaluated when the PR was queued. bot-review-settle's polling logic is keyed off the PR-phase `head.sha` AND the BASE-ref Code Critic registry — the merge_group commit is a synthetic squash with no PR-level reviews to observe, so the settle window was satisfied (or fail-opened) before queue admission; the merge_group passthrough emits SUCCESS on the synthetic commit so required-status inheritance is satisfied. agent-critic, by contrast, DOES re-execute the critic in merge_group using the merge_group.head_sha (the combined merged commit is the right target for the critic, distinct from individual PR heads). verify-rulesets does NOT fast-path on merge_group — the live ruleset state is queue-agnostic and the same RO API call is cheap to repeat."
+    enforced_by: "github.event_name == 'merge_group' fast-path step in each workflow"
+    compensating_controls:
+      - "cycle-doc-validation: trailer-shape failures cannot regress across queue ordering — the PR-head verdict is authoritative for the trailers on that PR."
+      - "branch-protection-audit: weekly Monday 06:00 UTC cron runs the full audit unconditionally; passive drift introduced via the GitHub UI is caught within ≤7 days."
+      - "plan-pr-review-gate: review-shape failures cannot regress across queue ordering — the PR-head verdict (CE-self-skip OR CE-APPROVED required on non-CE plan PRs, post-#1514) is authoritative for that PR. (Codex P1 from cycle322.4 #1334 — see the cycle doc for why merge_group is still REQUIRED to fire, just as a passthrough.)"
+      - "bot-review-settle: the PR-phase settle was either satisfied (all configured Code Critics reviewed the HEAD) or fail-opened (timeout elapsed; bot findings that DID post are still gated by `required_review_thread_resolution: true`). The merge_group commit has no per-PR review surface to observe, so re-polling there is non-meaningful — the passthrough emits SUCCESS so required-check inheritance is satisfied on the synthetic queue commit."
+    decision_cycle: "318.4 (cycle-doc-validation, branch-protection-audit); 322.4 (plan-pr-review-gate); 322.6 (bot-review-settle)"
+
+  - kind: trusted_surface_skip
+    workflows:
+      - "agent-critic"
+      - "branch-protection-audit"
+      - "verify-rulesets"
+    rationale: "PRs that modify the workflow file, the script(s) the workflow invokes, or files in the workflow's trusted-policy surface receive a SKIP on the secret-bearing step rather than a green run. Without the skip a malicious PR could exfiltrate the workflow's secret (CURSOR_API_KEY for agent-critic; BRANCH_PROTECTION_RO_PAT for the audit + verify-rulesets workflows) by injecting code into the PR-controlled trusted surface before the secret-bearing step runs. The weekly cron and any post-merge run (when the code is reviewed) re-exercises the secret-bearing step. Human review of the diff is the compensating control while the PR is open."
+    enforced_by: "trusted-surface detection step in each workflow; see .github/workflows/<name>.yml for the per-workflow scope regex."
+    compensating_controls:
+      - "Human review of the diff for any PR that lights up the trusted-surface skip."
+      - "Weekly cron / workflow_dispatch / next-PR run re-exercises the secret-bearing step under trusted (base-ref) code."
+    decision_cycle: "318.4 (initial); 322.4 (extended to verify-rulesets); PR #1383 (hardened scope detection on agent-critic + audit)"
+
+forbidden_bypasses:
+  # Each entry below was a known kill-switch, ambient bypass, or rename-disable
+  # pattern. The audit step fails if any of these reappear.
+
+  - kind: repo_variable
+    name: SKIP_PR_CI
+    rationale: "Repo-variable kill switch removed in PR #1215 (Cycle 315.9). Do not reintroduce. CI audit checks `gh variable list` for this name."
+
+  - kind: pr_title_skip
+    pattern: "[skip ci]"
+    rationale: "Ambient bypass via title token. Not currently honored in pr.yml (0 matches as of 2026-05-12). Listed here prophylactically to prevent regression — any addition of `[skip ci]` handling in a workflow fails the audit."
+
+  - kind: disabled_workflow
+    pattern: "*.yml.disabled"
+    rationale: "Rename-disable is a silent kill switch. Cycle 318.4 deleted `.github/workflows/deploy-gcp.yml.disabled` (GCP deploy was decommissioned during the move to GKE-via-Helm; the file was preserved-by-rename for historical reference). Going forward any `*.yml.disabled` file fails the audit; archival via git history (`git log --all -- .github/workflows/<name>.yml.disabled`) is the prescribed substitute. See docs/engineering/ci-bypass-audit-2026-05.md."
+    known_violations: []   # cleared by Cycle 318.4 (deletion landed in this same PR)
+
+# ---------------------------------------------------------------------------
+# Promotion sequencing (Cycle 318.4 → admin → follow-up PR).
+# STATUS: COMPLETED via issue #1385. All three steps below have landed.
+# Cycle 318.4 shipped:
+#   (1) the three new workflows (agent-critic, cycle-doc-validation,
+#       branch-protection-audit),
+#   (2) the deletion of `.github/workflows/deploy-gcp.yml.disabled`,
+#   (3) the original spec entry that recorded the three contexts as
+#       `planned` (intentionally deferred so the audit gate did not
+#       fail-closed on its own merging commit).
+# Issue #1385 closed the loop: admin updated ruleset 6076292 to add the
+# three contexts, and PR `close-1385` flipped this spec from `planned`
+# to `required`. Block retained for historical/audit traceability.
+# ---------------------------------------------------------------------------
+post_318_4_promotion_sequence:
+  status: completed
+  closed_by_issue: 1385
+  step_1:
+    description: "Cycle 318.4 PR merged. Workflows shipped as observable but non-required."
+    status: completed
+  step_2:
+    description: "Admin updated ruleset 6076292 to add the three contexts to required_status_checks. See `docs/engineering/ci-bypass-audit-2026-05.md` §'Promotion sequence (completed via issue #1385)'."
+    actor: "repository admin"
+    command_hint: "gh api -X PATCH repos/momentiq-ai/sage3c/rulesets/6076292 --input <patched-payload>"
+    status: completed
+  step_3:
+    description: "PR `close-1385` flipped spec.yaml `status: planned → required` for the three contexts. The audit gate goes green because live ruleset matches."
+    target: "tools/branch-protection/spec.yaml"
+    status: completed
+
+# ---------------------------------------------------------------------------
+# Promotion sequencing (Cycle 322.4 → admin → follow-up PR).
+# Cycle 322.4 ships:
+#   (1) the two new workflows (verify-rulesets, plan-pr-review-gate),
+#   (2) the two tracked rulesets in `.github/rulesets/` (main.json
+#       baseline + main-ce-review.json with id=null),
+#   (3) the apply/verify/test scripts in scripts/{lib,tests}/ +
+#       scripts/{apply,verify}-main-ruleset.sh,
+#   (4) the two `planned` context entries in this file
+#       (verify-rulesets, plan-pr-review-gate),
+#   (5) `trusted_surface_skip` entry covering verify-rulesets
+#       alongside the 318.4 workflows,
+#   (6) `merge_group_fast_path` extension to include
+#       plan-pr-review-gate.
+# It deliberately does NOT promote them to `required` for the same
+# reason 318.4 didn't promote its three: the audit + verify-rulesets
+# would fail-closed on their own merging commit (live ruleset doesn't
+# yet expect the new contexts).
+# ---------------------------------------------------------------------------
+post_322_4_promotion_sequence:
+  step_1:
+    description: "Cycle 322.4 (this PR) merges. Workflows ship as observable but non-required; main-ce-review ruleset JSON is tracked with id=null (pending creation)."
+  step_2:
+    description: "Admin creates the `momentiq-ai/chief-engineers` team and grants `maintain` permission on `momentiq-ai/sage3c`. Single seat at launch (@alien8d) per the production-posture constraint."
+    actor: "repository admin"
+    command_hint: |-
+      gh api -X POST orgs/momentiq-ai/teams -f name=chief-engineers -f privacy=closed -f description='Chief Engineer auto-merge bypass actor (Cycle 322.4)'
+      gh api -X PUT  orgs/momentiq-ai/teams/chief-engineers/memberships/alien8d -f role=member
+      gh api -X PUT  orgs/momentiq-ai/teams/chief-engineers/repos/momentiq-ai/sage3c -f permission=maintain
+  step_3:
+    description: "Admin runs `scripts/apply-main-ruleset.sh --apply` from a workstation. The script POSTs `main-ce-review` (creating it on GitHub) and writes the new id back to `.github/rulesets/main-ce-review.json`. The same run idempotently no-ops on `main.json` (id=6076292 already matches live)."
+    actor: "repository admin"
+    command_hint: "scripts/apply-main-ruleset.sh --apply"
+  step_4:
+    description: "Admin commits the `id` write-back to `.github/rulesets/main-ce-review.json` as a separate PR. After this PR merges, subsequent verify-rulesets runs include the main-ce-review ruleset in the structural compare."
+    target: ".github/rulesets/main-ce-review.json"
+  step_5:
+    description: "Admin updates ruleset 6076292 to add the two new 322.4 contexts (`verify-rulesets`, `plan-pr-review-gate`) to `required_status_checks`. The three 318.4 contexts (`agent-critic`, `cycle-doc-validation`, `branch-protection-audit`) were already promoted via issue #1385; the idempotent jq in `docs/engineering/ci-bypass-audit-2026-05.md` §322.4 admin actions de-duplicates by context name."
+    actor: "repository admin"
+    command_hint: "gh api -X PATCH repos/momentiq-ai/sage3c/rulesets/6076292 --input <patched-payload>"
+  step_6:
+    description: "Follow-up PR flips spec.yaml `status: planned → required` for the remaining 322.4 contexts (`verify-rulesets`, `plan-pr-review-gate`). The audit + verify-rulesets gates stay green (318.4 contexts already promoted via #1385)."
+    target: "tools/branch-protection/spec.yaml"
+
+# ---------------------------------------------------------------------------
+# Promotion sequencing (Cycle 322.6 → admin → follow-up PR).
+# Cycle 322.6 ships:
+#   (1) the new `bot-review-settle` workflow,
+#   (2) `scripts/tests/test-bot-review-settle.sh` shell-test suite +
+#       Makefile wiring under `make sage-test-ruleset-scripts`,
+#   (3) the `planned` context entry in this file above,
+#   (4) `merge_group_fast_path` extension to include
+#       bot-review-settle (the merge_group passthrough emits SUCCESS
+#       for required-check inheritance on the synthetic queue commit).
+# It deliberately does NOT promote `bot-review-settle` to `required`
+# for the same reason 318.4 and 322.4 didn't: the audit + verify-
+# rulesets workflows would fail-closed on their own merging commit
+# (live ruleset doesn't yet expect the new context). The promotion
+# can be combined with the 318.4 + 322.4 admin actions in a single
+# `gh api -X PATCH` against ruleset 6076292 if that paired admin
+# work is still pending; otherwise it follows the same shape as
+# the prior post_*_promotion_sequence blocks.
+# ---------------------------------------------------------------------------
+post_322_6_promotion_sequence:
+  step_1:
+    description: "Cycle 322.6 (this PR) merges. Workflow ships as observable but non-required."
+  step_2:
+    description: "Admin updates ruleset 6076292 to add `bot-review-settle` to `required_status_checks`. Can be combined with the 318.4 + 322.4 paired admin work if not yet performed; otherwise a standalone PATCH targeting only the new context."
+    actor: "repository admin"
+    command_hint: "gh api -X PATCH repos/momentiq-ai/sage3c/rulesets/6076292 --input <patched-payload>"
+  step_3:
+    description: "Follow-up PR flips spec.yaml `status: planned → required` for `bot-review-settle`. The audit + verify-rulesets gates remain green because live ruleset now matches."
+    target: "tools/branch-protection/spec.yaml"

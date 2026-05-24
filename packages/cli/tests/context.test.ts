@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 import { loadAgentReviewConfig } from "../src/policy/config.js";
 import { buildReviewPacket } from "../src/trusted-surface/rebind.js";
-import { perShaQualityGatePath } from "../src/evidence.js";
+import { perShaQualityGatePath } from "../src/evidence/index.js";
 import { gitCommonDir, repoRoot } from "../src/git.js";
 import { resolveArtifactRoot, resolveValidationResultPath } from "../src/paths.js";
 

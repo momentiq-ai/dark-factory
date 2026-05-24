@@ -68,6 +68,48 @@ export {
   type BuildPacketOptions,
 } from "./trusted-surface/rebind.js";
 
+// Service #4 — Per-SHA Evidence Store (Phase C boundary)
+export {
+  parseCommitTrailers,
+  getTrailer,
+  perShaQualityGatePath,
+  collectChangedPaths,
+  QUALITY_GATES_SUBDIR,
+  runQualityGates,
+  readQualityGateEvidence,
+  type CommitTrailers,
+  type QualityGateRunOptions,
+  type ReadEvidenceResult,
+} from "./evidence/index.js";
+
+// Service #5 — Cycle-Doc Trailer Validator (Phase C — Python-wrapped)
+export {
+  runValidateCycleDoc,
+  getValidateCycleDocScriptPath,
+  type ValidateCycleDocOptions,
+  type ValidateCycleDocResult,
+} from "./cycle-doc-validator/index.js";
+
+// Service #7 — Branch-Protection Drift Detector (Phase C — Python-wrapped)
+export {
+  runAuditBranchProtection,
+  getAuditBranchProtectionScriptPath,
+  getBundledDefaultSpecPath,
+  type AuditBranchProtectionOptions,
+  type AuditBranchProtectionResult,
+} from "./branch-protection/index.js";
+
+// Service #9 — Cycle Tracker Sync + PR Attribution (Phase C — Python-wrapped)
+export {
+  runSyncCycleTrackers,
+  runAttributePrCycleRef,
+  getSyncCycleTrackersScriptPath,
+  getAttributePrCycleRefScriptPath,
+  type SyncCycleTrackersOptions,
+  type AttributePrCycleRefOptions,
+  type PythonScriptResult,
+} from "./cycle-tracker-sync/index.js";
+
 // Runner — drives the orchestrator end-to-end.
 export {
   runReview,

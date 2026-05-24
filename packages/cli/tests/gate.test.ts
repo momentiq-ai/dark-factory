@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { loadAgentReviewConfig, type LoadedConfig } from "../src/policy/config.js";
-import { perShaQualityGatePath } from "../src/evidence.js";
+import { perShaQualityGatePath } from "../src/evidence/index.js";
 import { evaluateCommitGate } from "../src/policy/gate.js";
 import { commitDiff, commitParent, diffHash, resolveCommit } from "../src/git.js";
 import { resolveArtifactRoot } from "../src/paths.js";

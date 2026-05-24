@@ -3,6 +3,13 @@ node_modules/
 .pnp
 .pnp.js
 
+# Python virtualenvs (e.g., pytest dev environment for Phase C
+# Python-backed services in packages/cli/)
+.venv/
+.venv-*/
+__pycache__/
+*.pyc
+
 # Build output
 dist/
 build/

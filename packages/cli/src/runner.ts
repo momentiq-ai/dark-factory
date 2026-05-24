@@ -1,7 +1,7 @@
 import type { LoadedConfig } from "./policy/config.js";
 import type { AdapterRegistry, CriticReviewOptions } from "./adapters/critic.js";
 import { buildReviewPacket } from "./trusted-surface/rebind.js";
-import { collectChangedPaths } from "./evidence.js";
+import { collectChangedPaths } from "./evidence/index.js";
 import {
   buildRubricContext,
   enforceVerificationRoutes,
@@ -16,7 +16,7 @@ import {
   applyProfileParamOverrides,
   resolveProfileWithConfig,
 } from "./policy/profile.js";
-import { runQualityGates } from "./quality-gates.js";
+import { runQualityGates } from "./evidence/index.js";
 import {
   acquireCommitLock,
   buildAggregate,
