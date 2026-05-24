@@ -1,0 +1,170 @@
+# cycle-doc-validation — reusable workflow shape (cycle 331.1 Phase E).
+#
+# Satisfies the `cycle-doc-validation` required-status-check context in
+# dark-factory's own main1 ruleset (id 16808560) and is published as a
+# reusable workflow for consumers (sage3c / cerebe-platform / external
+# repos) to invoke from their own CI in Phases G/H.
+#
+# Phase E posture: dark-factory has no `docs/roadmap/cycles/` directory
+# of its own — the source of truth for cycle docs lives in sage3c (cycle
+# 331.1 itself is `momentiq-ai/sage3c:docs/roadmap/cycles/cycle331.1-
+# extract-from-sage3c.md`). So dark-factory's own PRs cannot have
+# Cycle:/Issue: trailers tied to dark-factory cycle docs; they instead
+# cite tracking issues on sage3c. The Phase E posture is therefore
+# advisory-on-empty: if dark-factory's PR doesn't have a Cycle: trailer,
+# we don't fail — we just log and pass. Phase G migrates sage3c to
+# `uses: momentiq-ai/dark-factory/.github/workflows/cycle-doc-
+# validation.yml@v0.1.0` and runs the REAL `df validate-cycle-doc`
+# (already extracted to packages/cli/src/cycle-doc-validator/ in Phase C).
+#
+# Dual trigger:
+#   1. `pull_request:` — runs on dark-factory's own PRs so the ruleset
+#      is satisfied here (context = the JOB NAME below).
+#   2. `workflow_call:` — consumers `uses:` this from their own
+#      workflows. Consumer caller-job-id is the first segment of the
+#      resulting context; consumers MUST name their caller job
+#      `cycle-doc-validation:` for the rule to match.
+#
+# Security: PR fields (PR_NUMBER, PR_TITLE, PR_BODY, etc.) flow through
+# env vars before any run script references them, per
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+name: Cycle Doc Validation
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+  merge_group:
+  workflow_call:
+    inputs:
+      cli-version:
+        description: |
+          Reserved for Phase G/H — only 'local' is wired today. See
+          pr-status-check.yml for the same contract.
+        type: string
+        required: false
+        default: 'local'
+      enforce-on-dark-factory:
+        description: |
+          When 'true', run the real `df validate-cycle-doc` even on
+          dark-factory's own PRs (requires PRs cite tracking issues
+          and the validator accepts cross-repo trailers). Default
+          'false' for Phase E — dark-factory has no cycle docs of its
+          own.
+        type: string
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: cycle-doc-validation-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  cycle-doc-validation:
+    # IMPORTANT: this job name is the status-check context surfaced to
+    # the ruleset. Must match `required_status_checks.context:
+    # cycle-doc-validation` exactly.
+    name: cycle-doc-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      REQUESTED_VERSION: ${{ inputs.cli-version || 'local' }}
+      ENFORCE_ON_DF: ${{ inputs.enforce-on-dark-factory || 'false' }}
+      EVENT_NAME: ${{ github.event_name }}
+      REPO_FULL_NAME: ${{ github.repository }}
+    steps:
+      - name: merge_group fast-path
+        if: github.event_name == 'merge_group'
+        run: |
+          {
+            echo "## Cycle Doc Validation — merge_group"
+            echo ""
+            echo "Trailer validation runs on the originating PR; merge_group runs reuse that verdict."
+            echo "(\`pull_request.body\` is not available on merge_group events.)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v4
+        if: env.EVENT_NAME == 'pull_request'
+
+      - name: Setup Node 20
+        if: env.EVENT_NAME == 'pull_request'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install workspace (lockfile-strict)
+        if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION == 'local'
+        run: npm ci
+
+      - name: Build workspace
+        if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION == 'local'
+        run: npm run build --workspaces --if-present
+
+      - name: Reject pinned-version path until Phase B-PUBLISH ships
+        if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION != 'local'
+        run: |
+          set -euo pipefail
+          echo "::error::cli-version='$REQUESTED_VERSION' was requested but the pinned-version install path is not yet wired (cycle 331.1 Phase B-PUBLISH pending)." >&2
+          exit 1
+
+      - name: Setup Python 3.11 (validator backend)
+        # `df validate-cycle-doc` shells out to a Python script extracted in
+        # Phase C — `packages/cli/src/cycle-doc-validator/validate_cycle_doc.py`.
+        # Until Phase E-PORT makes it pure-TS, the workflow needs python3
+        # on PATH.
+        if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION == 'local'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run cycle-doc-validation on dark-factory PRs (no-op by default)
+        # Dark-factory has no cycle docs of its own (the cycle 331.1 doc
+        # lives in sage3c). The default Phase E posture is to NO-OP on
+        # dark-factory's own PRs and pass. To exercise the real validator
+        # against dark-factory PRs (e.g. once dark-factory grows its own
+        # cycle-doc convention), pass `enforce-on-dark-factory: 'true'`
+        # via workflow_call inputs.
+        if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION == 'local' && env.REPO_FULL_NAME == 'momentiq-ai/dark-factory' && env.ENFORCE_ON_DF == 'false'
+        run: |
+          set -euo pipefail
+          echo "cycle-doc-validation: no-op on dark-factory PRs (Phase E — dark-factory has no cycle docs of its own)."
+          echo "  Set inputs.enforce-on-dark-factory='true' to exercise the real validator."
+
+      - name: Run cycle-doc-validation on consumer / enforced PRs
+        # Real path: invoked when (a) workflow_call comes from a consumer
+        # repo (not dark-factory itself), or (b) dark-factory PR passes
+        # enforce-on-dark-factory: 'true'. The validator reads PR
+        # title/body/labels via env vars to avoid command-injection.
+        if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION == 'local' && (env.REPO_FULL_NAME != 'momentiq-ai/dark-factory' || env.ENFORCE_ON_DF == 'true')
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ./packages/cli/dist/cli.js validate-cycle-doc
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## cycle-doc-validation Summary"
+            echo ""
+            if [[ "$JOB_STATUS" == "success" ]]; then
+              echo "cycle-doc-validation passed."
+            else
+              echo "cycle-doc-validation failed — investigate the validator output above."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

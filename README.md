@@ -12,6 +12,70 @@ Pre-launch. Active extraction from `momentiq-ai/sage3c` via [cycle 331](https://
 - `@momentiq/dark-factory-schemas` — JSON Schemas for `darkfactory.yaml` + per-SHA evidence + cycle-doc trailer formats
 - `.github/workflows/*.yml` — reusable GitHub Actions consumers reference via `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@v0.1.0`
 
+## Reusable workflow shapes (Phase E)
+
+Cycle 331.1 Phase E ships five reusable GitHub Actions workflows that satisfy
+both (a) dark-factory's own `main1` ruleset and (b) the consumer-side ruleset
+in sage3c / cerebe-platform / external repos in Phases G/H.
+
+| File                                            | Required-check context     | Phase E behavior                                                                                |
+|-------------------------------------------------|----------------------------|-------------------------------------------------------------------------------------------------|
+| `.github/workflows/pr-status-check.yml`         | `PR Status Check`          | No-op aggregator stub (`df status-check` exits 0).                                              |
+| `.github/workflows/schema-check.yml`            | `schema-check`             | Builds `@momentiq/dark-factory-schemas`; no drift detector wired yet.                           |
+| `.github/workflows/agent-critic.yml`            | `agent-critic`             | Invokes `df critic` stub (exit 0); real Critic Orchestrator lands in Phase F.                   |
+| `.github/workflows/cycle-doc-validation.yml`    | `cycle-doc-validation`     | No-op on dark-factory's own PRs; real validator runs on consumer / `enforce-on-dark-factory`.   |
+| `.github/workflows/branch-protection-audit.yml` | `branch-protection-audit`  | No-op on dark-factory until `BRANCH_PROTECTION_AUDIT_TOKEN` provisioned; fail-closed elsewhere. |
+
+### Consumer-side wiring (Phase G/H)
+
+Consumers `uses:` each workflow from their own CI:
+
+```yaml
+# consumer-repo/.github/workflows/agent-critic.yml
+name: Agent Critic
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+jobs:
+  # IMPORTANT: the caller-job-id below MUST match the consumer's
+  # ruleset context exactly. Reusable workflows produce contexts in
+  # the form `<caller-job-id> / <callee-job-name>` — and most
+  # required-status-check rules match on the caller-job-id.
+  agent-critic:
+    uses: momentiq-ai/dark-factory/.github/workflows/agent-critic.yml@v0.1.0
+    secrets:
+      DOPPLER_SERVICE_TOKEN_SAGE: ${{ secrets.DOPPLER_SERVICE_TOKEN_SAGE }}
+      # OR (for external consumers without Doppler):
+      # CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      # ...
+```
+
+### Versioning
+
+Per cycle 331.1 § Versioning policy, only exact `@vX.Y.Z` tags are supported.
+Consumers MUST pin to a specific version — floating `@v0` / `@v0.1` tags are
+NOT created so the same consumer commit always resolves to a single workflow
+definition + CLI version.
+
+### Phase E posture: stubs, by design
+
+The Phase E workflows ship as STUB SHAPES, not real gates. Several knock-on
+consequences:
+
+- `agent-critic` provides no actual adversarial-critic gating yet. Real
+  Critic Orchestrator wiring lands in Phase F.
+- `cycle-doc-validation` no-ops on dark-factory's own PRs (dark-factory has
+  no cycle docs of its own).
+- `branch-protection-audit` no-ops until `BRANCH_PROTECTION_AUDIT_TOKEN`
+  is provisioned; fails closed elsewhere when the gate is enabled.
+
+The purpose of Phase E is to END THE DOGFOOD CHICKEN-AND-EGG: dark-factory's
+own ruleset requires five status checks that didn't exist on dark-factory's
+own PRs (every Phase A/B/C/D PR had to be admin-merged). After Phase E lands,
+the same checks exist as actual workflows, the ruleset is satisfied by their
+green outcomes, and the normal merge queue takes over.
+
 ## What's where (during extraction)
 
 The substrate is currently being extracted from sage3c. Phases:

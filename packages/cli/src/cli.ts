@@ -86,7 +86,14 @@ function printHelp(meta: PackageMeta): void {
       "  df audit stats              Summarize the _runs.ndjson audit trail (service #8)",
       "  df admit-pr                 Classify a PR as plan vs code (service #6)",
       "",
-      "Subcommands (coming in cycle 331.1 Phase E):",
+      "Subcommands (Phase E — reusable-workflow stubs, exit 0 with no-op):",
+      "  df status-check             No-op aggregator stub (PR Status Check gate)",
+      "  df critic                   No-op critic stub (agent-critic gate); real",
+      "                              orchestration lands when sage3c migrates in",
+      "                              Phase G and exercises the wired Critic",
+      "                              Orchestrator service. See cycle 331.1 Phase E.",
+      "",
+      "Subcommands (coming in cycle 331.1 Phase F+):",
       "  df review                 Run the multi-critic review for the current commit",
       "  df gate                   Evaluate gate verdict for the current commit",
       "  df doctor                 Diagnose installation, env, and config",
@@ -94,7 +101,9 @@ function printHelp(meta: PackageMeta): void {
       "Each Phase C subcommand passes its remaining argv through to the bundled",
       "Python script verbatim; run `df <subcommand> --help` for full flags.",
       "Phase D subcommands parse flags directly — see `df audit --help` and",
-      "`df admit-pr --help`.",
+      "`df admit-pr --help`. Phase E stubs accept any args and exit 0 with a",
+      "structured no-op message so the reusable workflows can satisfy dark-",
+      "factory's own ruleset while real implementations land incrementally.",
       "",
       "System requirements:",
       "  Node.js >=20",
@@ -106,7 +115,10 @@ function printHelp(meta: PackageMeta): void {
       "  import { runReview, evaluateCommitGate, buildReviewPacket }",
       `    from \"${name}\";`,
       "",
-      "Status: 0.1.0-alpha.2 — Phase D extracts services #6/#8 (pure-TS).",
+      "Status: 0.1.0-alpha.3 — Phase E ships reusable workflow shapes +",
+      "        stub subcommands (`status-check`, `critic`) so dark-factory's",
+      "        own main1 ruleset is satisfied by actual CI workflows. Real",
+      "        critic orchestration lands in Phase F.",
       "        Pure-TS port of #5/#7/#9 tracked as Phase C-PORT follow-up.",
       "",
       "Docs:   https://github.com/momentiq-ai/dark-factory",
@@ -163,6 +175,46 @@ const PHASE_C_SUBCOMMANDS = new Set([
 ]);
 
 const PHASE_D_SUBCOMMANDS = new Set(["audit", "admit-pr"]);
+
+// Phase E reusable-workflow stubs. These intentionally exit 0 with a
+// structured no-op message so the five reusable workflow shapes (matching
+// dark-factory's main1 ruleset contexts: PR Status Check, schema-check,
+// agent-critic, cycle-doc-validation, branch-protection-audit) can satisfy
+// the ruleset on dark-factory's own PRs while real implementations land
+// incrementally (Phase F: critic, gate; later phases: schema-check parity
+// if dark-factory ever ships schemas).
+//
+// `status-check` is a pure aggregator — it never has logic to add. Other
+// stubs (`critic`) will be promoted to real subcommands in Phase F.
+//
+// Caveat: gates wired to exit-0 stubs do NOT enforce anything yet. The
+// dogfood value here is shape — once Phase F wires real critic
+// orchestration, this stub gets replaced and the gate becomes meaningful.
+// Cycle 331.1 Phase E intentionally accepts this transient posture per the
+// brief; the ruleset would otherwise reject EVERY PR (chicken-and-egg).
+const PHASE_E_SUBCOMMANDS = new Set(["status-check", "critic"]);
+
+function cmdStatusCheck(_rest: string[]): number {
+  // Aggregator gate — no logic of its own. Future Phase F may decide to
+  // promote this to a real aggregator that reads other workflow outputs;
+  // for Phase E the gate exists solely to satisfy the `PR Status Check`
+  // ruleset context.
+  process.stdout.write("df status-check: no-op stub (Phase E) — exit 0\n");
+  return 0;
+}
+
+function cmdCritic(_rest: string[]): number {
+  // Phase F will wire this to the existing Critic Orchestrator service
+  // already extracted into `packages/cli/src/` (Phase B). For now the
+  // stub satisfies the `agent-critic` ruleset context on dark-factory's
+  // own PRs without running real critics — the dogfood loop closes when
+  // F lands.
+  process.stdout.write(
+    "df critic: no-op stub (Phase E) — exit 0\n" +
+      "  Real Critic Orchestrator wiring lands in cycle 331.1 Phase F.\n",
+  );
+  return 0;
+}
 
 // ---------------------------------------------------------------------------
 // Phase D: `df audit stats` — service #8 (audit/compliance trail).
@@ -419,7 +471,11 @@ async function main(argv: string[]): Promise<number> {
     }
     // If a subcommand is present alongside --help, forward to Python.
     const sub0 = args[0] ?? "";
-    if (!PHASE_C_SUBCOMMANDS.has(sub0) && !PHASE_D_SUBCOMMANDS.has(sub0)) {
+    if (
+      !PHASE_C_SUBCOMMANDS.has(sub0) &&
+      !PHASE_D_SUBCOMMANDS.has(sub0) &&
+      !PHASE_E_SUBCOMMANDS.has(sub0)
+    ) {
       printHelp(meta);
       return 0;
     }
@@ -439,6 +495,12 @@ async function main(argv: string[]): Promise<number> {
   }
   if (sub === "admit-pr") {
     return cmdAdmitPr(rest);
+  }
+  if (sub === "status-check") {
+    return cmdStatusCheck(rest);
+  }
+  if (sub === "critic") {
+    return cmdCritic(rest);
   }
   return notImplemented(sub);
 }

@@ -1,0 +1,157 @@
+# agent-critic — reusable workflow shape (cycle 331.1 Phase E).
+#
+# Satisfies the `agent-critic` required-status-check context in dark-
+# factory's own main1 ruleset (id 16808560) and is published as a
+# reusable workflow for consumers (sage3c / cerebe-platform / external
+# repos) to invoke from their own CI in Phases G/H.
+#
+# Phase E posture: this invokes `df critic`, which is a Phase-E STUB
+# that exits 0 (see packages/cli/src/cli.ts). Real critic orchestration
+# wires up the Critic Orchestrator service (already extracted in Phase B
+# to packages/cli/src/) in Phase F. So this workflow currently provides
+# the GATE SHAPE but not the real critic gating. The dogfood chicken-
+# and-egg (admin-merge required for Phases A/B/C/D because dark-factory
+# had no CI to satisfy its own ruleset) ends here: this and the four
+# sibling workflows turn green by being present, the ruleset matches by
+# context name, and Phases F/G/H can land via the normal merge queue.
+#
+# Dual trigger:
+#   1. `pull_request:` — runs on dark-factory's own PRs so the ruleset
+#      is satisfied here (context = the JOB NAME below).
+#   2. `workflow_call:` — consumers `uses:` this from their own
+#      workflows. Consumer caller-job-id is the first segment of the
+#      resulting context; consumers MUST name their caller job
+#      `agent-critic:` for the rule to match.
+#
+# Secrets surface (declared at workflow_call level for forward-
+# compatibility with Phase F — currently NOT read by the Phase E stub):
+#   - DOPPLER_SERVICE_TOKEN_SAGE: internal-momentiq path (sage3c /
+#     cerebe-platform); fetches vendor critic keys via `doppler secrets
+#     get` at runtime. See cycle 331.1 § Reusable workflow shapes.
+#   - CURSOR_API_KEY / CODEX_API_KEY / GEMINI_API_KEY / XAI_API_KEY:
+#     external-consumer path. Reachable when the Doppler token is empty.
+#     None are read in Phase E (stub exits 0 without consulting any
+#     vendor); declared here so the workflow_call contract is stable
+#     and consumers can wire them up ahead of Phase F.
+#   - MOMENTIQ_NPM_READ_TOKEN: required only after Phase B-PUBLISH for
+#     external consumers in the 331.1/331.2 private-scope window;
+#     becomes optional post-331.3 OSS-flip. Not used in Phase E.
+#
+# Security: all input values flow through env vars (REQUESTED_VERSION)
+# before any run script references them, per
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+name: Agent Critic
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+  workflow_call:
+    inputs:
+      cli-version:
+        description: |
+          Reserved for Phase G/H — only 'local' is wired today. See
+          pr-status-check.yml for the same contract.
+        type: string
+        required: false
+        default: 'local'
+      darkfactory_config_path:
+        description: |
+          Path in the consumer repo to darkfactory.yaml. Forwarded as
+          `--config` to the underlying `df critic` invocation when Phase F
+          wires real critic orchestration; ignored by the Phase E stub.
+        type: string
+        required: false
+        default: 'darkfactory.yaml'
+    secrets:
+      DOPPLER_SERVICE_TOKEN_SAGE:
+        description: |
+          Internal-momentiq path: fetches MOMENTIQ_NPM_READ_TOKEN and
+          vendor critic keys via Doppler at runtime. Not read by the
+          Phase E stub; declared here so Phase F can pick it up without
+          a contract change.
+        required: false
+      MOMENTIQ_NPM_READ_TOKEN:
+        description: |
+          Read-token for the @momentiq npm scope (private 331.1/331.2
+          window). Becomes optional post-331.3 OSS-flip.
+        required: false
+      CURSOR_API_KEY:
+        description: |
+          Vendor critic key — external-consumer path. Required UNLESS
+          DOPPLER_SERVICE_TOKEN_SAGE is provided.
+        required: false
+      CODEX_API_KEY:
+        required: false
+      GEMINI_API_KEY:
+        required: false
+      XAI_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: agent-critic-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  agent-critic:
+    # IMPORTANT: this job name is the status-check context surfaced to
+    # the ruleset. Must match `required_status_checks.context:
+    # agent-critic` exactly.
+    name: agent-critic
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      REQUESTED_VERSION: ${{ inputs.cli-version || 'local' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install workspace (lockfile-strict)
+        if: env.REQUESTED_VERSION == 'local'
+        run: npm ci
+
+      - name: Build workspace
+        if: env.REQUESTED_VERSION == 'local'
+        run: npm run build --workspaces --if-present
+
+      - name: Reject pinned-version path until Phase B-PUBLISH ships
+        if: env.REQUESTED_VERSION != 'local'
+        run: |
+          set -euo pipefail
+          echo "::error::cli-version='$REQUESTED_VERSION' was requested but the pinned-version install path is not yet wired (cycle 331.1 Phase B-PUBLISH pending)." >&2
+          exit 1
+
+      - name: Run critic stub (Phase E)
+        # Phase E posture: `df critic` is a no-op stub that exits 0
+        # (see packages/cli/src/cli.ts `cmdCritic`). Phase F replaces
+        # this with real Critic Orchestrator invocation. Until then,
+        # this gate exists for SHAPE and to break the dogfood chicken-
+        # and-egg — it provides NO real adversarial-critic gating yet.
+        if: env.REQUESTED_VERSION == 'local'
+        run: ./packages/cli/dist/cli.js critic
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## agent-critic Summary"
+            echo ""
+            if [[ "$JOB_STATUS" == "success" ]]; then
+              echo "agent-critic stub passed (Phase E — no real critic invoked; lands in Phase F)."
+            else
+              echo "agent-critic stub failed — investigate workspace install or build."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
