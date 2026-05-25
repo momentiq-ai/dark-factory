@@ -164,6 +164,7 @@ export async function runRetryLoop(args: {
       } catch (err) {
         if ((err as Error).name === "AbortError") {
           aborted = true;
+          attempt++;
           break;
         }
         throw err;
@@ -245,4 +246,3 @@ export async function sleepForRetry(idx: number, signal: AbortSignal | undefined
     if (signal) signal.addEventListener("abort", onAbort, { once: true });
   });
 }
-
