@@ -25,6 +25,14 @@
 #      resulting context; consumers MUST name their caller job
 #      `cycle-doc-validation:` for the rule to match.
 #
+# Phase B-PUBLISH-wf (cycle 331.1): the `cli-version != 'local'` branch
+# installs the pinned CLI from npm using `npm install` inside an isolated
+# $RUNNER_TEMP dir. See pr-status-check.yml header for the same pattern
+# and the deferred-hardening note re: full integrity-baked `npm pack`.
+# The validate-cycle-doc subcommand wraps a Python script bundled in
+# the CLI's `dist/cycle-doc-validator/`, so the consumer path still
+# requires `actions/setup-python@v5`.
+#
 # Security: PR fields (PR_NUMBER, PR_TITLE, PR_BODY, etc.) flow through
 # env vars before any run script references them, per
 # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
@@ -40,8 +48,10 @@ on:
     inputs:
       cli-version:
         description: |
-          Reserved for Phase G/H — only 'local' is wired today. See
-          pr-status-check.yml for the same contract.
+          CLI version to install. 'local' (default) builds from the
+          checked-out workspace. Consumers pass an explicit semver tag
+          (e.g. '0.1.0-alpha.4') — see pr-status-check.yml for the same
+          contract.
         type: string
         required: false
         default: 'local'
@@ -55,6 +65,12 @@ on:
         type: string
         required: false
         default: 'false'
+    secrets:
+      MOMENTIQ_NPM_READ_TOKEN:
+        description: |
+          Read-token for the @momentiq npm scope. Required when
+          `cli-version` != 'local'. Becomes optional post-331.3.
+        required: false
 
 permissions:
   contents: read
@@ -105,24 +121,49 @@ jobs:
         if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION == 'local'
         run: npm run build
 
-      - name: Reject pinned-version path until Phase B-PUBLISH ships
+      - name: Install @momentiq/dark-factory-cli (consumer path)
+        # Phase B-PUBLISH-wf consumer install — same pattern as
+        # pr-status-check.yml. See that file's header for the deferred-
+        # hardening note re: full integrity-baked `npm pack`.
         if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION != 'local'
+        env:
+          NPM_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
         run: |
           set -euo pipefail
-          echo "::error::cli-version='$REQUESTED_VERSION' was requested but the pinned-version install path is not yet wired (cycle 331.1 Phase B-PUBLISH pending)." >&2
-          exit 1
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::error::MOMENTIQ_NPM_READ_TOKEN secret required for the consumer install path (cli-version='$REQUESTED_VERSION')." >&2
+            exit 1
+          fi
+          NPMRC="$(mktemp)"
+          trap 'rm -f "$NPMRC"' EXIT
+          chmod 600 "$NPMRC"
+          printf '@momentiq:registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$NPMRC"
+          INSTALL_DIR="$RUNNER_TEMP/df-cli"
+          mkdir -p "$INSTALL_DIR"
+          cd "$INSTALL_DIR"
+          cat > package.json <<'EOF'
+          {"name": "df-cli-runtime", "version": "0.0.0", "private": true}
+          EOF
+          npm install --userconfig "$NPMRC" --no-audit --no-fund --ignore-scripts \
+            "@momentiq/dark-factory-cli@${REQUESTED_VERSION}"
+          DF_CLI="$INSTALL_DIR/node_modules/.bin/df"
+          if [ ! -x "$DF_CLI" ]; then
+            echo "::error::Installed @momentiq/dark-factory-cli@$REQUESTED_VERSION but binary not found at $DF_CLI." >&2
+            exit 1
+          fi
+          echo "DF_CLI=$DF_CLI" >> "$GITHUB_ENV"
 
       - name: Setup Python 3.11 (validator backend)
-        # `df validate-cycle-doc` shells out to a Python script extracted in
-        # Phase C — `packages/cli/src/cycle-doc-validator/validate_cycle_doc.py`.
-        # Until Phase E-PORT makes it pure-TS, the workflow needs python3
-        # on PATH.
-        if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION == 'local'
+        # `df validate-cycle-doc` shells out to a Python script bundled in
+        # the CLI under `dist/cycle-doc-validator/validate_cycle_doc.py`
+        # (Phase C extraction from sage3c). Until Phase E-PORT makes it
+        # pure-TS, both the local and consumer paths need python3 on PATH.
+        if: env.EVENT_NAME == 'pull_request'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Run cycle-doc-validation on dark-factory PRs (no-op by default)
+      - name: Run cycle-doc-validation on dark-factory PRs (no-op by default, local path)
         # Dark-factory has no cycle docs of its own (the cycle 331.1 doc
         # lives in sage3c). The default Phase E posture is to NO-OP on
         # dark-factory's own PRs and pass. To exercise the real validator
@@ -135,7 +176,7 @@ jobs:
           echo "cycle-doc-validation: no-op on dark-factory PRs (Phase E — dark-factory has no cycle docs of its own)."
           echo "  Set inputs.enforce-on-dark-factory='true' to exercise the real validator."
 
-      - name: Run cycle-doc-validation on consumer / enforced PRs
+      - name: Run cycle-doc-validation on consumer / enforced PRs (local path)
         # Real path: invoked when (a) workflow_call comes from a consumer
         # repo (not dark-factory itself), or (b) dark-factory PR passes
         # enforce-on-dark-factory: 'true'. The validator reads PR
@@ -152,6 +193,33 @@ jobs:
         run: |
           set -euo pipefail
           node ./packages/cli/dist/cli.js validate-cycle-doc
+
+      - name: Run cycle-doc-validation (consumer path)
+        # Consumer path: invoke the installed CLI binary. Consumers
+        # invoking this reusable workflow are by definition non-dark-
+        # factory repos (or dark-factory itself running its dogfood with
+        # enforce-on-dark-factory='true'), so we always run the real
+        # validator here.
+        if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION != 'local' && (env.REPO_FULL_NAME != 'momentiq-ai/dark-factory' || env.ENFORCE_ON_DF == 'true')
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          "$DF_CLI" validate-cycle-doc
+
+      - name: Run cycle-doc-validation no-op (consumer path on dark-factory)
+        # Mirrors the local-path no-op branch for consistency, in case
+        # dark-factory's own CI is migrated to `cli-version: '0.1.0-...'`.
+        if: env.EVENT_NAME == 'pull_request' && env.REQUESTED_VERSION != 'local' && env.REPO_FULL_NAME == 'momentiq-ai/dark-factory' && env.ENFORCE_ON_DF == 'false'
+        run: |
+          set -euo pipefail
+          echo "cycle-doc-validation: no-op on dark-factory PRs (consumer path; enforce-on-dark-factory='false')."
 
       - name: Summary
         if: always()

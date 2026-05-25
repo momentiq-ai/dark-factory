@@ -45,6 +45,21 @@
 #     HIGH fix. Failure mode is FAIL CLOSED when the gate is enabled
 #     in config AND the token is missing.
 #
+# Phase B-PUBLISH-wf (cycle 331.1): the `cli-version != 'local'` branch
+# installs the pinned CLI from npm using `npm install` inside an isolated
+# $RUNNER_TEMP dir. See pr-status-check.yml header for the same pattern
+# and the deferred-hardening note re: full integrity-baked `npm pack`.
+# The audit-branch-protection subcommand wraps a Python script bundled
+# in the CLI's `dist/branch-protection/`, so the consumer path still
+# requires `actions/setup-python@v5`.
+#
+# Consumer token naming: BRANCH_PROTECTION_AUDIT_TOKEN is kept as the
+# `workflow_call.secrets` name for forward-compat with consumers that
+# mint their App installation token however they prefer (e.g. sage3c
+# mints via `CI_BOT_APP_ID` + `CI_BOT_PRIVATE_KEY` in the caller
+# workflow and passes the resulting installation token in). This keeps
+# the reusable contract simple: one pre-minted token in, audit out.
+#
 # Security: all input values flow through env vars before any run script
 # references them, per
 # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
@@ -63,8 +78,10 @@ on:
     inputs:
       cli-version:
         description: |
-          Reserved for Phase G/H — only 'local' is wired today. See
-          pr-status-check.yml for the same contract.
+          CLI version to install. 'local' (default) builds from the
+          checked-out workspace. Consumers pass an explicit semver tag
+          (e.g. '0.1.0-alpha.4') — see pr-status-check.yml for the same
+          contract.
         type: string
         required: false
         default: 'local'
@@ -85,6 +102,11 @@ on:
           when `gate-enabled: 'true'` (the default). The default-Actions
           `GITHUB_TOKEN` does NOT have Administration permissions and
           cannot substitute (cycle 331.1 § codex iter-final-N+2 HIGH).
+        required: false
+      MOMENTIQ_NPM_READ_TOKEN:
+        description: |
+          Read-token for the @momentiq npm scope. Required when
+          `cli-version` != 'local'. Becomes optional post-331.3.
         required: false
 
 permissions:
@@ -136,19 +158,55 @@ jobs:
         if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION == 'local'
         run: npm run build
 
-      - name: Reject pinned-version path until Phase B-PUBLISH ships
+      - name: Install @momentiq/dark-factory-cli (consumer path)
+        # Phase B-PUBLISH-wf consumer install — same pattern as
+        # pr-status-check.yml. See that file's header for the deferred-
+        # hardening note re: full integrity-baked `npm pack`.
         if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION != 'local'
+        env:
+          NPM_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
         run: |
           set -euo pipefail
-          echo "::error::cli-version='$REQUESTED_VERSION' was requested but the pinned-version install path is not yet wired (cycle 331.1 Phase B-PUBLISH pending)." >&2
-          exit 1
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::error::MOMENTIQ_NPM_READ_TOKEN secret required for the consumer install path (cli-version='$REQUESTED_VERSION')." >&2
+            exit 1
+          fi
+          NPMRC="$(mktemp)"
+          trap 'rm -f "$NPMRC"' EXIT
+          chmod 600 "$NPMRC"
+          printf '@momentiq:registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$NPMRC"
+          INSTALL_DIR="$RUNNER_TEMP/df-cli"
+          mkdir -p "$INSTALL_DIR"
+          cd "$INSTALL_DIR"
+          cat > package.json <<'EOF'
+          {"name": "df-cli-runtime", "version": "0.0.0", "private": true}
+          EOF
+          npm install --userconfig "$NPMRC" --no-audit --no-fund --ignore-scripts \
+            "@momentiq/dark-factory-cli@${REQUESTED_VERSION}"
+          DF_CLI="$INSTALL_DIR/node_modules/.bin/df"
+          if [ ! -x "$DF_CLI" ]; then
+            echo "::error::Installed @momentiq/dark-factory-cli@$REQUESTED_VERSION but binary not found at $DF_CLI." >&2
+            exit 1
+          fi
+          echo "DF_CLI=$DF_CLI" >> "$GITHUB_ENV"
+
+      - name: Setup Python 3.11 (audit backend, consumer path)
+        # `df audit-branch-protection` shells out to a Python script
+        # bundled in the CLI under `dist/branch-protection/`
+        # (Phase C extraction from sage3c). Until pure-TS port lands,
+        # the consumer path needs python3 on PATH.
+        if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION != 'local'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Validate audit credential against gate config
         # Implements the cycle-doc § "Failure mode is FAIL CLOSED in-job"
         # invariant. When the audit gate is enabled (default) and the
         # token is missing, exit non-zero with the structured error.
         # When the gate is explicitly disabled via input, log and pass.
-        if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION == 'local'
+        # Path-independent: same shell logic for local and consumer paths.
+        if: env.EVENT_NAME != 'merge_group'
         run: |
           set -euo pipefail
           if [[ "$GATE_ENABLED" == "false" ]]; then
@@ -168,7 +226,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run audit (real path, token present)
+      - name: Run audit (local path, token present)
         # Real audit invokes the Phase C-extracted service. The Python
         # backend reads $GH_TOKEN — set it from the workflow_call secret.
         # Skipped today on dark-factory because the token isn't
@@ -181,6 +239,16 @@ jobs:
         run: |
           set -euo pipefail
           node ./packages/cli/dist/cli.js audit-branch-protection
+
+      - name: Run audit (consumer path, token present)
+        # Consumer path: invoke the installed CLI binary. Same env
+        # contract as the local-path audit step.
+        if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION != 'local' && env.GATE_ENABLED == 'true' && env.AUDIT_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.BRANCH_PROTECTION_AUDIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          "$DF_CLI" audit-branch-protection
 
       - name: Summary
         if: always()
