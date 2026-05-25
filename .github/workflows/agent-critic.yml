@@ -214,6 +214,47 @@ jobs:
           set -euo pipefail
           "$DF_CLI" critic
 
+      - name: Upload critic evidence artifact
+        # sage3c#2213 — close the evidence-loss hole. `df critic` writes
+        # per-critic verdicts + error.message/error.code to
+        # `.git/agent-reviews/<sha>.json` and run telemetry to
+        # `.git/agent-reviews/_runs.ndjson`. Without this step those files
+        # are destroyed at runner teardown, so a per-critic `review()`
+        # error (e.g. taxpilot2a#2213: 3 of 4 critics errored, exact
+        # strings unrecoverable) is undiagnosable after the fact — the CI
+        # log shows only `<id>: error — findings=0`.
+        #
+        # `if: always()` so the evidence is uploaded even when the critic
+        # job concludes error/failure (the whole point — degraded runs are
+        # the ones worth post-mortem). `if-no-files-found: warn` (never
+        # error) keeps the upload non-blocking, matching `df critic`'s
+        # degrade-and-pass posture: a missing artifact must not turn the
+        # gate red.
+        #
+        # Secret safety: the uploaded JSON/NDJSON carry findings, verdicts,
+        # and SDK error strings only — no API keys (the per-SHA artifact's
+        # `criticResults[].error` is `{message, code, retryable,
+        # retryCount, rawSamplePath}`; `rawSamplePath` is a path, not
+        # content; raw SDK output lands ONLY in the `diagnostics/` SUBDIR
+        # — not matched by the non-recursive `*.json` glob below — and is
+        # written through `redactSecrets()`). Artifacts inherit the running
+        # repo's visibility, so on a consumer's private repo this evidence
+        # stays private (intended consumer-scoped behavior).
+        #
+        # Glob note: matches the default `.agent-review/config.json`
+        # (`git.artifactDir: "agent-reviews"`, `artifactScope:
+        # "git-common-dir"`), which resolves to `.git/agent-reviews/` for
+        # a fresh CI checkout (git-common-dir == `.git` outside a worktree).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-critic-evidence-${{ github.sha }}
+          path: |
+            .git/agent-reviews/*.json
+            .git/agent-reviews/_runs.ndjson
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Summary
         if: always()
         env:

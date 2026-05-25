@@ -37,6 +37,7 @@
 import { spawnSync } from "node:child_process";
 import {
   accessSync,
+  appendFileSync,
   constants as fsConstants,
   existsSync,
   readFileSync,
@@ -71,6 +72,7 @@ import {
 // path). Phase B-PUBLISH-pkg (cycle 331.1, alpha.5): see
 // https://github.com/momentiq-ai/dark-factory/pull/<this-pr>.
 import { loadAgentReviewConfig, type LoadedConfig } from "./policy/config.js";
+import { buildCriticReport } from "./report.js";
 import { runReview, runCommitGate } from "./runner.js";
 import { resolveArtifactDir, telemetryPath } from "./paths.js";
 // Phase F-LOCAL — hook-facing subcommand support.
@@ -412,6 +414,22 @@ async function buildDefaultAdapterRegistry(): Promise<AdapterRegistry> {
   return registry;
 }
 
+// sage3c#2213 — append a markdown block to the GitHub Actions run summary
+// when running under CI. No-op (and never throws) when GITHUB_STEP_SUMMARY
+// is unset (local runs) or the append fails — surfacing the per-critic
+// report is best-effort observability and must not perturb `df critic`'s
+// degrade-and-pass exit-0 posture. The path is provided by the runner per
+// the Actions contract; we trust it the same way `actions/*` steps do.
+function appendStepSummary(markdown: string): void {
+  const summaryPath = process.env["GITHUB_STEP_SUMMARY"];
+  if (!summaryPath) return;
+  try {
+    appendFileSync(summaryPath, markdown, "utf8");
+  } catch {
+    // best-effort — never let a summary-write failure change the gate outcome.
+  }
+}
+
 async function cmdCritic(rest: string[]): Promise<number> {
   if (rest.includes("--help") || rest.includes("-h")) {
     process.stdout.write(
@@ -464,32 +482,15 @@ async function cmdCritic(rest: string[]): Promise<number> {
       telemetry: sink,
     });
 
-    const verdict = outcome.artifact.gateVerdict ?? "(no verdict)";
-    const reviewedSha = outcome.artifact.commit;
-    const findingCount = outcome.artifact.criticResults.reduce(
-      (acc, r) => acc + r.findings.length,
-      0,
-    );
-    const criticSummaries = outcome.artifact.criticResults
-      .map(
-        (r) =>
-          `    ${r.criticId}: ${r.status}` +
-          (r.verdict ? ` (${r.verdict})` : "") +
-          ` — findings=${r.findings.length}`,
-      )
-      .join("\n");
-
-    process.stdout.write(
-      [
-        `df critic: review complete for ${reviewedSha}`,
-        `  verdict: ${verdict}`,
-        `  total findings: ${findingCount}`,
-        `  per-critic:`,
-        criticSummaries,
-        `  artifact: ${outcome.paths.jsonPath}`,
-        "",
-      ].join("\n"),
-    );
+    // sage3c#2213 — surface per-critic errors + a loud degradation
+    // warning. `buildCriticReport` is pure; it turns the artifact's
+    // criticResults into a stdout block (now naming each errored
+    // critic's error.message/error.code, which previously lived ONLY in
+    // the per-SHA JSON that runner teardown destroys) and a parallel
+    // $GITHUB_STEP_SUMMARY markdown block.
+    const report = buildCriticReport(outcome.artifact, outcome.paths.jsonPath);
+    process.stdout.write(report.stdout);
+    appendStepSummary(report.stepSummary);
     return 0;
   } catch (err) {
     // Degrade-and-pass. See the design comment above the function.
