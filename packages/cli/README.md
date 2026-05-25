@@ -45,11 +45,11 @@ critic / aggregator logic lands in Phase F.
 
 ## Status
 
-`0.1.0-alpha.3` — extracted from `momentiq-ai/sage3c:tools/agent-review/` +
-`scripts/ci/` per cycle 331.1 Phases B, C, D, and E. Library API is stable;
-the binary's `review`/`gate`/`doctor` subcommands are still stubs (Phase F);
-the Phase E stubs (`status-check`, `critic`) intentionally exit 0 so the
-reusable workflow shapes can break the dogfood chicken-and-egg.
+`0.1.0-alpha.6` — extracted from `momentiq-ai/sage3c:tools/agent-review/` +
+`scripts/ci/` per cycle 331.1 Phases B–F-LOCAL. Library API is stable;
+binary subcommands cover the full hook-facing surface (review, gate-push,
+doctor, gates, stats) under the subscription cost model. The Phase F
+`df critic` subcommand is the CI cold-path API-key version.
 
 ## Install
 
@@ -98,6 +98,14 @@ df attribute-pr  # env-driven; needs PR_NUMBER, PR_NODE_ID, PR_BODY_FILE, PROJEC
 df audit stats --path .git/agent-reviews/_runs.ndjson
 df admit-pr --files-stdin   # newline-separated file paths on stdin
 df admit-pr --files docs/roadmap/cycles/cycle331.md,packages/cli/src/cli.ts
+
+# Phase F-LOCAL hook-facing subcommands (subscription cost model).
+df review --commit HEAD --profile local --foreground
+df gate-push                          # local pre-push, reads stdin
+df gate-push --commit HEAD --ci       # CI replay
+df doctor --profile local             # env + per-adapter auth check
+df gates                              # static gates, no LLM
+df stats                              # alias for `df audit stats`
 ```
 
 > **Note on `--use-bundled-default-spec`**: the bundled `spec-default.yaml`
@@ -109,11 +117,131 @@ df admit-pr --files docs/roadmap/cycles/cycle331.md,packages/cli/src/cli.ts
 > against an arbitrary repo will surface drift against contexts that
 > don't exist there.
 
-The Phase F subcommands (`review`, `gate`, `doctor`) are stubbed and exit 2
-with a "not implemented" message pointing at the library API. The Phase E
-stubs (`status-check`, `critic`) intentionally exit 0 so the five reusable
-workflows can satisfy dark-factory's own ruleset while real critic
-orchestration lands in Phase F.
+## For consumer repos — hook wiring + subscription cost model
+
+The Phase F-LOCAL subcommands (`review`, `gate-push`, `doctor`, `gates`,
+`stats`) are designed to power consumer repos' `.husky/post-commit` and
+`.husky/pre-push` hooks. The **cost model** is critical: per-commit critic
+invocations from API tokens cost $1000s/week on a busy repo, while
+subscription-auth invocations (using the developer's existing Cursor /
+Codex / Claude CLI logins) are flat-rate.
+
+### Subscription auth — what runs on each git push
+
+| Subcommand | Hook | Cost model |
+| --- | --- | --- |
+| `df review` | `.husky/post-commit` (background) | **Subscription** — consumes Cursor / Codex / Claude CLI logins via the active profile's `auth` pins. No API spend by default. |
+| `df gate-push` | `.husky/pre-push` | Free — reads pre-existing artifacts, no LLM calls. |
+| `df doctor` | None (operator-run) | Free. Validates that per-adapter auth source is reachable. |
+| `df gates` | None (operator-run) | Free. Runs static quality gates per `validation.requiredQualityGates`. |
+| `df stats` | None (operator-run) | Free. Reads `.git/agent-reviews/_runs.ndjson`. |
+
+CI cold-path (the 4 vendor API keys: `CURSOR_API_KEY`, `CODEX_API_KEY`,
+`GEMINI_API_KEY`, `XAI_API_KEY`) is intentionally the fallback only —
+used when:
+
+- The first PR on a fresh repo runs critic before any developer has run
+  hooks locally.
+- A hook bypass landed and the CI gate needs to re-evaluate.
+- The developer hasn't logged in to a vendor CLI yet
+  (`cursor login` / `codex login` / Claude desktop OAuth).
+
+### `.agent-review/config.json` — the profile that pins subscription auth
+
+```json
+{
+  "version": 2,
+  "critics": [
+    { "id": "cursor-local-chief-engineer", "adapter": "cursor-sdk", ... },
+    { "id": "codex-local-chief-engineer", "adapter": "codex-sdk", ... }
+  ],
+  "profiles": {
+    "local": {
+      "criticIds": ["cursor-local-chief-engineer", "codex-local-chief-engineer"],
+      "quorum": 1,
+      "auth": {
+        "codex-local-chief-engineer": "chatgpt"
+      }
+    },
+    "cloud": {
+      "criticIds": ["cursor-local-chief-engineer", "codex-local-chief-engineer"],
+      "quorum": 2,
+      "auth": {
+        "codex-local-chief-engineer": "api"
+      }
+    }
+  }
+}
+```
+
+The `local` profile pins `codex` to `"chatgpt"` — the Codex SDK will use
+`~/.codex/auth.json` (from `codex login`) and **NOT** fall back to
+`CODEX_API_KEY` even if it's set in env. This is the firewall against
+accidental API-token billing.
+
+`df doctor --profile local` validates the configured subscription source
+is reachable. Run it after first-time setup.
+
+### Sample `.husky/post-commit`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${AGENT_REVIEW_SKIP:-}" == "1" ]]; then
+  echo "df: skipped by AGENT_REVIEW_SKIP=1"
+  exit 0
+fi
+SHA="$(git rev-parse HEAD)"
+COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)"
+mkdir -p "${COMMON_DIR}/agent-reviews"
+LOG_FILE="${COMMON_DIR}/agent-reviews/post-commit.log"
+# Detached background invocation — does not block the commit.
+AGENT_REVIEW_PROFILE=local nohup npx df review --commit "${SHA}" \
+  >"${LOG_FILE}" 2>&1 </dev/null &
+disown || true
+echo "df: review started for ${SHA:0:12} (log: ${LOG_FILE})"
+```
+
+### Sample `.husky/pre-push`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${AGENT_REVIEW_BYPASS:-}" ]]; then
+  echo "df: pre-push gate BYPASSED — reason: ${AGENT_REVIEW_BYPASS}" >&2
+  exit 0
+fi
+npx df gate-push --profile local
+```
+
+### Doppler bootstrap (optional)
+
+For repos that use Doppler to manage `DOPPLER_TOKEN`, place it in
+`<main-checkout>/.env` and the bootstrap loader will hoist it from any
+worktree:
+
+```bash
+echo 'DOPPLER_TOKEN=dp.st.dev.…' > <main-checkout>/.env
+chmod 600 <main-checkout>/.env
+```
+
+The default allowlist is **just `DOPPLER_TOKEN`**. Consumers that use
+project-scoped service-token vars (e.g. `DOPPLER_SERVICE_TOKEN_ACME`) can
+pass a custom allowlist to `loadDopplerBootstrapEnv()` via the library
+API — see `packages/cli/src/doppler-bootstrap.ts` for the
+`serviceTokenAlias` parameter that bridges to `DOPPLER_TOKEN`.
+
+### First-time setup checklist
+
+1. `npm install --ignore-scripts @momentiq/dark-factory-cli`
+2. Add `.agent-review/config.json` with the `local` profile (above).
+3. Add `.husky/post-commit` + `.husky/pre-push` (samples above).
+4. `git config --local core.hooksPath .husky`
+5. `cursor login` / `codex login` (or Claude desktop OAuth) on the workstation.
+6. Run `df doctor --profile local` — should report all OK.
+7. Commit something — observe `.git/agent-reviews/<sha>.json` arrives.
+8. (Optional) Set up CI with `CURSOR_API_KEY` / `CODEX_API_KEY` /
+   `GEMINI_API_KEY` / `XAI_API_KEY` as repo secrets for the cold path.
 
 ## System requirements
 
