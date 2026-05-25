@@ -19,161 +19,34 @@ import {
   shouldEnableCursorSandbox,
   writeRedactedDiagnostic,
 } from "./_shared.js";
+import {
+  runRetryLoop,
+  shouldRetryRunFailure,
+  type AttemptOutcome,
+} from "./_retry.js";
 
 // Re-export for backwards compatibility — `normalizeCriticEcho` originally
 // lived here. Existing imports from `cursor-sdk.js` (e.g. cursor-adapter
 // tests) continue to work after the move to `_shared.ts` (issue #1484).
 export { normalizeCriticEcho } from "./_shared.js";
 
+// Re-export for backwards compatibility — the retry helpers originally
+// lived here. Tests under `tests/cursor-retry.test.ts` import them via
+// this path; the codex/gemini/grok adapters now import directly from
+// `./_retry.js` so they don't transitively load `@cursor/sdk` →
+// `sqlite3` (dark-factory#11 + sage3c#2198).
+export {
+  PERMANENT_ERROR_CODES,
+  RETRY_BACKOFF_MS,
+  runRetryLoop,
+  shouldRetryRunFailure,
+  sleepForRetry,
+  type AttemptOutcome,
+  type RetryableFailure,
+} from "./_retry.js";
+
 export const CURSOR_SDK_ADAPTER_ID = "cursor-sdk";
 export const CURSOR_API_KEY_ENV = "CURSOR_API_KEY";
-
-// Cycle 322.1 — bounded retry policy for the Cursor SDK adapter.
-//
-// The Cursor SDK delivers terminal upstream failures as a normal
-// `RunResult.status === "error"` (no thrown exception). The richer
-// signal — `LocalRunStreamResultEvent.errorCode` and the streamed
-// `SDKStatusMessage` — is what tells operators whether the failure is
-// transient (capacity_exceeded / upstream_timeout) or permanent
-// (auth_failed / quota_exceeded). Capturing both and retrying ONLY
-// transient failures replaces the prior "any terminal error → gate
-// blocks → emergency bypass" anti-pattern with a sanctioned, bounded,
-// observable recovery path.
-//
-// Empirical signal: 26/27 transient terminal-error runs observed
-// over a 4-day window succeeded on retry with the same prompt
-// within 1–5 minutes. The fixed `[5s, 15s]` schedule covers that
-// recovery window without trading too much wall-clock for tail
-// success.
-//
-// Total budget: 20s across 2 retries (3 attempts total). If a vendor
-// outage outlives 20s, the gate blocks deterministically with an
-// actionable `errorCode` instead of returning APPROVED on stale data.
-export const RETRY_BACKOFF_MS: readonly number[] = Object.freeze([5_000, 15_000]) as readonly number[];
-
-// Error codes that are NOT retryable. A terminal failure matching one
-// of these proceeds directly to error-result construction without a
-// retry. These are permanent failures where retrying wastes budget
-// AND can mask the real fault (e.g., a wrong API key would silently
-// burn 20s of retries before surfacing the auth issue).
-//
-// The set is intentionally narrow — anything not on this list is
-// treated as retryable when accompanied by a runId (indicating the
-// SDK accepted the request and the failure happened upstream).
-export const PERMANENT_ERROR_CODES: ReadonlySet<string> = new Set([
-  "auth_failed",
-  "invalid_api_key",
-  "quota_exceeded",
-  "model_not_found",
-  "content_policy_violation",
-  "invalid_request",
-  "context_length_exceeded",
-]);
-
-// Cycle 322.1 — Outcome of a single `attemptReview()` call. Tagged
-// union so the outer retry loop can dispatch on `kind` without
-// inspecting result internals; each kind carries exactly the fields
-// needed to either return immediately or schedule a retry.
-//
-// `success` and `permanent_failure` both produce a terminal
-// CriticResult; only `retryable_failure` re-enters the loop. The
-// permanent_failure variant carries its own result so the adapter
-// can finalize error semantics in one place (e.g., adapter-init
-// failures keep their existing error envelope) without forcing the
-// loop to re-synthesize an error result.
-//
-// Exported for tests + (future) adapter siblings (322.2 Gemini, 322.3
-// Grok) that will mirror this shape from a single source of truth.
-export type AttemptOutcome =
-  | { kind: "success"; result: CriticResult }
-  | {
-      kind: "retryable_failure";
-      errorCode: string | null;
-      statusMessage: CriticStatusMessage | null;
-      message: string;
-      runId: string | null;
-      agentId: string | null;
-    }
-  | {
-      kind: "permanent_failure";
-      errorCode: string | null;
-      statusMessage: CriticStatusMessage | null;
-      result: CriticResult;
-    };
-
-export type RetryableFailure = Extract<AttemptOutcome, { kind: "retryable_failure" }>;
-
-/**
- * Cycle 322.1 — Pure retry-loop runner.
- *
- * Drives a sequence of `attempt(idx)` calls under the
- * {@link RETRY_BACKOFF_MS} schedule, dispatching on the returned
- * {@link AttemptOutcome}:
- *  - `success` / `permanent_failure` → return immediately, no more
- *    attempts.
- *  - `retryable_failure` → record the failure and (if budget
- *    remains) sleep + try again.
- *
- * Honors `signal` between attempts and during backoff sleeps; on
- * abort, builds a terminal result via `buildExhausted` with the
- * last failure context (so callers can surface "what was the last
- * upstream error" even when cancellation cut the loop short).
- *
- * Extracted as a free function so:
- *  - 322.2 Gemini and 322.3 Grok adapters inherit the retry pattern
- *    without copy-paste drift.
- *  - The loop is unit-testable with scripted outcomes + a mock
- *    `sleep` (see `tests/cursor-retry-loop.test.ts`) — no SDK mock
- *    required.
- */
-export async function runRetryLoop(args: {
-  attempt: (idx: number) => Promise<AttemptOutcome>;
-  signal?: AbortSignal;
-  // Optional override for the per-retry sleep. Defaults to
-  // {@link sleepForRetry} which uses the real RETRY_BACKOFF_MS
-  // schedule. Tests pass a no-op or fake-timer variant to avoid
-  // wall-clock waits.
-  sleep?: (idx: number, signal: AbortSignal | undefined) => Promise<void>;
-  buildExhausted: (info: {
-    last: RetryableFailure | null;
-    totalAttempts: number;
-    aborted: boolean;
-  }) => CriticResult;
-}): Promise<CriticResult> {
-  const maxAttempts = RETRY_BACKOFF_MS.length + 1;
-  const sleep = args.sleep ?? sleepForRetry;
-  let attempt = 0;
-  let lastFailure: RetryableFailure | null = null;
-  let aborted = false;
-
-  while (attempt < maxAttempts) {
-    if (args.signal?.aborted) {
-      aborted = true;
-      break;
-    }
-    const outcome = await args.attempt(attempt);
-    if (outcome.kind === "success") return outcome.result;
-    if (outcome.kind === "permanent_failure") return outcome.result;
-    lastFailure = outcome;
-    // Sleep only if we still have retries left. After the last
-    // attempt (idx === RETRY_BACKOFF_MS.length), no sleep — fall out
-    // to exhausted path immediately.
-    if (attempt < RETRY_BACKOFF_MS.length) {
-      try {
-        await sleep(attempt, args.signal);
-      } catch (err) {
-        if ((err as Error).name === "AbortError") {
-          aborted = true;
-          break;
-        }
-        throw err;
-      }
-    }
-    attempt++;
-  }
-
-  return args.buildExhausted({ last: lastFailure, totalAttempts: attempt, aborted });
-}
 
 export class CursorSdkAdapter implements CriticAdapter {
   readonly id = CURSOR_SDK_ADAPTER_ID;
@@ -823,74 +696,8 @@ export function extractRunErrorCode(result: unknown): string | null {
   return null;
 }
 
-/**
- * Policy gate: decide whether a terminal Cursor SDK failure is
- * retryable.
- *
- * Returns `false` (DO NOT retry) when:
- *  - `runId` is null/undefined — the SDK never accepted the request;
- *    this is an infrastructure failure (network, sandbox, adapter
- *    init), not an API-layer failure that retry can paper over.
- *  - `errorCode` is in {@link PERMANENT_ERROR_CODES} — retrying an
- *    auth failure or quota-exceeded just wastes budget AND can mask
- *    the real fault.
- *
- * Returns `true` (retry allowed) when the failure carries a `runId`
- * AND `errorCode` is either missing OR not on the permanent-deny
- * list. The 26/27 retryable-failure success rate documented at
- * `RETRY_BACKOFF_MS` drives this policy without per-vendor heuristics.
- */
-export function shouldRetryRunFailure(input: {
-  result: unknown;
-  errorCode: string | null;
-  runId: string | null;
-}): boolean {
-  // Without a runId, the SDK didn't accept the request — there is
-  // nothing on the upstream side to retry. Retrying here would just
-  // re-run the same infrastructure-level failure.
-  if (!input.runId) return false;
-  // Permanent-error deny list short-circuits retries.
-  if (input.errorCode && PERMANENT_ERROR_CODES.has(input.errorCode)) return false;
-  return true;
-}
-
-/**
- * AbortSignal-aware sleep used between retry attempts.
- *
- * Resolves after `RETRY_BACKOFF_MS[idx]` ms, OR rejects immediately
- * with an Error whose `name === "AbortError"` if the signal is (or
- * becomes) aborted. The abort handler also clears the pending timer
- * so a long backoff doesn't leak a Node timer after the caller
- * cancelled.
- *
- * Throws synchronously (via the returned rejected promise) on
- * out-of-range `idx` so an indexing bug in the caller fails loud
- * instead of silently sleeping zero ms.
- */
-export async function sleepForRetry(idx: number, signal: AbortSignal | undefined): Promise<void> {
-  if (idx < 0 || idx >= RETRY_BACKOFF_MS.length) {
-    throw new Error(
-      `sleepForRetry: idx ${idx} out of range (RETRY_BACKOFF_MS.length=${RETRY_BACKOFF_MS.length})`,
-    );
-  }
-  const ms = RETRY_BACKOFF_MS[idx] as number;
-  if (signal?.aborted) {
-    const e = new Error("aborted");
-    e.name = "AbortError";
-    throw e;
-  }
-  await new Promise<void>((resolveSleep, rejectSleep) => {
-    const timer = setTimeout(() => {
-      if (signal) signal.removeEventListener("abort", onAbort);
-      resolveSleep();
-    }, ms);
-    function onAbort(): void {
-      clearTimeout(timer);
-      if (signal) signal.removeEventListener("abort", onAbort);
-      const e = new Error("aborted");
-      e.name = "AbortError";
-      rejectSleep(e);
-    }
-    if (signal) signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
+// `shouldRetryRunFailure` and `sleepForRetry` moved to `_retry.ts`
+// (dark-factory#11 / sage3c#2198) so codex/gemini/grok adapters can
+// share them without statically importing `@cursor/sdk`. The
+// back-compat re-export at the top of this file keeps existing
+// imports from `cursor-sdk.js` working.

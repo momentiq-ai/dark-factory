@@ -68,7 +68,7 @@ import {
 import {
   runRetryLoop,
   type AttemptOutcome,
-} from "./cursor-sdk.js";
+} from "./_retry.js";
 
 export const GROK_DIRECT_SDK_ADAPTER_ID = "grok-direct-sdk";
 export const XAI_API_KEY_ENV = "XAI_API_KEY";

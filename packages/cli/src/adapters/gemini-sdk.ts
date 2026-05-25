@@ -57,7 +57,7 @@ import {
 import {
   runRetryLoop,
   type AttemptOutcome,
-} from "./cursor-sdk.js";
+} from "./_retry.js";
 
 export const GEMINI_SDK_ADAPTER_ID = "gemini-sdk";
 export const GEMINI_API_KEY_ENV = "GEMINI_API_KEY";

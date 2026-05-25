@@ -146,6 +146,11 @@ jobs:
           EOF
           npm install --userconfig "$NPMRC" --no-audit --no-fund --ignore-scripts \
             "@momentiq/dark-factory-cli@${REQUESTED_VERSION}"
+          # dark-factory#11 / sage3c#2198 — re-run sqlite3's install script
+          # ONLY (whitelist; not all scripts). See agent-critic.yml for
+          # the full rationale; the rest of the dep tree stays under
+          # --ignore-scripts.
+          npm rebuild sqlite3 --userconfig "$NPMRC"
           DF_CLI="$INSTALL_DIR/node_modules/.bin/df"
           if [ ! -x "$DF_CLI" ]; then
             echo "::error::Installed @momentiq/dark-factory-cli@$REQUESTED_VERSION but binary not found at $DF_CLI." >&2

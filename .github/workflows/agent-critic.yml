@@ -160,6 +160,17 @@ jobs:
           EOF
           npm install --userconfig "$NPMRC" --no-audit --no-fund --ignore-scripts \
             "@momentiq/dark-factory-cli@${REQUESTED_VERSION}"
+          # dark-factory#11 / sage3c#2198 — re-run sqlite3's install script
+          # ONLY (whitelist; not all scripts). sqlite3 ships prebuilt
+          # binaries via node-pre-gyp; `npm rebuild sqlite3` fetches the
+          # prebuilt for the runner arch without compiling. The rest of
+          # the dep tree remains under --ignore-scripts; only sqlite3's
+          # lifecycle is unsealed, narrowing the supply-chain surface to
+          # a single known package. Without this, the Cursor adapter
+          # fails to register on the consumer path because @cursor/sdk
+          # → sqlite3 can't locate its native binding (observed on
+          # taxpilot2a PR #47, alpha.6).
+          npm rebuild sqlite3 --userconfig "$NPMRC"
           DF_CLI="$INSTALL_DIR/node_modules/.bin/df"
           if [ ! -x "$DF_CLI" ]; then
             echo "::error::Installed @momentiq/dark-factory-cli@$REQUESTED_VERSION but binary not found at $DF_CLI." >&2

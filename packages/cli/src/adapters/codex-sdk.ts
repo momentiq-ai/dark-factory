@@ -90,7 +90,7 @@ import {
   PERMANENT_ERROR_CODES,
   runRetryLoop,
   type AttemptOutcome,
-} from "./cursor-sdk.js";
+} from "./_retry.js";
 
 // Promisified `execFile` for safe arg-array subprocess invocations.
 // NB: this is `execFile` (no shell parsing), NOT `exec` — fixed arg
