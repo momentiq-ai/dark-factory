@@ -21,6 +21,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working in `mom
 
 This file's [`docs/roadmap/dark-factory-roadmap.md`](docs/roadmap/dark-factory-roadmap.md) is a pointer that becomes canonical at W2 onset.
 
+## Consumer adoption guide
+
+If you're working on dark-factory itself: the consumer-side adoption pattern is documented at [`docs/CONSUMER-ADOPTION.md`](docs/CONSUMER-ADOPTION.md). When you change the public surface (CLI subcommands, reusable workflow inputs, schema fields, `.agent-review/config.json` shape), update that doc in the same PR. The doc is the contract every consumer repo is written against — drift between it and reality produces silent breakage in `taxpilot2a` / `lyra` / future external consumers.
+
+Concrete examples cited there: [taxpilot2a PR #45](https://github.com/momentiq-ai/taxpilot2a/pull/45) (F.5a, first external consumer) + [PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) (the cross-repo `actions/permissions/access` prereq).
+
 ## Consumer-vs-author posture
 
 This repo is the **author** of `@momentiq/dark-factory-cli`, `@momentiq/dark-factory-schemas`, and the reusable workflows. `sage3c`, `cerebe-platform`, `sage-blueprint`, `taxpilot2a`, `lyra`, and future external consumers **consume** them via versioned npm devDeps + exact-tag reusable workflow references.
