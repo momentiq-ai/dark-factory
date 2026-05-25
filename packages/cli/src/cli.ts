@@ -34,7 +34,13 @@
 // subcommands accept their own flags directly (see `cmdAudit` and
 // `cmdAdmitPr` below).
 
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  accessSync,
+  constants as fsConstants,
+  existsSync,
+  readFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,7 +58,10 @@ import {
   computeCriticAgreement,
 } from "./evidence/audit-trail.js";
 import { classifyPrKindFromFiles } from "./policy/merge-queue.js";
-import { AdapterRegistry } from "./adapters/critic.js";
+import {
+  AdapterRegistry,
+  collectRequiredEnvVars,
+} from "./adapters/critic.js";
 // NOTE: vendor adapters (Cursor, Codex, Gemini, Grok) are dynamically
 // imported inside `buildDefaultAdapterRegistry()` so the CLI loads under
 // `--ignore-scripts` for every non-`df critic` subcommand. The Cursor
@@ -61,9 +70,27 @@ import { AdapterRegistry } from "./adapters/critic.js";
 // consumers using the documented `npm install --ignore-scripts` install
 // path). Phase B-PUBLISH-pkg (cycle 331.1, alpha.5): see
 // https://github.com/momentiq-ai/dark-factory/pull/<this-pr>.
-import { loadAgentReviewConfig } from "./policy/config.js";
-import { runReview } from "./runner.js";
+import { loadAgentReviewConfig, type LoadedConfig } from "./policy/config.js";
+import { runReview, runCommitGate } from "./runner.js";
 import { resolveArtifactDir, telemetryPath } from "./paths.js";
+// Phase F-LOCAL — hook-facing subcommand support.
+import {
+  loadDopplerBootstrapEnv,
+  DEFAULT_BOOTSTRAP_ALLOWLIST,
+} from "./doppler-bootstrap.js";
+import { runDoctor } from "./doctor.js";
+import { resolveProfile } from "./policy/profile.js";
+import {
+  commitsForPushUpdate,
+  parsePrePushUpdates,
+  resolveCommit,
+  commitParent,
+  changedFiles,
+} from "./git.js";
+import { runQualityGates } from "./evidence/quality-gates.js";
+import { matchAnyGlob } from "./glob.js";
+import { collectChangedPaths } from "./evidence/index.js";
+import { summarizeGate } from "./policy/gate.js";
 
 interface PackageMeta {
   name?: string;
@@ -114,10 +141,29 @@ function printHelp(meta: PackageMeta): void {
       "                              aggregate verdict to .git/agent-reviews/<sha>.",
       "                              Degrades-and-passes on any error (exit 0).",
       "",
-      "Subcommands (coming in cycle 331.1 Phase G+):",
-      "  df review                 Run the multi-critic review for the current commit",
-      "  df gate                   Evaluate gate verdict for the current commit",
-      "  df doctor                 Diagnose installation, env, and config",
+      "Subcommands (Phase F-LOCAL — hook-facing CLI, subscription cost model):",
+      "  df review                   Background-friendly local critic invocation",
+      "                              for .husky/post-commit. Honors profile auth",
+      "                              (chatgpt/composer/subscription) so Cursor +",
+      "                              Codex + Claude SUBSCRIPTIONS are consumed,",
+      "                              NOT pay-per-token API keys.",
+      "  df gate-push                Read pre-push stdin + gate every commit in",
+      "                              the pushed range. CI mode: --commit SHA --ci.",
+      "                              Honors AGENT_REVIEW_BYPASS for emergencies.",
+      "  df doctor                   Verify env: node, hooks, hookPath, artifact",
+      "                              dir, Doppler bootstrap, per-adapter auth.",
+      "  df gates                    Run configured `requiredQualityGates` and",
+      "                              triggered verification routes. No LLM calls.",
+      "  df stats                    Pretty-print critic call stats + bypass audit.",
+      "                              Alias for `df audit stats`. No LLM calls.",
+      "",
+      "Cost model:",
+      "  The local hook path (review/gate-push) consumes Cursor / Codex / Claude",
+      "  SUBSCRIPTIONS via the developer's existing CLI logins. Vendor API keys",
+      "  (CURSOR_API_KEY / CODEX_API_KEY / GEMINI_API_KEY / XAI_API_KEY) are the",
+      "  CI cold-path fallback only. Profile `auth` pins (e.g. `chatgpt` on the",
+      "  codex critic) enforce subscription-only with no env-presence fallback",
+      "  (cycle 322.7 issue #2103).",
       "",
       "Each Phase C subcommand passes its remaining argv through to the bundled",
       "Python script verbatim; run `df <subcommand> --help` for full flags.",
@@ -139,7 +185,10 @@ function printHelp(meta: PackageMeta): void {
       "  import { runReview, evaluateCommitGate, buildReviewPacket }",
       `    from \"${name}\";`,
       "",
-      "Status: 0.1.0-alpha.5 — Phase B-PUBLISH-pkg fixes CLI loadability",
+      "Status: 0.1.0-alpha.6 — Phase F-LOCAL ports sage3c's hook-facing CLI",
+      "        subcommands (review/gate-push/doctor/gates/stats) so consumer",
+      "        repos can wire .husky hooks to the subscription-auth local",
+      "        critic path. Also: Phase B-PUBLISH-pkg fixes CLI loadability",
       "        under `npm install --ignore-scripts` for all non-`df critic`",
       "        subcommands. Phase F wires the real Critic Orchestrator and",
       "        dogfoods dark-factory on its own PRs. Reusable workflows from",
@@ -216,6 +265,20 @@ const PHASE_D_SUBCOMMANDS = new Set(["audit", "admit-pr"]);
 //     aggregate artifact. Degrades-and-passes on any error so the
 //     dogfood gate stays green while operators triage upstream issues.
 const PHASE_F_SUBCOMMANDS = new Set(["status-check", "critic"]);
+
+// Phase F-LOCAL — hook-facing subcommands. These wire .husky/post-commit +
+// .husky/pre-push in consumer repos to consume Cursor / Codex / Claude
+// SUBSCRIPTIONS via existing CLI logins rather than burning pay-per-token
+// API keys. Cost-control is load-bearing — per-commit critic invocations
+// from API tokens cost $1000s/week on busy repos; subscription-auth
+// invocations are flat-rate. See README "For consumer repos" section.
+const PHASE_F_LOCAL_SUBCOMMANDS = new Set([
+  "review",
+  "gate-push",
+  "doctor",
+  "gates",
+  "stats",
+]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // PR Status Check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -444,6 +507,478 @@ async function cmdCritic(rest: string[]): Promise<number> {
     );
     return 0;
   }
+}
+
+// ===========================================================================
+// Phase F-LOCAL — hook-facing subcommands (review / gate-push / doctor /
+// gates / stats).
+//
+// Ported from sage3c's tools/agent-review/src/cli.ts. These are the
+// subcommands consumer repos wire into `.husky/post-commit` and
+// `.husky/pre-push` so the local critic runs against the developer's
+// Cursor / Codex / Claude SUBSCRIPTIONS via existing CLI logins —
+// avoiding the $1000s/week token spend that a pure API-key path would
+// incur on a busy repo.
+//
+// Subscription-auth preservation: each subcommand uses
+// `resolveProfile()` + `runReview()/runCommitGate()` which already honor
+// the active profile's `auth` pins via `applyProfileAuth()` (cycle 322.7
+// issue #2103). The adapters then validate ONLY the configured source —
+// e.g. `auth: "chatgpt"` on the codex critic means "subscription only,
+// no API-key fallback". This is the firewall that prevents accidental
+// API spend.
+//
+// Doppler re-exec: when a configured adapter declares `requiredEnvVars`
+// AND those vars are unset AND the config declares `secrets.doppler`,
+// the CLI transparently re-execs itself under
+// `doppler run --project X --config Y -- node ...` so the secrets reach
+// the child via Doppler injection. AGENT_REVIEW_DOPPLER_REEXEC blocks
+// recursive re-exec.
+// ===========================================================================
+
+async function buildHookRegistry(): Promise<AdapterRegistry> {
+  return buildDefaultAdapterRegistry();
+}
+
+type ReexecResult = { reexeced: true; code: number } | { reexeced: false };
+async function maybeReexecUnderDoppler(
+  loaded: LoadedConfig,
+  registry: AdapterRegistry,
+  activeCriticIds?: ReadonlyArray<string>,
+): Promise<ReexecResult> {
+  const dop = loaded.config.secrets?.doppler;
+  if (process.env["AGENT_REVIEW_DOPPLER_REEXEC"]) return { reexeced: false };
+
+  const { union, requiredUnion, unregistered } = collectRequiredEnvVars(
+    loaded,
+    registry,
+    activeCriticIds,
+  );
+  const missing = union.filter((v) => !process.env[v]);
+  const missingRequired = requiredUnion.filter((v) => !process.env[v]);
+  if (missing.length === 0) return { reexeced: false };
+  if (!dop) return { reexeced: false };
+  if (unregistered.length > 0) {
+    process.stderr.write(
+      `df: critic config references unregistered adapter(s): ${unregistered.join(", ")}.\n`,
+    );
+  }
+  if (!(await hasOnPath("doppler"))) {
+    if (missingRequired.length === 0) {
+      process.stderr.write(
+        `df: doppler CLI not on PATH; optional critic env vars are unset: ${missing.join(", ")}.\n` +
+          "  continuing without Doppler.\n",
+      );
+      return { reexeced: false };
+    }
+    process.stderr.write(
+      `df: doppler CLI not on PATH and required env vars are unset: ${missingRequired.join(", ")}.\n` +
+        "  install Doppler or export the missing vars directly.\n",
+    );
+    return { reexeced: true, code: 1 };
+  }
+  const code = reexecUnderDoppler(dop.project, dop.config);
+  if (code !== 0 && missingRequired.length === 0) {
+    process.stderr.write(
+      "df: optional critic invocation under `doppler run` failed; continuing.\n",
+    );
+    return { reexeced: false };
+  }
+  if (code !== 0 && !process.env["DOPPLER_TOKEN"]) {
+    process.stderr.write(
+      "df: critic invocation under `doppler run` failed and no DOPPLER_TOKEN was reachable.\n" +
+        `  missing required env vars: ${missingRequired.join(", ")}\n` +
+        "  fix one of: export DOPPLER_TOKEN, add it to <main-checkout>/.env, or export the missing vars directly.\n" +
+        "  AGENT_REVIEW_BYPASS is NOT the right response for a config error.\n",
+    );
+  }
+  return { reexeced: true, code };
+}
+
+function reexecUnderDoppler(project: string, config: string): number {
+  const args = ["run", "--project", project, "--config", config, "--", ...process.argv];
+  const result = spawnSync("doppler", args, {
+    stdio: "inherit",
+    env: { ...process.env, AGENT_REVIEW_DOPPLER_REEXEC: "1" },
+  });
+  if (result.error) {
+    process.stderr.write(
+      `df: failed to re-exec under doppler: ${result.error.message}\n`,
+    );
+    return 1;
+  }
+  return result.status ?? 1;
+}
+
+async function hasOnPath(cmd: string): Promise<boolean> {
+  const PATH = process.env["PATH"] ?? "";
+  for (const dir of PATH.split(":")) {
+    if (!dir) continue;
+    const candidate = `${dir}/${cmd}`;
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return true;
+    } catch {
+      // not found here; try next
+    }
+  }
+  return false;
+}
+
+async function readStdinUtf8FromTtyOrStream(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  return readStdinUtf8();
+}
+
+async function loadHookConfig(): Promise<LoadedConfig | null> {
+  try {
+    return await loadAgentReviewConfig({
+      warn: (msg: string) => process.stderr.write(`df: ${msg}\n`),
+    });
+  } catch (err) {
+    process.stderr.write(`df: ${(err as Error).message}\n`);
+    return null;
+  }
+}
+
+function activeCriticIdsForProfile(
+  loaded: LoadedConfig,
+  profileName: string,
+): readonly string[] | undefined {
+  const profiles = loaded.config.profiles;
+  if (!profiles) return undefined;
+  const profile = profiles[profileName];
+  if (!profile) return undefined;
+  return profile.criticIds;
+}
+
+// ----- df review -----
+async function cmdReview(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df review — run the local critic against a commit (subscription auth).",
+        "",
+        "Usage:",
+        "  df review [--commit HEAD] [--profile NAME] [--foreground]",
+        "",
+        "Designed for .husky/post-commit. Honors profile `auth` pins so",
+        "Cursor / Codex / Claude SUBSCRIPTIONS are consumed instead of",
+        "pay-per-token API keys.",
+        "",
+        "Flags:",
+        "  --commit HEAD       Commit to review (default HEAD)",
+        "  --profile NAME      Profile (default: env AGENT_REVIEW_PROFILE or `local`)",
+        "  --foreground        Print artifact paths on completion",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+  loadDopplerBootstrapEnv({ allowlist: DEFAULT_BOOTSTRAP_ALLOWLIST });
+  const loaded = await loadHookConfig();
+  if (!loaded) return 2;
+  const { flags } = parseFlags(rest);
+  const registry = await buildHookRegistry();
+
+  const profileName = resolveProfile(
+    { profile: flags["profile"] },
+    process.env as { AGENT_REVIEW_PROFILE?: string | undefined },
+  );
+  const profileAllowlist = activeCriticIdsForProfile(loaded, profileName);
+
+  const rx = await maybeReexecUnderDoppler(loaded, registry, profileAllowlist);
+  if (rx.reexeced) return rx.code;
+
+  const artifactDir = await resolveArtifactDir(loaded);
+  const sink = new FileTelemetrySink(telemetryPath(artifactDir));
+  const ref = (flags["commit"] as string | undefined) ?? "HEAD";
+  const foreground =
+    flags["foreground"] === true || flags["foreground"] === "true";
+  try {
+    const outcome = await runReview({
+      loaded,
+      registry,
+      ref,
+      telemetry: sink,
+      profileName,
+    });
+    if (foreground) {
+      process.stdout.write(
+        `df review: ${outcome.artifact.gateVerdict ?? "complete"} for ${outcome.artifact.commit.slice(0, 12)}\n`,
+      );
+      process.stdout.write(`  json: ${outcome.paths.jsonPath}\n`);
+      process.stdout.write(
+        `  md:   ${outcome.paths.markdownPath ?? "(not written — see stderr)"}\n`,
+      );
+    }
+    return 0;
+  } catch (err) {
+    process.stderr.write(`df review failed: ${(err as Error).message}\n`);
+    return 1;
+  }
+}
+
+// ----- df gate-push -----
+async function cmdGatePush(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df gate-push — block a push when prior commits have unresolved blockers.",
+        "",
+        "Usage:",
+        "  df gate-push [--profile NAME]                          # local pre-push",
+        "  df gate-push --commit SHA --ci [--profile NAME]        # CI replay",
+        "",
+        "Designed for .husky/pre-push. Reads git's pre-push protocol on stdin",
+        "and gates each commit in the pushed range against the per-SHA artifact",
+        "written by `df review`. Exit 1 if any commit has unresolved BLOCKER",
+        "findings under the configured aggregation policy.",
+        "",
+        "Bypass:",
+        "  AGENT_REVIEW_BYPASS=\"<reason>\" git push   # logged to _runs.ndjson",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+  const bypass = process.env["AGENT_REVIEW_BYPASS"];
+  if (bypass !== undefined && bypass !== "") {
+    process.stderr.write(
+      `df gate-push: BYPASSED — reason: ${bypass}\n` +
+        "  this bypass will be logged to .git/agent-reviews/_runs.ndjson; cite an issue # in the reason.\n",
+    );
+    return 0;
+  }
+  const loaded = await loadHookConfig();
+  if (!loaded) return 2;
+  const { flags } = parseFlags(rest);
+  const artifactDir = await resolveArtifactDir(loaded);
+  const sink = new FileTelemetrySink(telemetryPath(artifactDir));
+  const profileName = resolveProfile(
+    { profile: flags["profile"] },
+    process.env as { AGENT_REVIEW_PROFILE?: string | undefined },
+  );
+
+  const commitFlag = flags["commit"];
+  const ciFlag = flags["ci"] === true || flags["ci"] === "true";
+  if (typeof commitFlag === "string" && commitFlag.length > 0) {
+    if (!ciFlag) {
+      process.stderr.write(
+        "df gate-push: --commit requires --ci (CI replay mode is the only intended caller).\n",
+      );
+      return 2;
+    }
+    const sha = await resolveCommit(commitFlag);
+    process.stdout.write(
+      `df gate-push: gating 1 commit (CI mode) for ${sha.slice(0, 12)}\n`,
+    );
+    const result = await runCommitGate({
+      loaded,
+      commit: sha,
+      telemetry: sink,
+      profileName,
+    });
+    process.stdout.write(`-- ${sha.slice(0, 12)}\n${summarizeGate(result)}\n`);
+    return result.blocked ? 1 : 0;
+  }
+
+  const stdin = await readStdinUtf8FromTtyOrStream();
+  const updates = parsePrePushUpdates(stdin);
+  if (updates.length === 0) {
+    process.stdout.write("df gate-push: no push updates received; allowing\n");
+    return 0;
+  }
+  let blockedAny = false;
+  for (const update of updates) {
+    if (update.isDelete) continue;
+    const commits = await commitsForPushUpdate(update);
+    if (commits.length === 0) continue;
+    process.stdout.write(
+      `df gate-push: gating ${commits.length} commit(s) on ${update.localRef} -> ${update.remoteRef}\n`,
+    );
+    for (const sha of commits) {
+      const result = await runCommitGate({
+        loaded,
+        commit: sha,
+        telemetry: sink,
+        profileName,
+      });
+      process.stdout.write(`-- ${sha.slice(0, 12)}\n${summarizeGate(result)}\n`);
+      if (result.blocked) blockedAny = true;
+    }
+  }
+  return blockedAny ? 1 : 0;
+}
+
+// ----- df doctor -----
+async function cmdDoctor(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df doctor — verify the environment for hook-facing critic invocation.",
+        "",
+        "Usage:",
+        "  df doctor [--profile NAME]",
+        "",
+        "Checks: node version, hooks dir, hook executable, core.hooksPath,",
+        "artifact dir, doppler bootstrap, per-adapter doctor() (subscription",
+        "auth lives here).",
+        "",
+        "Environment:",
+        "  AGENT_REVIEW_PROFILE=<name>      Profile to validate (default: local)",
+        "  DF_DOCTOR_CI=1                   Skip hookspath + doppler CLI checks",
+        "  DF_DOCTOR_SKIP_HOOKS=1           Skip git-core-hookspath check",
+        "  DF_DOCTOR_SKIP_DOPPLER=1         Skip doppler-cli-on-path check",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+  const bootstrap = loadDopplerBootstrapEnv({
+    allowlist: DEFAULT_BOOTSTRAP_ALLOWLIST,
+  });
+  const loaded = await loadHookConfig();
+  if (!loaded) return 2;
+  const { flags } = parseFlags(rest);
+  const registry = await buildHookRegistry();
+  const rx = await maybeReexecUnderDoppler(loaded, registry);
+  if (rx.reexeced) return rx.code;
+
+  const profileName = resolveProfile(
+    { profile: flags["profile"] },
+    process.env as { AGENT_REVIEW_PROFILE?: string | undefined },
+  );
+  const checks = await runDoctor({
+    loaded,
+    registry,
+    bootstrap,
+    profileName,
+  });
+  let allOk = true;
+  for (const c of checks) {
+    const label = c.passed ? "OK" : c.optional ? "INFO" : "FAIL";
+    process.stdout.write(`[${label}] ${c.name}: ${c.detail}\n`);
+    if (!c.passed && c.remediation) {
+      process.stdout.write(`       fix: ${c.remediation}\n`);
+    }
+    if (!c.passed && !c.optional) allOk = false;
+  }
+  return allOk ? 0 : 1;
+}
+
+// ----- df gates -----
+async function cmdGates(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df gates — run configured quality gates + triggered verification routes.",
+        "",
+        "Usage:",
+        "  df gates [--commit HEAD] [--route ROUTE_ID]",
+        "",
+        "Runs static gates from .agent-review/config.json:validation. Writes",
+        "per-SHA evidence. No LLM calls — this subcommand is free.",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+  const loaded = await loadHookConfig();
+  if (!loaded) return 2;
+  const { flags } = parseFlags(rest);
+  const ref = (flags["commit"] as string | undefined) ?? "HEAD";
+  const sha = await resolveCommit(ref);
+  const routeFilter = (flags["route"] as string | undefined) ?? null;
+
+  let requiredFailures = 0;
+  let requiredRun = 0;
+  if (!routeFilter) {
+    const required = await runQualityGates({ loaded, commit: sha });
+    requiredRun = required.results.length;
+    requiredFailures = required.results.filter((r) => r.exitCode !== 0).length;
+    for (const r of required.results) {
+      process.stdout.write(
+        `  ${r.exitCode === 0 ? "PASS" : "FAIL"} ${r.command} (${r.durationMs}ms)\n`,
+      );
+    }
+  }
+
+  const triggered = await triggeredRoutesForCommit(loaded, sha);
+  let routeFailures = 0;
+  let routeRun = 0;
+  for (const route of triggered) {
+    if (routeFilter && route.id !== routeFilter) continue;
+    if (!route.command) continue;
+    routeRun++;
+    const evidence = await runQualityGates({
+      loaded,
+      commit: sha,
+      commands: [route.command],
+      routeId: route.id,
+    });
+    const result = evidence.gateResults?.[route.id];
+    const exit = result?.exitCode ?? -1;
+    if (exit !== 0) routeFailures++;
+    process.stdout.write(
+      `  ${exit === 0 ? "PASS" : "FAIL"} route[${route.id}] (${route.command}) exit=${exit}\n`,
+    );
+  }
+
+  const totalRun = requiredRun + routeRun;
+  const totalFail = requiredFailures + routeFailures;
+  process.stdout.write(
+    `df gates: ${totalRun} run, ${totalFail} failed${routeFilter ? ` (filter=route:${routeFilter})` : ""}\n`,
+  );
+  return totalFail === 0 ? 0 : 1;
+}
+
+async function triggeredRoutesForCommit(
+  loaded: LoadedConfig,
+  sha: string,
+): Promise<ReadonlyArray<{ id: string; command: string | null }>> {
+  const routes = loaded.config.validation.verificationRoutes ?? [];
+  if (routes.length === 0) return [];
+  let parent = "";
+  try {
+    parent = await commitParent(sha);
+  } catch {
+    parent = "";
+  }
+  const files = await changedFiles(parent, sha, undefined, {
+    readContent: false,
+  });
+  const paths = collectChangedPaths(files);
+  return routes.filter((r) => paths.some((p) => matchAnyGlob(p, r.trigger)));
+}
+
+// ----- df stats -----
+// Top-level alias for `df audit stats` (sage3c naming for migrants).
+async function cmdStats(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df stats — pretty-print critic call stats + bypass audit.",
+        "",
+        "Usage:",
+        "  df stats [--path <NDJSON>]",
+        "",
+        "Reads `<artifactDir>/_runs.ndjson` (resolved from loaded config, or",
+        "--path <PATH>). Alias for `df audit stats`. No LLM calls.",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+  const { flags } = parseFlags(rest);
+  if (typeof flags["path"] === "string") {
+    return cmdAudit(["stats", "--path", flags["path"] as string]);
+  }
+  const loaded = await loadHookConfig();
+  if (!loaded) return 2;
+  const dir = await resolveArtifactDir(loaded);
+  const path = telemetryPath(dir);
+  return cmdAudit(["stats", "--path", path]);
 }
 
 // ---------------------------------------------------------------------------
@@ -704,7 +1239,8 @@ async function main(argv: string[]): Promise<number> {
     if (
       !PHASE_C_SUBCOMMANDS.has(sub0) &&
       !PHASE_D_SUBCOMMANDS.has(sub0) &&
-      !PHASE_F_SUBCOMMANDS.has(sub0)
+      !PHASE_F_SUBCOMMANDS.has(sub0) &&
+      !PHASE_F_LOCAL_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -731,6 +1267,22 @@ async function main(argv: string[]): Promise<number> {
   }
   if (sub === "critic") {
     return await cmdCritic(rest);
+  }
+  // Phase F-LOCAL — hook-facing subcommands.
+  if (sub === "review") {
+    return await cmdReview(rest);
+  }
+  if (sub === "gate-push") {
+    return await cmdGatePush(rest);
+  }
+  if (sub === "doctor") {
+    return await cmdDoctor(rest);
+  }
+  if (sub === "gates") {
+    return await cmdGates(rest);
+  }
+  if (sub === "stats") {
+    return await cmdStats(rest);
   }
   return notImplemented(sub);
 }

@@ -52,6 +52,22 @@
       }
     }
   ],
+  "profiles": {
+    "local": {
+      "criticIds": ["cursor-local-chief-engineer", "codex-local-chief-engineer"],
+      "quorum": 1,
+      "auth": {
+        "codex-local-chief-engineer": "chatgpt"
+      }
+    },
+    "cloud": {
+      "criticIds": ["cursor-local-chief-engineer", "codex-local-chief-engineer", "gemini-local-chief-engineer", "grok-local-chief-engineer"],
+      "quorum": 3,
+      "auth": {
+        "codex-local-chief-engineer": "api"
+      }
+    }
+  },
   "aggregation": {
     "policy": "min-complete-quorum",
     "blockingSeverities": ["blocker", "high"],
