@@ -2,6 +2,17 @@
 
 > Pillar #1 of the momentiq.ai platform: **the autonomous AI-native software development lifecycle**. Agents author, critic, validate, and ship. Every gate is deterministic and auditable.
 
+## For consumer repos
+
+Adopting dark-factory in your own repo: see [docs/CONSUMER-ADOPTION.md](docs/CONSUMER-ADOPTION.md).
+
+Architectural expectations:
+- `docs/roadmap/cycles/` carries your repo's cycle docs (Spec-Driven Traceability — manifesto §10)
+- `.husky/` hooks invoke local critic via subscriptions (cost-controlled); CI is fallback
+- Pin `@momentiq/dark-factory-cli@<exact-version>` (no floating ranges); reusable workflows pin to commit SHA
+
+Concrete prior art: [taxpilot2a PR #45](https://github.com/momentiq-ai/taxpilot2a/pull/45) (F.5a, first external consumer) + [PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) (access-permission follow-up).
+
 ## Status
 
 Pre-launch. Active extraction from `momentiq-ai/sage3c` via [cycle 331](https://github.com/momentiq-ai/sage3c/blob/main/docs/roadmap/cycles/cycle331-dark-factory-platformization.md). Public OSS release ships in cycle 331.3. **Until then, source-of-truth for design + status is the sage3c roadmap** (see [`docs/roadmap/dark-factory-roadmap.md`](docs/roadmap/dark-factory-roadmap.md) pointer).
