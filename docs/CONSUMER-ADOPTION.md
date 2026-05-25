@@ -5,6 +5,7 @@ Audience: maintainers of a repo that wants to consume `@momentiq/dark-factory-cl
 - **Local subscription-backed critic** on every commit (`.husky/post-commit`) and a pre-push gate (`.husky/pre-push`) — uses your existing Cursor / Codex / Claude / Grok logins (flat-rate) instead of per-token API keys.
 - **CI critic** that runs the same multi-vendor adversarial-critic fleet against every PR HEAD.
 - **Cycle-doc validation** so PRs cite a `Cycle:` or `Issue:` trailer and the validator enforces Spec-Driven Traceability.
+- **Binding enforcement** — a branch ruleset that makes the `agent-critic` check a *required* status check, so red verdicts actually block merges (not just post advisory comments). This is the difference between *installing* Dark Factory and *enforcing* it (§8).
 - **Optional branch-protection drift detector** if your repo has a ruleset.
 
 This document is the canonical adoption guide. Concrete worked examples:
@@ -257,7 +258,7 @@ jobs:
       # CI_BOT_PRIVATE_KEY: ${{ secrets.CI_BOT_PRIVATE_KEY }}
 ```
 
-**Caller job-id naming.** Each caller job MUST be named so the resulting status-check context matches your ruleset rule. The job-id is the FIRST segment of the context (e.g., `agent-critic / agent-critic`). If your ruleset names a context `agent-critic`, the caller job-id must be `agent-critic:`. See `README.md` § Consumer-side wiring for the contract.
+**Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. The `agent-critic.yml` reusable workflow's internal job is named `agent-critic`, so a caller job declared as `agent-critic:` (as above) emits the context **`agent-critic / agent-critic`**. Likewise `cycle-doc-validation:` → `cycle-doc-validation / cycle-doc-validation`, and `pr-status-check:` → `pr-status-check / PR Status Check` (the callee job's `name:` is `PR Status Check`, not its id). This is the EXACT string your ruleset must require in §8 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §8 below to make the check binding.
 
 See [taxpilot2a's dark-factory-pr.yml](https://github.com/momentiq-ai/taxpilot2a/blob/main/.github/workflows/dark-factory-pr.yml) for a working production example pinned to a real commit SHA.
 
@@ -280,7 +281,107 @@ gh secret set CURSOR_API_KEY --repo <your-org>/<your-repo>
 # ... etc
 ```
 
-## 8. Validation
+## 8. Make Dark Factory binding (required for enforcement)
+
+**This is the step that turns Dark Factory from advisory to enforcing. Skipping it is the single most common adoption failure.**
+
+Everything up to here makes the gates *run* and *post verdicts*. None of it makes them *block a merge*. The local Husky `pre-push` hook (§3) gates `git push` on your own machine — but it does nothing for merges that go through the GitHub UI, the merge queue, an auto-merge, a PR opened from another machine, or anything that bypasses the local hook. **CI enforcement is what gates the merge queue.** Without a ruleset that requires the `agent-critic` status check, a PR with red critic findings merges anyway — exactly what happened to `taxpilot2a` PR #48 (merged ~4 minutes before `agent-critic` finished, with the critic's findings landing on `main` unguarded; tracked at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213)).
+
+> **Rulesets are NOT optional for enforcement.** Earlier sections describe `branch-protection-audit` as an *optional* drift detector — that audit is genuinely optional. **Requiring the `agent-critic` check is not.** If you want Dark Factory to actually block anything, you must require it. "Installed Dark Factory" and "enforcing Dark Factory" are two different states; this section closes the gap between them.
+
+### 8.1 Apply the enforcement ruleset
+
+Create a branch ruleset on your repo that requires (a) the `agent-critic` status check to be green and (b) all bot review threads to be resolved before merge. The payload below is repo-agnostic — you target your repo in the `gh api` path, not in the JSON. Save it as `main-enforcement.json`:
+
+```json
+{
+  "name": "dark-factory-enforcement",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": { "exclude": [], "include": ["refs/heads/main"] }
+  },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "allowed_merge_methods": ["merge", "squash", "rebase"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "agent-critic / agent-critic", "integration_id": 15368 },
+          { "context": "cycle-doc-validation / cycle-doc-validation", "integration_id": 15368 }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Apply it (replace `<your-org>/<your-repo>`):
+
+```bash
+# Create the ruleset (first time):
+gh api -X POST repos/<your-org>/<your-repo>/rulesets \
+  --input main-enforcement.json
+
+# Update an existing ruleset (get its id from `gh api repos/<your-org>/<your-repo>/rulesets`):
+gh api -X PUT repos/<your-org>/<your-repo>/rulesets/<ruleset-id> \
+  --input main-enforcement.json
+```
+
+Verify it took:
+
+```bash
+gh api repos/<your-org>/<your-repo>/rulesets --jq '.[] | {id, name, enforcement}'
+```
+
+### 8.2 The required context string MUST match your caller job-id
+
+The single detail that breaks this step: **the required context must be the EXACT string your CI emits.** Per §6 (Caller job-id naming), a reusable workflow invoked via `uses:` emits the context `<caller-job-id> / <callee-job-name>`. With the caller job declared `agent-critic:` (as in §6), the context is **`agent-critic / agent-critic`** — that is what the JSON above requires. If you renamed your caller job, or wired the workflow differently, run this against a recent PR of yours and require **whatever string actually appears**:
+
+```bash
+# Inspect the real context strings your CI produced on a recent PR:
+gh pr view <pr-number> --repo <your-org>/<your-repo> \
+  --json statusCheckRollup \
+  --jq '.statusCheckRollup[] | select(.workflowName | test("Dark Factory";"i")) | .name'
+# Expect: "agent-critic / agent-critic", "cycle-doc-validation / cycle-doc-validation", ...
+```
+
+Requiring a context that never reports leaves every PR **blocked forever** waiting on a check that will never arrive (the same failure class as requiring a secret-dependent check on fork PRs — see the caveat below). Require only contexts you have *observed* reporting.
+
+`integration_id: 15368` pins each context to the GitHub Actions app (a global constant across GitHub), so a status of the same name posted by a different app cannot satisfy the requirement. It is optional but recommended; drop it only if you require the same context name from a non-Actions integration.
+
+### 8.3 Which checks to require (and which not to)
+
+| Context | Require by default? | Why |
+|---|---|---|
+| `agent-critic / agent-critic` | **YES — mandatory** | The whole point. Without this, critic verdicts are advisory and merges aren't blocked. |
+| `cycle-doc-validation / cycle-doc-validation` | **YES** | Spec-Driven Traceability is mandatory for consumers (§5). The validator reliably reports on every consumer PR. |
+| `branch-protection-audit / branch-protection-audit` | No | Usually wired with `gate-enabled: 'false'` (§6) → it's a documented no-op pass. Requiring a no-op check adds no safety. Require it only once you flip `gate-enabled: 'true'` and provision its App token. |
+| `schema-check / *` | No | The dark-factory `schema-check` workflow validates `@momentiq/dark-factory-schemas` specifically; for your own OpenAPI / JSON Schema drift you typically wire your own `schema-check`. Don't require dark-factory's unless your CI actually runs it and it reports. |
+| `pr-status-check / PR Status Check` | Optional | A no-op sentinel aggregator (always exits 0). Requiring it only proves the Dark Factory PR workflow ran; it carries no quality signal. Add it if you want a liveness assertion. |
+
+The minimum binding configuration is just **`agent-critic / agent-critic`**. The JSON above also requires `cycle-doc-validation / cycle-doc-validation` because traceability is mandatory for consumers; drop that line if your repo genuinely doesn't run the cycle-doc validator yet.
+
+### 8.4 Caveat — fork PRs cannot satisfy a secret-dependent required check
+
+Once `agent-critic` is required, **external fork PRs become unmergeable through the normal flow**: fork PRs run without access to your repository secrets (`MOMENTIQ_NPM_READ_TOKEN`, `CURSOR_API_KEY`, …), so the `agent-critic` job cannot install the CLI or reach the critic vendors, and the required check never goes green. This is by design (GitHub withholds secrets from fork-triggered runs to prevent secret exfiltration) and is the same class of problem tracked at [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15). Until the 331.3 fork-handling design ships, maintainers must **internalize external contributions** — re-create the fork's branch inside the upstream repo (where secrets are available) and merge that — rather than merging the fork PR directly. If your repo takes no external fork contributions, this caveat does not affect you.
+
+## 9. Validation
 
 **a. Local — `df doctor`:**
 
@@ -300,22 +401,26 @@ Fix every red row before opening your first PR.
 
 **b. First PR.** Open a no-op PR that touches `docs/CONSUMER-ADOPTION.md` or similar low-risk file. Expect:
 
-- `pr-status-check` → PASS (sentinel).
-- `cycle-doc-validation` → PASS (with a valid `Cycle: 1` or `Issue: #<N>` trailer).
-- `agent-critic` → PASS or advisory findings (degrade-and-pass under min-complete-quorum).
-- `branch-protection-audit` → PASS with `gate-enabled: 'false'`.
+- `pr-status-check / PR Status Check` → PASS (sentinel).
+- `cycle-doc-validation / cycle-doc-validation` → PASS (with a valid `Cycle: 1` or `Issue: #<N>` trailer).
+- `agent-critic / agent-critic` → PASS or advisory findings (degrade-and-pass under min-complete-quorum).
+- `branch-protection-audit / branch-protection-audit` → PASS with `gate-enabled: 'false'`.
 
-First-time critic runs are advisory (the policy is `aggregation.blockOnReviewError: false` per the canonical config). Treat the first 1-2 PRs as calibration: tighten `.agent-review/prompts/local-critic.md` and the config until critic findings are signal, not noise.
+After §8, the `agent-critic / agent-critic` and `cycle-doc-validation / cycle-doc-validation` contexts are *required* — the merge queue will not admit a PR until they report green and every bot review thread is resolved. Confirm enforcement is live by checking that the PR's merge box shows these as **Required** checks.
 
-## 9. Update cadence
+First-time critic runs are advisory (the policy is `aggregation.blockOnReviewError: false` per the canonical config). Treat the first 1-2 PRs as calibration: tighten `.agent-review/prompts/local-critic.md` and the config until critic findings are signal, not noise. A consequence: while the critic is still in calibration it degrades-and-passes, so the required check stays green even with advisory findings — enforcement bites once the critic emits actual `state=BLOCKING` verdicts.
+
+## 10. Update cadence
 
 - Pin to a specific alpha/beta version (`0.1.0-alpha.N`) — never floating ranges.
 - Bump CLI deliberately when dark-factory releases a new version. Check the [changelog](https://github.com/momentiq-ai/dark-factory/blob/main/CHANGELOG.md) (when it lands in Phase F+) or the [release tags](https://github.com/momentiq-ai/dark-factory/tags).
 - When bumping, update both `package.json` (`devDependencies."@momentiq/dark-factory-cli"`) AND `.github/workflows/dark-factory-pr.yml` (`with: cli-version:`). The `df doctor` subcommand surfaces drift between them.
 - Reusable workflow SHA bumps are decoupled: you can bump the CLI without bumping the workflow SHA and vice versa. Test in a draft PR before landing in main.
 
-## 10. References
+## 11. References
 
+- **Onboarding-enforcement gap (this section's rationale):** [`momentiq-ai/dark-factory#17`](https://github.com/momentiq-ai/dark-factory/issues/17) — consumers adopting gates without enforcing them; evidence at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213).
+- **Fork-PR / secret-dependent required check:** [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15) — why fork PRs can't satisfy a required `agent-critic` until the 331.3 fork-handling design ships.
 - **Source-of-truth cycle:** [sage3c:cycle331.1-extract-from-sage3c.md](https://github.com/momentiq-ai/sage3c/blob/main/docs/roadmap/cycles/cycle331.1-extract-from-sage3c.md) — the cycle this extraction was driven by.
 - **Parent platform cycle:** [sage3c:cycle331-dark-factory-platformization.md](https://github.com/momentiq-ai/sage3c/blob/main/docs/roadmap/cycles/cycle331-dark-factory-platformization.md).
 - **AI-Native Manifesto:** [sage3c:docs/engineering/ai-native-manifesto.md](https://github.com/momentiq-ai/sage3c/blob/main/docs/engineering/ai-native-manifesto.md) — foundational principles, especially §10 Spec-Driven Traceability.

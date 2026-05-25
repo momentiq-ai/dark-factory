@@ -10,6 +10,7 @@ Architectural expectations:
 - `docs/roadmap/cycles/` carries your repo's cycle docs (Spec-Driven Traceability — manifesto §10)
 - `.husky/` hooks invoke local critic via subscriptions (cost-controlled); CI is fallback
 - Pin `@momentiq/dark-factory-cli@<exact-version>` (no floating ranges); reusable workflows pin to commit SHA
+- **Require the `agent-critic` status check in a branch ruleset** ([CONSUMER-ADOPTION.md §8](docs/CONSUMER-ADOPTION.md)) — without this the gates are advisory-only and don't block merges. This is a required onboarding step, not an optional one.
 
 Concrete prior art: [taxpilot2a PR #45](https://github.com/momentiq-ai/taxpilot2a/pull/45) (F.5a, first external consumer) + [PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) (access-permission follow-up).
 
@@ -49,10 +50,14 @@ on:
     branches: [main]
   merge_group:
 jobs:
-  # IMPORTANT: the caller-job-id below MUST match the consumer's
-  # ruleset context exactly. Reusable workflows produce contexts in
-  # the form `<caller-job-id> / <callee-job-name>` — and most
-  # required-status-check rules match on the caller-job-id.
+  # IMPORTANT: a reusable workflow invoked via `uses:` produces a
+  # status-check context of the form `<caller-job-id> / <callee-job-name>`,
+  # NOT the bare callee name. The caller job-id below is `agent-critic` and
+  # the callee's internal job is also named `agent-critic`, so the emitted
+  # context is exactly `agent-critic / agent-critic` — that is the literal
+  # string your enforcement ruleset must require (see
+  # docs/CONSUMER-ADOPTION.md §8). Requiring the bare `agent-critic` would
+  # never match and would block every PR forever.
   agent-critic:
     uses: momentiq-ai/dark-factory/.github/workflows/agent-critic.yml@v0.1.0
     secrets:
