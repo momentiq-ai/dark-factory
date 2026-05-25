@@ -1,0 +1,128 @@
+{
+  "version": 2,
+  "critics": [
+    {
+      "id": "cursor-local-chief-engineer",
+      "name": "Cursor Local Critic — Composer 2.5",
+      "adapter": "cursor-sdk",
+      "required": false,
+      "runtime": "local",
+      "model": {
+        "id": "composer-2.5",
+        "params": [
+          { "id": "fast", "value": "false" }
+        ]
+      }
+    },
+    {
+      "id": "codex-local-chief-engineer",
+      "name": "Codex Local Critic — GPT-5.5",
+      "adapter": "codex-sdk",
+      "required": false,
+      "runtime": "local",
+      "model": {
+        "id": "gpt-5.5",
+        "params": [
+          { "id": "reasoning_effort", "value": "high" }
+        ]
+      }
+    },
+    {
+      "id": "gemini-local-chief-engineer",
+      "name": "Gemini Local Critic — Gemini 3.5 Flash",
+      "adapter": "gemini-sdk",
+      "required": false,
+      "runtime": "local",
+      "model": {
+        "id": "gemini-3.5-flash",
+        "params": []
+      }
+    },
+    {
+      "id": "grok-local-chief-engineer",
+      "name": "Grok Local Critic — Grok 4.3",
+      "adapter": "grok-direct-sdk",
+      "required": false,
+      "runtime": "local",
+      "model": {
+        "id": "grok-4.3",
+        "params": [
+          { "id": "reasoning_effort", "value": "high" }
+        ]
+      }
+    }
+  ],
+  "aggregation": {
+    "policy": "min-complete-quorum",
+    "blockingSeverities": ["blocker", "high"],
+    "quorum": 2
+  },
+  "git": {
+    "hookPath": ".husky",
+    "artifactDir": "agent-reviews",
+    "artifactScope": "git-common-dir"
+  },
+  "policy": {
+    "blockOnMissingReview": false,
+    "blockOnReviewError": false,
+    "allowEmergencyBypass": true,
+    "postCommitMode": "async"
+  },
+  "context": {
+    "guidanceFiles": [
+      "CLAUDE.md"
+    ],
+    "promptFragments": [
+      ".agent-review/prompts/local-critic.md"
+    ],
+    "maxChangedFileBytes": 200000,
+    "includeFullChangedFiles": true
+  },
+  "tdd": {
+    "classifier": {
+      "productionGlobs": [
+        "packages/cli/src/**/*.ts",
+        "packages/schemas/src/**/*.ts"
+      ],
+      "testGlobs": [
+        "packages/cli/tests/**/*.ts",
+        "packages/schemas/tests/**/*.ts"
+      ],
+      "exclusionGlobs": [
+        "**/*.md",
+        "**/CHANGELOG*",
+        "docs/**",
+        "**/dist/**",
+        "**/node_modules/**",
+        "**/*.lock",
+        "packages/cli/src/**/*.py",
+        "packages/cli/tests/**/*.py"
+      ],
+      "justificationTrailer": "Tdd-Justification"
+    }
+  },
+  "validation": {
+    "runBeforeReview": false,
+    "resultFile": "agent-reviews/quality-gates/latest.json",
+    "requiredQualityGates": [],
+    "optionalQualityGates": [],
+    "verificationRoutes": [
+      {
+        "id": "docs-only",
+        "trigger": [
+          "**/*.md",
+          "docs/**",
+          "**/CHANGELOG*"
+        ],
+        "command": null,
+        "evidencePath": null,
+        "category": "docs",
+        "exclusive": true
+      }
+    ]
+  },
+  "security": {
+    "redactSecretsInDiagnostics": true,
+    "treatDiffAsUntrustedInput": true
+  }
+}
