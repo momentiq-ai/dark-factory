@@ -16,6 +16,10 @@ build/
 out/
 *.tsbuildinfo
 
+# npm pack tarballs (e.g. `npm pack` produces `momentiq-*-0.x.0-alpha.N.tgz`
+# in the package dir for sideload validation; these are never tracked).
+*.tgz
+
 # Test output
 coverage/
 .nyc_output/

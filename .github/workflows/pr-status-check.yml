@@ -34,7 +34,7 @@
 # `--ignore-scripts` blocks lifecycle scripts. The full integrity-baked
 # `npm pack` + extract-to-trusted-tmpdir hardening from cycle 331.1
 # § "Reusable workflow shapes" (lines ~240-470) is deferred to a
-# follow-up because the published 0.1.0-alpha.4 artifact still declares
+# follow-up because the published 0.1.0-alpha.5 artifact still declares
 # runtime `dependencies` (not yet a fully-bundled artifact) and no
 # `EXPECTED_INTEGRITY` is baked at workflow-tag time. That hardening
 # lands alongside (a) re-publishing the CLI as fully-bundled and (b)
@@ -61,7 +61,7 @@ on:
           CLI version to install. 'local' (default) builds from the
           checked-out workspace — only valid when invoked from within
           dark-factory itself. Consumers in Phase G/H pass an explicit
-          semver tag (e.g. '0.1.0-alpha.4'); the install step uses
+          semver tag (e.g. '0.1.0-alpha.5'); the install step uses
           `npm install @momentiq/dark-factory-cli@<version>` inside an
           isolated $RUNNER_TEMP dir with a job-scoped .npmrc.
         type: string
