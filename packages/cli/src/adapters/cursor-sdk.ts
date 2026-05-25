@@ -20,11 +20,9 @@ import {
   writeRedactedDiagnostic,
 } from "./_shared.js";
 import {
-  PERMANENT_ERROR_CODES,
   runRetryLoop,
   shouldRetryRunFailure,
   type AttemptOutcome,
-  type RetryableFailure,
 } from "./_retry.js";
 
 // Re-export for backwards compatibility — `normalizeCriticEcho` originally
