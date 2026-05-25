@@ -1,41 +1,45 @@
-# agent-critic — reusable workflow shape (cycle 331.1 Phase E).
+# agent-critic — reusable workflow shape (cycle 331.1 Phases E + F).
 #
 # Satisfies the `agent-critic` required-status-check context in dark-
 # factory's own main1 ruleset (id 16808560) and is published as a
 # reusable workflow for consumers (sage3c / cerebe-platform / external
 # repos) to invoke from their own CI in Phases G/H.
 #
-# Phase E posture: this invokes `df critic`, which is a Phase-E STUB
-# that exits 0 (see packages/cli/src/cli.ts). Real critic orchestration
-# wires up the Critic Orchestrator service (already extracted in Phase B
-# to packages/cli/src/) in Phase F. So this workflow currently provides
-# the GATE SHAPE but not the real critic gating. The dogfood chicken-
-# and-egg (admin-merge required for Phases A/B/C/D because dark-factory
-# had no CI to satisfy its own ruleset) ends here: this and the four
-# sibling workflows turn green by being present, the ruleset matches by
-# context name, and Phases F/G/H can land via the normal merge queue.
+# Phase E shipped this workflow with `df critic` as a no-op stub so the
+# 5 reusable workflows could break the chicken-and-egg (admin-merge
+# was required for Phases A/B/C/D because dark-factory had no CI to
+# satisfy its own ruleset). Phase F replaced the stub with the real
+# Critic Orchestrator invocation — this workflow now runs the actual
+# vendor adapters via `runReview()` against the PR's HEAD commit.
 #
 # Dual trigger:
 #   1. `pull_request:` — runs on dark-factory's own PRs so the ruleset
-#      is satisfied here (context = the JOB NAME below).
+#      is satisfied here (context = the JOB NAME below). Same-repo PRs
+#      have access to repository secrets per GitHub Actions security
+#      model.
 #   2. `workflow_call:` — consumers `uses:` this from their own
 #      workflows. Consumer caller-job-id is the first segment of the
 #      resulting context; consumers MUST name their caller job
 #      `agent-critic:` for the rule to match.
 #
-# Secrets surface (declared at workflow_call level for forward-
-# compatibility with Phase F — currently NOT read by the Phase E stub):
+# Secrets surface (consumed by the Phase F real critic invocation):
 #   - DOPPLER_SERVICE_TOKEN_SAGE: internal-momentiq path (sage3c /
 #     cerebe-platform); fetches vendor critic keys via `doppler secrets
 #     get` at runtime. See cycle 331.1 § Reusable workflow shapes.
+#     Phase F does NOT yet implement Doppler-loading from this token;
+#     a follow-up will add the `doppler run -- ...` wrapper to surface
+#     keys to the CLI process. Until then, consumers wire vendor keys
+#     directly via the 4 explicit env vars below.
 #   - CURSOR_API_KEY / CODEX_API_KEY / GEMINI_API_KEY / XAI_API_KEY:
-#     external-consumer path. Reachable when the Doppler token is empty.
-#     None are read in Phase E (stub exits 0 without consulting any
-#     vendor); declared here so the workflow_call contract is stable
-#     and consumers can wire them up ahead of Phase F.
+#     external-consumer path AND the dark-factory internal path until
+#     the Doppler wrapper lands. The Phase F `df critic` step exports
+#     each into the CLI subprocess; missing keys cause the corresponding
+#     vendor adapter to register as `status=error` (non-blocking under
+#     the min-complete-quorum aggregation policy).
 #   - MOMENTIQ_NPM_READ_TOKEN: required only after Phase B-PUBLISH for
 #     external consumers in the 331.1/331.2 private-scope window;
-#     becomes optional post-331.3 OSS-flip. Not used in Phase E.
+#     becomes optional post-331.3 OSS-flip. Not yet used in Phase F
+#     because the install path is still `npm ci` against the workspace.
 #
 # Security: all input values flow through env vars (REQUESTED_VERSION)
 # before any run script references them, per
@@ -131,13 +135,26 @@ jobs:
           echo "::error::cli-version='$REQUESTED_VERSION' was requested but the pinned-version install path is not yet wired (cycle 331.1 Phase B-PUBLISH pending)." >&2
           exit 1
 
-      - name: Run critic stub (Phase E)
-        # Phase E posture: `df critic` is a no-op stub that exits 0
-        # (see packages/cli/src/cli.ts `cmdCritic`). Phase F replaces
-        # this with real Critic Orchestrator invocation. Until then,
-        # this gate exists for SHAPE and to break the dogfood chicken-
-        # and-egg — it provides NO real adversarial-critic gating yet.
+      - name: Run real Critic Orchestrator (Phase F)
+        # Phase F posture: `df critic` invokes the real Critic Orchestrator
+        # (extracted in Phase B) via `runReview()`. Loads
+        # `.agent-review/config.json`, instantiates the 4 vendor adapters,
+        # runs them concurrently, writes the aggregate verdict to
+        # `.git/agent-reviews/<sha>.json`, and persists telemetry to
+        # `_runs.ndjson`. Exits 0 even on errors (degrade-and-pass) — the
+        # configured min-complete-quorum policy with `required: false` on
+        # every critic handles per-critic failures gracefully (errored
+        # critics contribute to `quorum_unmet`, which is non-blocking).
         if: env.REQUESTED_VERSION == 'local'
+        env:
+          # Wire vendor API keys from workflow secrets into the CLI
+          # process. Mirror the keys the adapters read by convention
+          # (CURSOR_API_KEY / CODEX_API_KEY / GEMINI_API_KEY / XAI_API_KEY).
+          # Missing keys produce per-critic errors, not pipeline failures.
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: node ./packages/cli/dist/cli.js critic
 
       - name: Summary
@@ -150,8 +167,10 @@ jobs:
             echo "## agent-critic Summary"
             echo ""
             if [[ "$JOB_STATUS" == "success" ]]; then
-              echo "agent-critic stub passed (Phase E — no real critic invoked; lands in Phase F)."
+              echo "agent-critic ran the real Critic Orchestrator (Phase F)."
+              echo "See the 'Run real Critic Orchestrator' step above for per-critic"
+              echo "verdicts and the .git/agent-reviews/<sha>.json artifact path."
             else
-              echo "agent-critic stub failed — investigate workspace install or build."
+              echo "agent-critic failed — investigate workspace install or build."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
