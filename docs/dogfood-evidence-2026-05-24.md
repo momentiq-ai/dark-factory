@@ -62,20 +62,48 @@ This confirms:
    at 0 even when every vendor errors — required for Phase F's
    dogfood loop to not deadlock.
 
-## CI workflow outcomes (to be filled in post-merge)
+## CI workflow outcomes — PR #5 (initial dogfood)
 
-Once the dogfood PR is open, the 5 reusable workflows run on it for
-the first time with real critic logic. Outcomes recorded below.
+The 5 reusable workflows ran on PR #5 (the Phase F dogfood PR that
+introduced the real critic wiring). All 5 turned green and the PR
+auto-merged via the merge queue.
+
+| Workflow | Outcome | Duration (s) | Notes |
+|---|---|---|---|
+| `agent-critic` | SUCCESS | ~30 | Real Critic Orchestrator ran. All 4 vendor adapters errored because the workflow YAML didn't yet export vendor API keys to the CLI subprocess (fixed in PR #6 follow-up). Aggregate verdict: `CHANGES_REQUESTED` (quorum_unmet); exit-0 degrade-and-pass kept the gate green. |
+| `pr-status-check` | SUCCESS | ~30 | Sentinel passed as expected. |
+| `schema-check` | SUCCESS | ~30 | Schemas package built cleanly. No drift detector wired yet. |
+| `cycle-doc-validation` | SUCCESS | ~35 | No-op on dark-factory (no cycle docs of its own — by design). |
+| `branch-protection-audit` | SUCCESS | ~33 | First run with `CI_BOT_APP_ID` + `CI_BOT_PRIVATE_KEY` secrets provisioned. |
+
+Total wall-clock: ~35 seconds (all workflows ran concurrently). PR
+auto-merge fired ~5 seconds after the last check landed.
+
+## CI workflow outcomes — PR #6 (vendor-keys follow-up)
+
+PR #6 wired the four vendor API keys (`CURSOR_API_KEY` /
+`CODEX_API_KEY` / `GEMINI_API_KEY` / `XAI_API_KEY`) to the
+`agent-critic` step's env. This PR's CI run is the FIRST live
+exercise of the real Critic Orchestrator with REAL vendor keys
+against a real diff.
+
+Outcomes recorded below (filled in once CI completes):
 
 | Workflow | Outcome | Duration | Notes |
 |---|---|---|---|
-| `agent-critic` | TBD | TBD | First REAL critic run on dark-factory's own diff |
-| `pr-status-check` | TBD | TBD | Thin sentinel, expected pass |
-| `schema-check` | TBD | TBD | Builds schemas package; no drift detector |
-| `cycle-doc-validation` | TBD | TBD | Should no-op (dark-factory has no cycle docs) |
-| `branch-protection-audit` | TBD | TBD | First run with `BRANCH_PROTECTION_AUDIT_TOKEN` provisioned |
+| `agent-critic` | TBD | TBD | First real critic run with REAL vendor keys |
+| `pr-status-check` | TBD | TBD | Sentinel, expected pass |
+| `schema-check` | TBD | TBD | No schemas changed, expected pass |
+| `cycle-doc-validation` | TBD | TBD | No-op pass (dark-factory has no cycle docs) |
+| `branch-protection-audit` | TBD | TBD | No spec change, expected pass |
 
-Will be updated once CI runs are observed on the open PR.
+The expected per-critic behavior on PR #6:
+
+- Each vendor adapter calls its SDK with real credentials.
+- Aggregate verdict depends on what the critics find in the
+  workflow YAML diff.
+- Quorum aggregation: at least 2 critics must complete (status =
+  `complete`, not `error`) for a non-`quorum_unmet` verdict.
 
 ## Risks validated by this dogfood
 
