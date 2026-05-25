@@ -27,6 +27,20 @@
 # tags are supported. Floating `@v0` / `@v0.1` tags are NOT created so
 # consumers cannot accidentally pin to a moving target.
 #
+# Phase B-PUBLISH-wf (cycle 331.1): the `cli-version != 'local'` branch
+# below installs the pinned CLI from npm under @momentiq scope using a
+# job-scoped `.npmrc` (mktemp + trap + chmod 600, written to
+# $RUNNER_TEMP so the token never lands in the consumer's checkout).
+# `--ignore-scripts` blocks lifecycle scripts. The full integrity-baked
+# `npm pack` + extract-to-trusted-tmpdir hardening from cycle 331.1
+# § "Reusable workflow shapes" (lines ~240-470) is deferred to a
+# follow-up because the published 0.1.0-alpha.4 artifact still declares
+# runtime `dependencies` (not yet a fully-bundled artifact) and no
+# `EXPECTED_INTEGRITY` is baked at workflow-tag time. That hardening
+# lands alongside (a) re-publishing the CLI as fully-bundled and (b)
+# the Phase E release-CI guard that bakes the integrity hash at tag
+# time.
+#
 # Security: this workflow takes no user-controllable string inputs that
 # get interpolated into shell. The single input (`cli-version`) is read
 # into an env var (REQUESTED_VERSION) before any run script references
@@ -46,13 +60,20 @@ on:
         description: |
           CLI version to install. 'local' (default) builds from the
           checked-out workspace — only valid when invoked from within
-          dark-factory itself. Consumers in Phase G/H must pass an
-          explicit semver tag (e.g. '0.1.0-alpha.3') once Phase B-PUBLISH
-          ships the npm package; the install path that uses a pinned
-          version will be wired alongside that publish.
+          dark-factory itself. Consumers in Phase G/H pass an explicit
+          semver tag (e.g. '0.1.0-alpha.4'); the install step uses
+          `npm install @momentiq/dark-factory-cli@<version>` inside an
+          isolated $RUNNER_TEMP dir with a job-scoped .npmrc.
         type: string
         required: false
         default: 'local'
+    secrets:
+      MOMENTIQ_NPM_READ_TOKEN:
+        description: |
+          Read-token for the @momentiq npm scope (private 331.1/331.2
+          window). Required when `cli-version` != 'local'. Becomes
+          optional post-331.3 OSS-flip.
+        required: false
 
 permissions:
   contents: read
@@ -96,19 +117,57 @@ jobs:
         if: env.REQUESTED_VERSION == 'local'
         run: npm run build
 
-      - name: Reject pinned-version path until Phase B-PUBLISH ships
+      - name: Install @momentiq/dark-factory-cli (consumer path)
+        # Phase B-PUBLISH-wf: consumer install path. Installs the pinned
+        # CLI into an isolated $RUNNER_TEMP dir so the token never lands
+        # in the consumer's checkout and the install can't be influenced
+        # by the consumer's lockfile. `--ignore-scripts` blocks lifecycle
+        # scripts. See header comment for the deferred-hardening note.
         if: env.REQUESTED_VERSION != 'local'
+        env:
+          NPM_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
         run: |
           set -euo pipefail
-          echo "::error::cli-version='$REQUESTED_VERSION' was requested but the pinned-version install path is not yet wired (cycle 331.1 Phase B-PUBLISH pending — see docs/roadmap/cycles/cycle331.1-extract-from-sage3c.md)." >&2
-          echo "::error::Pass cli-version='local' for now; consumers will be able to pin once the published-tarball install lands." >&2
-          exit 1
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::error::MOMENTIQ_NPM_READ_TOKEN secret required for the consumer install path (cli-version='$REQUESTED_VERSION')." >&2
+            echo "::error::Pass it from your caller workflow's `secrets:` block. Becomes optional after the 331.3 OSS-flip." >&2
+            exit 1
+          fi
+          # Job-scoped .npmrc under $RUNNER_TEMP — never the consumer's checkout.
+          NPMRC="$(mktemp)"
+          trap 'rm -f "$NPMRC"' EXIT
+          chmod 600 "$NPMRC"
+          printf '@momentiq:registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$NPMRC"
+          # Isolated install dir — NOT the caller's workspace (caller may
+          # not be a workspaces monorepo, and the token must not touch
+          # consumer files).
+          INSTALL_DIR="$RUNNER_TEMP/df-cli"
+          mkdir -p "$INSTALL_DIR"
+          cd "$INSTALL_DIR"
+          cat > package.json <<'EOF'
+          {"name": "df-cli-runtime", "version": "0.0.0", "private": true}
+          EOF
+          npm install --userconfig "$NPMRC" --no-audit --no-fund --ignore-scripts \
+            "@momentiq/dark-factory-cli@${REQUESTED_VERSION}"
+          # Surface the binary path for downstream steps.
+          DF_CLI="$INSTALL_DIR/node_modules/.bin/df"
+          if [ ! -x "$DF_CLI" ]; then
+            echo "::error::Installed @momentiq/dark-factory-cli@$REQUESTED_VERSION but binary not found at $DF_CLI." >&2
+            exit 1
+          fi
+          echo "DF_CLI=$DF_CLI" >> "$GITHUB_ENV"
 
-      - name: Run status-check stub
+      - name: Run status-check stub (local path)
         # Phase E aggregator stub — exits 0. See `df status-check --help`
         # for the no-op contract documented at packages/cli/src/cli.ts.
         if: env.REQUESTED_VERSION == 'local'
         run: node ./packages/cli/dist/cli.js status-check
+
+      - name: Run status-check stub (consumer path)
+        if: env.REQUESTED_VERSION != 'local'
+        run: |
+          set -euo pipefail
+          "$DF_CLI" status-check
 
       - name: Summary
         if: always()
