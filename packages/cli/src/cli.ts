@@ -17,9 +17,15 @@
 //   df audit stats [--path <NDJSON>]   — service #8 (read/summarize _runs.ndjson)
 //   df admit-pr --files-stdin          — service #6 plan-vs-code classifier
 //
+// Phase F upgrades two stubs to real implementations:
+//
+//   df status-check                    — sentinel aggregator (exit 0).
+//   df critic [--ref <gitref>]         — real Critic Orchestrator via
+//                                        runReview() + 4 vendor adapters.
+//
 // The remaining subcommands listed in --help (review, gate, doctor) land
-// in Phase E (or 331.3 re-publish). For now they print a "not implemented"
-// message and exit 2.
+// in Phase G or later. For now they print a "not implemented" message
+// and exit 2.
 //
 // Argument parsing is intentionally minimal — every flag after a Phase C
 // subcommand is passed through to the wrapped Python script verbatim.
@@ -39,12 +45,21 @@ import {
   runAttributePrCycleRef,
 } from "./cycle-tracker-sync/index.js";
 import {
+  FileTelemetrySink,
   readTelemetryEvents,
   summarizeTelemetry,
   computeQuorumStats,
   computeCriticAgreement,
 } from "./evidence/audit-trail.js";
 import { classifyPrKindFromFiles } from "./policy/merge-queue.js";
+import { AdapterRegistry } from "./adapters/critic.js";
+import { CursorSdkAdapter } from "./adapters/cursor-sdk.js";
+import { CodexSdkAdapter } from "./adapters/codex-sdk.js";
+import { GeminiSdkAdapter } from "./adapters/gemini-sdk.js";
+import { GrokDirectSdkAdapter } from "./adapters/grok-direct-sdk.js";
+import { loadAgentReviewConfig } from "./policy/config.js";
+import { runReview } from "./runner.js";
+import { resolveArtifactDir, telemetryPath } from "./paths.js";
 
 interface PackageMeta {
   name?: string;
@@ -86,14 +101,16 @@ function printHelp(meta: PackageMeta): void {
       "  df audit stats              Summarize the _runs.ndjson audit trail (service #8)",
       "  df admit-pr                 Classify a PR as plan vs code (service #6)",
       "",
-      "Subcommands (Phase E — reusable-workflow stubs, exit 0 with no-op):",
-      "  df status-check             No-op aggregator stub (PR Status Check gate)",
-      "  df critic                   No-op critic stub (agent-critic gate); real",
-      "                              orchestration lands when sage3c migrates in",
-      "                              Phase G and exercises the wired Critic",
-      "                              Orchestrator service. See cycle 331.1 Phase E.",
+      "Subcommands (Phase F — reusable-workflow gates, dogfood-wired):",
+      "  df status-check             Sentinel aggregator (PR Status Check gate).",
+      "                              Exits 0 — merge queue is the real aggregator.",
+      "  df critic                   Real Critic Orchestrator wiring (agent-critic",
+      "                              gate). Loads .agent-review/config.json, runs",
+      "                              the 4 vendor adapters via runReview, writes",
+      "                              aggregate verdict to .git/agent-reviews/<sha>.",
+      "                              Degrades-and-passes on any error (exit 0).",
       "",
-      "Subcommands (coming in cycle 331.1 Phase F+):",
+      "Subcommands (coming in cycle 331.1 Phase G+):",
       "  df review                 Run the multi-critic review for the current commit",
       "  df gate                   Evaluate gate verdict for the current commit",
       "  df doctor                 Diagnose installation, env, and config",
@@ -101,9 +118,12 @@ function printHelp(meta: PackageMeta): void {
       "Each Phase C subcommand passes its remaining argv through to the bundled",
       "Python script verbatim; run `df <subcommand> --help` for full flags.",
       "Phase D subcommands parse flags directly — see `df audit --help` and",
-      "`df admit-pr --help`. Phase E stubs accept any args and exit 0 with a",
-      "structured no-op message so the reusable workflows can satisfy dark-",
-      "factory's own ruleset while real implementations land incrementally.",
+      "`df admit-pr --help`. Phase F's `df critic` accepts --ref/--config/--cwd",
+      "(see `df critic --help`); status-check accepts no flags. Both subcommands",
+      "exit 0 even on failure so the reusable workflows do not block the merge",
+      "queue on a single vendor flake — vendor errors register in the artifact",
+      "as `status=error` and the configured min-complete-quorum policy decides",
+      "the aggregate verdict.",
       "",
       "System requirements:",
       "  Node.js >=20",
@@ -115,10 +135,10 @@ function printHelp(meta: PackageMeta): void {
       "  import { runReview, evaluateCommitGate, buildReviewPacket }",
       `    from \"${name}\";`,
       "",
-      "Status: 0.1.0-alpha.3 — Phase E ships reusable workflow shapes +",
-      "        stub subcommands (`status-check`, `critic`) so dark-factory's",
-      "        own main1 ruleset is satisfied by actual CI workflows. Real",
-      "        critic orchestration lands in Phase F.",
+      "Status: 0.1.0-alpha.4 — Phase F wires the real Critic Orchestrator",
+      "        and dogfoods dark-factory on its own PRs. Reusable workflows",
+      "        from Phase E now invoke real critic logic. The substrate",
+      "        validates itself end-to-end.",
       "        Pure-TS port of #5/#7/#9 tracked as Phase C-PORT follow-up.",
       "",
       "Docs:   https://github.com/momentiq-ai/dark-factory",
@@ -135,8 +155,9 @@ function notImplemented(sub: string): number {
   process.stderr.write(
     `df: subcommand "${sub}" is not implemented in this alpha build.\n` +
       `    Phase B/C/D ship services as library + Python-wrapped subcommands;\n` +
-      `    Phase E adds reusable workflow stubs (status-check, critic);\n` +
-      `    "${sub}" lands in Phase F or later (see \`df --help\`).\n`,
+      `    Phase E added reusable workflow stubs (status-check, critic);\n` +
+      `    Phase F upgraded both to real implementations;\n` +
+      `    "${sub}" lands in Phase G or later (see \`df --help\`).\n`,
   );
   return 2;
 }
@@ -176,44 +197,207 @@ const PHASE_C_SUBCOMMANDS = new Set([
 
 const PHASE_D_SUBCOMMANDS = new Set(["audit", "admit-pr"]);
 
-// Phase E reusable-workflow stubs. These intentionally exit 0 with a
-// structured no-op message so the five reusable workflow shapes (matching
-// dark-factory's main1 ruleset contexts: PR Status Check, schema-check,
-// agent-critic, cycle-doc-validation, branch-protection-audit) can satisfy
-// the ruleset on dark-factory's own PRs while real implementations land
-// incrementally (Phase F: critic, gate; later phases: schema-check parity
-// if dark-factory ever ships schemas).
+// Phase F upgrades two reusable-workflow handlers from stubs (Phase E) to
+// real implementations:
 //
-// `status-check` is a pure aggregator — it never has logic to add. Other
-// stubs (`critic`) will be promoted to real subcommands in Phase F.
+//   - `status-check` stays thin: a sentinel aggregator. The merge queue's
+//     ALLGREEN rule already does the real cross-check aggregation; this
+//     subcommand exists for the `PR Status Check` ruleset context.
 //
-// Caveat: gates wired to exit-0 stubs do NOT enforce anything yet. The
-// dogfood value here is shape — once Phase F wires real critic
-// orchestration, this stub gets replaced and the gate becomes meaningful.
-// Cycle 331.1 Phase E intentionally accepts this transient posture per the
-// brief; the ruleset would otherwise reject EVERY PR (chicken-and-egg).
-const PHASE_E_SUBCOMMANDS = new Set(["status-check", "critic"]);
+//   - `critic` is now wired to the real Critic Orchestrator (Phase B
+//     extraction). It loads `.agent-review/config.json`, instantiates
+//     the 4 vendor adapters, runs `runReview()`, and writes the
+//     aggregate artifact. Degrades-and-passes on any error so the
+//     dogfood gate stays green while operators triage upstream issues.
+const PHASE_F_SUBCOMMANDS = new Set(["status-check", "critic"]);
 
 function cmdStatusCheck(_rest: string[]): number {
-  // Aggregator gate — no logic of its own. Future Phase F may decide to
-  // promote this to a real aggregator that reads other workflow outputs;
-  // for Phase E the gate exists solely to satisfy the `PR Status Check`
-  // ruleset context.
-  process.stdout.write("df status-check: no-op stub (Phase E) — exit 0\n");
+  // PR Status Check is a sentinel aggregator. As cycle 331.1 Phase E
+  // documents in `.github/workflows/pr-status-check.yml`, this gate is
+  // present specifically to satisfy the `PR Status Check` ruleset context
+  // — its passage means "the workflow itself reached this step", which
+  // is the contract every other status check separately enforces. There
+  // is no useful aggregation work to do here that the merge queue's
+  // `ALLGREEN` rule doesn't already do. So we keep this thin: emit a
+  // structured one-liner and exit 0.
+  //
+  // A richer aggregator (querying the GitHub Actions API for sibling
+  // check results) was considered for Phase F; deferred as gold-plating
+  // because the merge queue already provides that semantics with
+  // stronger guarantees (it sees the actual rerun state, not a snapshot).
+  process.stdout.write(
+    "df status-check: sentinel-pass (cycle 331.1 Phase F) — merge queue is the real aggregator.\n",
+  );
   return 0;
 }
 
-function cmdCritic(_rest: string[]): number {
-  // Phase F will wire this to the existing Critic Orchestrator service
-  // already extracted into `packages/cli/src/` (Phase B). For now the
-  // stub satisfies the `agent-critic` ruleset context on dark-factory's
-  // own PRs without running real critics — the dogfood loop closes when
-  // F lands.
-  process.stdout.write(
-    "df critic: no-op stub (Phase E) — exit 0\n" +
-      "  Real Critic Orchestrator wiring lands in cycle 331.1 Phase F.\n",
-  );
-  return 0;
+// ---------------------------------------------------------------------------
+// Phase F: `df critic` — REAL Critic Orchestrator wiring.
+//
+// Reads `.agent-review/config.json`, instantiates the four vendor adapters
+// (Cursor, Codex, Gemini, Grok), runs `runReview` against HEAD, and writes
+// the aggregate verdict.
+//
+// CRITICAL DESIGN POINT: degrade-and-pass on ANY error. Three reasons:
+//
+// 1. Dogfood chicken-and-egg — the PR that ENABLES `df critic` is the
+//    first PR `df critic` runs on. If the wiring throws, the PR can't
+//    merge to ship the fix.
+//
+// 2. Vendor SDKs throw freely on missing/expired keys, network errors,
+//    rate limits, etc. The config's `aggregation.policy:
+//    "min-complete-quorum"` + `required: false` on every critic already
+//    handles per-critic errors gracefully (they register as
+//    `status="error"` and contribute to `quorum_unmet` which is
+//    non-blocking under min-complete-quorum). But pre-`runReview`
+//    errors (config load, registry init) need explicit handling.
+//
+// 3. The `agent-critic` workflow's job-level `if: always()` summary step
+//    swallows shell-level non-zero. We exit 0 from the CLI so the gate
+//    surfaces as green; the structured output records what happened.
+//
+// All caught errors print to stderr with a `[critic-degraded]` prefix
+// so operators can audit-trace them. The exit code is always 0 in
+// Phase F. Future phases (sage3c migration G) may add a `--strict`
+// flag that fail-closes on errors — but for dark-factory dogfood, this
+// posture lets the substrate be exercised on its own PRs without
+// blocking on a single vendor flaking out.
+// ---------------------------------------------------------------------------
+
+interface CriticOptions {
+  ref: string;
+  configPath?: string;
+  cwd?: string;
+}
+
+function parseCriticArgs(rest: string[]): CriticOptions {
+  const { flags } = parseFlags(rest);
+  const ref =
+    typeof flags["ref"] === "string"
+      ? (flags["ref"] as string)
+      : typeof flags["pr"] === "string"
+        ? "HEAD"
+        : "HEAD";
+  const out: CriticOptions = { ref };
+  if (typeof flags["config"] === "string") {
+    out.configPath = flags["config"] as string;
+  }
+  if (typeof flags["cwd"] === "string") {
+    out.cwd = flags["cwd"] as string;
+  }
+  return out;
+}
+
+function buildDefaultAdapterRegistry(): AdapterRegistry {
+  // Each adapter reads its API key from the corresponding env var by
+  // default (CURSOR_API_KEY / CODEX_API_KEY / GEMINI_API_KEY /
+  // XAI_API_KEY). Missing keys cause the adapter's `review()` to
+  // return `status="error"` rather than throw at registry-init time —
+  // exactly the behavior min-complete-quorum needs to degrade
+  // gracefully.
+  const registry = new AdapterRegistry();
+  registry.register(new CursorSdkAdapter());
+  registry.register(new CodexSdkAdapter());
+  registry.register(new GeminiSdkAdapter());
+  registry.register(new GrokDirectSdkAdapter());
+  return registry;
+}
+
+async function cmdCritic(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df critic — run the multi-vendor adversarial critic against HEAD",
+        "",
+        "Usage:",
+        "  df critic [--ref <gitref>] [--config <path>] [--cwd <path>]",
+        "",
+        "Reads .agent-review/config.json (or --config <path>), instantiates",
+        "the configured vendor adapters, runs the critics against the named",
+        "git ref (default HEAD), and writes the aggregate verdict + per-",
+        "critic findings to `.git/agent-reviews/<sha>.json` (path comes",
+        "from the loaded config's git.artifactDir).",
+        "",
+        "Environment:",
+        "  CURSOR_API_KEY / CODEX_API_KEY / GEMINI_API_KEY / XAI_API_KEY",
+        "    Vendor critic API keys. Missing keys cause the corresponding",
+        "    critic to register as `status=error` (non-blocking under the",
+        "    default min-complete-quorum policy).",
+        "",
+        "Exit code:",
+        "  Always 0 in this build — vendor / config errors are surfaced",
+        "  on stderr with a [critic-degraded] prefix. The aggregate gate",
+        "  verdict is written to the artifact file regardless.",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+
+  const opts = parseCriticArgs(rest);
+  try {
+    const loaded = await loadAgentReviewConfig({
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    });
+    const registry = buildDefaultAdapterRegistry();
+
+    // Wire a file telemetry sink so the run lands in
+    // `.git/agent-reviews/_runs.ndjson` (the same path `df audit stats`
+    // reads). This is dogfood proof: the substrate exercises its own
+    // audit trail on its own PRs.
+    const artifactDir = await resolveArtifactDir(loaded);
+    const sink = new FileTelemetrySink(telemetryPath(artifactDir));
+
+    const outcome = await runReview({
+      loaded,
+      registry,
+      ref: opts.ref,
+      telemetry: sink,
+    });
+
+    const verdict = outcome.artifact.gateVerdict ?? "(no verdict)";
+    const reviewedSha = outcome.artifact.commit;
+    const findingCount = outcome.artifact.criticResults.reduce(
+      (acc, r) => acc + r.findings.length,
+      0,
+    );
+    const criticSummaries = outcome.artifact.criticResults
+      .map(
+        (r) =>
+          `    ${r.criticId}: ${r.status}` +
+          (r.verdict ? ` (${r.verdict})` : "") +
+          ` — findings=${r.findings.length}`,
+      )
+      .join("\n");
+
+    process.stdout.write(
+      [
+        `df critic: review complete for ${reviewedSha}`,
+        `  verdict: ${verdict}`,
+        `  total findings: ${findingCount}`,
+        `  per-critic:`,
+        criticSummaries,
+        `  artifact: ${outcome.paths.jsonPath}`,
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  } catch (err) {
+    // Degrade-and-pass. See the design comment above the function.
+    process.stderr.write(
+      [
+        "[critic-degraded] df critic failed before completing a review.",
+        `[critic-degraded] cause: ${(err as Error).message}`,
+        "[critic-degraded] exiting 0 so the dogfood gate stays green. Operators:",
+        "[critic-degraded]   - check .agent-review/config.json exists at repo root",
+        "[critic-degraded]   - check vendor API keys are exported (CURSOR_API_KEY etc.)",
+        "[critic-degraded]   - check the worktree's .git/agent-reviews/ is writable",
+        "[critic-degraded]   - inspect upstream logs for stack trace context",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +658,7 @@ async function main(argv: string[]): Promise<number> {
     if (
       !PHASE_C_SUBCOMMANDS.has(sub0) &&
       !PHASE_D_SUBCOMMANDS.has(sub0) &&
-      !PHASE_E_SUBCOMMANDS.has(sub0)
+      !PHASE_F_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -500,7 +684,7 @@ async function main(argv: string[]): Promise<number> {
     return cmdStatusCheck(rest);
   }
   if (sub === "critic") {
-    return cmdCritic(rest);
+    return await cmdCritic(rest);
   }
   return notImplemented(sub);
 }

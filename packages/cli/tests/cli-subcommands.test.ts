@@ -177,25 +177,26 @@ describe("df CLI — Phase D subcommands (services #6 + #8)", () => {
   });
 });
 
-describe("df CLI — Phase E reusable-workflow stubs", () => {
-  // Phase E ships `status-check` and `critic` as exit-0 stubs so the five
-  // reusable workflow shapes can satisfy dark-factory's own main1 ruleset
-  // (`PR Status Check`, `agent-critic`) while real implementations land
-  // in later phases. These tests pin the contract: stubs must exit 0
-  // and surface a structured no-op message so reviewers can tell the
-  // stub apart from real work — see cycle 331.1 Phase E in
-  // docs/roadmap/cycles/cycle331.1-extract-from-sage3c.md.
-  it("--help lists Phase E stubs", async () => {
+describe("df CLI — Phase F reusable-workflow gates", () => {
+  // Phase F upgrades `status-check` and `critic` from stubs to real
+  // implementations while preserving the exit-0 contract that the five
+  // reusable workflow shapes depend on. `status-check` stays a sentinel
+  // (the merge queue's ALLGREEN rule is the real aggregator); `critic`
+  // wires the real Critic Orchestrator with aggressive degrade-and-pass
+  // so a single vendor flake or missing config never blocks the gate.
+  // See cycle 331.1 Phase F in docs/roadmap/cycles/cycle331.1-extract-
+  // from-sage3c.md.
+  it("--help lists Phase F gates", async () => {
     const r = await runDfCli(["--help"]);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("df status-check");
     expect(r.stdout).toContain("df critic");
   });
 
-  it("status-check exits 0 with a no-op stub message", async () => {
+  it("status-check exits 0 with a sentinel message", async () => {
     const r = await runDfCli(["status-check"]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("no-op stub");
+    expect(r.stdout).toContain("sentinel-pass");
   });
 
   it("status-check ignores arbitrary trailing args (aggregator contract)", async () => {
@@ -203,21 +204,71 @@ describe("df CLI — Phase E reusable-workflow stubs", () => {
     expect(r.exitCode).toBe(0);
   });
 
-  it("critic exits 0 with a no-op stub message + Phase F pointer", async () => {
-    const r = await runDfCli(["critic"]);
+  it("critic --help prints Phase F usage", async () => {
+    const r = await runDfCli(["critic", "--help"]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("no-op stub");
-    expect(r.stdout).toContain("Phase F");
+    expect(r.stdout).toContain("--ref");
+    expect(r.stdout).toContain("vendor adapters");
   });
 
-  it("critic ignores arbitrary trailing args", async () => {
-    const r = await runDfCli([
-      "critic",
-      "--config",
-      "darkfactory.yaml",
-      "--critics",
-      "cursor,codex",
-    ]);
+  it("critic degrades-and-passes (exit 0) when no config is reachable", async () => {
+    // Run from /tmp so the loader can't find .agent-review/config.json.
+    // Must hit the catch path in cmdCritic and print [critic-degraded].
+    const r = await new Promise<SpawnResult>((resolvePromise, rejectPromise) => {
+      const child = spawn(process.execPath, [CLI_PATH, "critic"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        cwd: "/tmp",
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.on("error", (err) => rejectPromise(err));
+      child.on("close", (code) => {
+        resolvePromise({ exitCode: code === null ? -1 : code, stdout, stderr });
+      });
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toContain("[critic-degraded]");
+  });
+
+  it("critic ignores arbitrary trailing args (degrades-and-passes)", async () => {
+    // Phase F still preserves the Phase E contract that arbitrary flags
+    // do not block the gate. With no resolvable config, exit 0 via the
+    // degraded path.
+    const r = await new Promise<SpawnResult>((resolvePromise, rejectPromise) => {
+      const child = spawn(
+        process.execPath,
+        [
+          CLI_PATH,
+          "critic",
+          "--config",
+          "darkfactory.yaml",
+          "--critics",
+          "cursor,codex",
+        ],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          cwd: "/tmp",
+        },
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.on("error", (err) => rejectPromise(err));
+      child.on("close", (code) => {
+        resolvePromise({ exitCode: code === null ? -1 : code, stdout, stderr });
+      });
+    });
     expect(r.exitCode).toBe(0);
   });
 });
