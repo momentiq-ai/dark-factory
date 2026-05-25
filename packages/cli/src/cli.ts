@@ -53,10 +53,14 @@ import {
 } from "./evidence/audit-trail.js";
 import { classifyPrKindFromFiles } from "./policy/merge-queue.js";
 import { AdapterRegistry } from "./adapters/critic.js";
-import { CursorSdkAdapter } from "./adapters/cursor-sdk.js";
-import { CodexSdkAdapter } from "./adapters/codex-sdk.js";
-import { GeminiSdkAdapter } from "./adapters/gemini-sdk.js";
-import { GrokDirectSdkAdapter } from "./adapters/grok-direct-sdk.js";
+// NOTE: vendor adapters (Cursor, Codex, Gemini, Grok) are dynamically
+// imported inside `buildDefaultAdapterRegistry()` so the CLI loads under
+// `--ignore-scripts` for every non-`df critic` subcommand. The Cursor
+// SDK has a top-level static dependency on `sqlite3` which crashes at
+// module load when its native binding hasn't been built (the case for
+// consumers using the documented `npm install --ignore-scripts` install
+// path). Phase B-PUBLISH-pkg (cycle 331.1, alpha.5): see
+// https://github.com/momentiq-ai/dark-factory/pull/<this-pr>.
 import { loadAgentReviewConfig } from "./policy/config.js";
 import { runReview } from "./runner.js";
 import { resolveArtifactDir, telemetryPath } from "./paths.js";
@@ -135,11 +139,13 @@ function printHelp(meta: PackageMeta): void {
       "  import { runReview, evaluateCommitGate, buildReviewPacket }",
       `    from \"${name}\";`,
       "",
-      "Status: 0.1.0-alpha.4 — Phase F wires the real Critic Orchestrator",
-      "        and dogfoods dark-factory on its own PRs. Reusable workflows",
-      "        from Phase E now invoke real critic logic. The substrate",
-      "        validates itself end-to-end.",
-      "        Pure-TS port of #5/#7/#9 tracked as Phase C-PORT follow-up.",
+      "Status: 0.1.0-alpha.5 — Phase B-PUBLISH-pkg fixes CLI loadability",
+      "        under `npm install --ignore-scripts` for all non-`df critic`",
+      "        subcommands. Phase F wires the real Critic Orchestrator and",
+      "        dogfoods dark-factory on its own PRs. Reusable workflows from",
+      "        Phase E now invoke real critic logic. The substrate validates",
+      "        itself end-to-end. Pure-TS port of #5/#7/#9 tracked as Phase",
+      "        C-PORT follow-up.",
       "",
       "Docs:   https://github.com/momentiq-ai/dark-factory",
       "",
@@ -288,18 +294,58 @@ function parseCriticArgs(rest: string[]): CriticOptions {
   return out;
 }
 
-function buildDefaultAdapterRegistry(): AdapterRegistry {
+// Adapter loader identity → module path. Kept as a typed array so the
+// per-vendor try/catch loop below is structurally uniform: each entry
+// is one dynamic import + one registry.register. Adding a vendor is one
+// row, not one branch.
+const ADAPTER_LOADERS: ReadonlyArray<{
+  readonly id: string;
+  readonly modulePath: string;
+  readonly className: string;
+}> = [
+  { id: "cursor-sdk", modulePath: "./adapters/cursor-sdk.js", className: "CursorSdkAdapter" },
+  { id: "codex-sdk", modulePath: "./adapters/codex-sdk.js", className: "CodexSdkAdapter" },
+  { id: "gemini-sdk", modulePath: "./adapters/gemini-sdk.js", className: "GeminiSdkAdapter" },
+  { id: "grok-direct-sdk", modulePath: "./adapters/grok-direct-sdk.js", className: "GrokDirectSdkAdapter" },
+];
+
+async function buildDefaultAdapterRegistry(): Promise<AdapterRegistry> {
   // Each adapter reads its API key from the corresponding env var by
   // default (CURSOR_API_KEY / CODEX_API_KEY / GEMINI_API_KEY /
   // XAI_API_KEY). Missing keys cause the adapter's `review()` to
   // return `status="error"` rather than throw at registry-init time —
   // exactly the behavior min-complete-quorum needs to degrade
   // gracefully.
+  //
+  // Cycle 331.1 Phase B-PUBLISH-pkg (alpha.5) — adapter modules are
+  // dynamically imported one-by-one so a single vendor's static-import
+  // failure (e.g. the Cursor SDK's transitive `sqlite3` native binding
+  // missing under `npm install --ignore-scripts`) does not abort the
+  // CLI. A failed adapter is logged with `[critic-degraded]` and the
+  // remaining vendors register normally; min-complete-quorum
+  // (`required: false` per critic, `quorum: 2` aggregate) handles the
+  // missing adapter without blocking.
   const registry = new AdapterRegistry();
-  registry.register(new CursorSdkAdapter());
-  registry.register(new CodexSdkAdapter());
-  registry.register(new GeminiSdkAdapter());
-  registry.register(new GrokDirectSdkAdapter());
+  for (const loader of ADAPTER_LOADERS) {
+    try {
+      const mod = (await import(loader.modulePath)) as Record<string, unknown>;
+      const Ctor = mod[loader.className] as
+        | (new () => import("./adapters/critic.js").CriticAdapter)
+        | undefined;
+      if (typeof Ctor !== "function") {
+        process.stderr.write(
+          `[critic-degraded] adapter ${loader.id}: module loaded but '${loader.className}' export is not a constructor; skipping registration.\n`,
+        );
+        continue;
+      }
+      registry.register(new Ctor());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[critic-degraded] adapter ${loader.id}: failed to load (${message}); skipping registration. If this vendor is marked 'required: true' in .agent-review/config.json, the orchestrator will fail with a clear error.\n`,
+      );
+    }
+  }
   return registry;
 }
 
@@ -339,7 +385,7 @@ async function cmdCritic(rest: string[]): Promise<number> {
     const loaded = await loadAgentReviewConfig({
       ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     });
-    const registry = buildDefaultAdapterRegistry();
+    const registry = await buildDefaultAdapterRegistry();
 
     // Wire a file telemetry sink so the run lands in
     // `.git/agent-reviews/_runs.ndjson` (the same path `df audit stats`

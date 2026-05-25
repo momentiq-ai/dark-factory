@@ -50,7 +50,7 @@ on:
         description: |
           CLI version to install. 'local' (default) builds from the
           checked-out workspace. Consumers pass an explicit semver tag
-          (e.g. '0.1.0-alpha.4') — see pr-status-check.yml for the same
+          (e.g. '0.1.0-alpha.5') — see pr-status-check.yml for the same
           contract.
         type: string
         required: false
