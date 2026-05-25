@@ -236,6 +236,41 @@ describe("df CLI — Phase F reusable-workflow gates", () => {
     expect(r.stderr).toContain("[critic-degraded]");
   });
 
+  it("critic with GITHUB_STEP_SUMMARY set still degrades-and-passes (sage3c#2213 wiring)", async () => {
+    // The observability fix adds an $GITHUB_STEP_SUMMARY append on the
+    // success path. This spawn confirms the new import + env wiring loads
+    // cleanly under a real binary invocation and that setting the env var
+    // never perturbs the exit-0 degrade-and-pass contract — here the
+    // catch path fires (no config under /tmp), so no summary is written,
+    // but the binary must not crash on the changed code path.
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const tmp = mkdtempSync(join(tmpdir(), "df-cli-summary-"));
+    const summaryFile = join(tmp, "step-summary.md");
+    const r = await new Promise<SpawnResult>((resolvePromise, rejectPromise) => {
+      const child = spawn(process.execPath, [CLI_PATH, "critic"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        cwd: "/tmp",
+        env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile },
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.on("error", (err) => rejectPromise(err));
+      child.on("close", (code) => {
+        resolvePromise({ exitCode: code === null ? -1 : code, stdout, stderr });
+      });
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toContain("[critic-degraded]");
+  });
+
   it("critic ignores arbitrary trailing args (degrades-and-passes)", async () => {
     // Phase F still preserves the Phase E contract that arbitrary flags
     // do not block the gate. With no resolvable config, exit 0 via the

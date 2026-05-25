@@ -264,6 +264,143 @@ export function quorumAggregateVerdict(
   };
 }
 
+// ---------------------------------------------------------------------------
+// sage3c#2213 — observability: surface per-critic errors + a loud degradation
+// warning in the `df critic` CLI output (stdout + $GITHUB_STEP_SUMMARY).
+//
+// Background: when a critic errors at `review()` time the per-critic
+// `error.message`/`error.code` were written ONLY to the per-SHA artifact
+// JSON, which is destroyed at CI-runner teardown unless explicitly
+// uploaded. The CLI's own stdout printed just `<id>: error — findings=0`,
+// so an operator reading the CI log could not recover WHY a critic
+// errored. This helper turns the artifact's `criticResults[]` into a
+// human-readable report that names each errored critic's message + code
+// and shouts when the completed-critic count fell below the total.
+//
+// PURE: takes only the artifact + the json path; no I/O, no env reads, no
+// time. `cmdCritic` writes `.stdout` to stdout and appends `.stepSummary`
+// to `$GITHUB_STEP_SUMMARY` (when that env var is set). Kept here, beside
+// the verdict logic it mirrors, so the presentation and the gate-decision
+// vocabulary cannot drift.
+// ---------------------------------------------------------------------------
+
+export interface CriticReport {
+  /** Full multi-line block for stdout (CI log + local terminal). */
+  stdout: string;
+  /**
+   * Markdown block for `$GITHUB_STEP_SUMMARY`. Includes the per-critic
+   * error detail and the degradation warning so a reader of the run
+   * summary (not just the raw step log) sees the failure mode at a
+   * glance. Empty string is never returned — there is always at least a
+   * verdict line.
+   */
+  stepSummary: string;
+  /** completed (`status === "complete"`) critic count. */
+  completedCount: number;
+  /** total critic count in the artifact. */
+  totalCount: number;
+  /** true when `completedCount < totalCount` (the degraded case). */
+  degraded: boolean;
+}
+
+/**
+ * sage3c#2213 — build the per-critic report for `df critic`.
+ *
+ * `completedCount`/`totalCount` mirror the values
+ * `quorumAggregateVerdict` computes (`status === "complete"` is the
+ * single completion predicate, identical to `isCriticCompleted`), so the
+ * "X/Y critics errored" line agrees with the quorum aggregator's view.
+ */
+export function buildCriticReport(
+  artifact: ReviewArtifact,
+  jsonPath: string,
+): CriticReport {
+  const results = artifact.criticResults;
+  const verdict = artifact.gateVerdict ?? "(no verdict)";
+  const reviewedSha = artifact.commit;
+  const findingCount = results.reduce((acc, r) => acc + r.findings.length, 0);
+  const completedCount = results.filter((r) => r.status === "complete").length;
+  const totalCount = results.length;
+  const degraded = completedCount < totalCount;
+
+  const perCriticLines = results.map(
+    (r) =>
+      `    ${r.criticId}: ${r.status}` +
+      (r.verdict ? ` (${r.verdict})` : "") +
+      ` — findings=${r.findings.length}`,
+  );
+
+  // Per-critic error detail. `[critic-error]` prefix mirrors the existing
+  // `[critic-degraded]` audit-grep convention used by the catch path so
+  // operators can grep one family of markers for "a critic didn't run
+  // cleanly". Today the CLI only printed the one-line `error — findings=0`
+  // status; these lines add the message + code that previously lived
+  // ONLY in the artifact JSON (lost at runner teardown without the
+  // upload-artifact step).
+  const errorLines: string[] = [];
+  for (const r of results) {
+    if (r.status !== "error") continue;
+    const message = r.error?.message ?? "(no error message captured)";
+    const code = r.error?.code ? ` [code=${r.error.code}]` : "";
+    errorLines.push(`  [critic-error] ${r.criticId}: ${message}${code}`);
+  }
+
+  // Loud degradation warning. `completedCount < totalCount` means the
+  // verdict was computed from fewer critics than configured — exactly the
+  // sage3c#2213 failure shape (3 of 4 errored, verdict from 1). Make it
+  // impossible to miss in the run summary.
+  const degradationBanner = degraded
+    ? `⚠ ${results.length - completedCount}/${totalCount} critics errored — verdict computed from ${completedCount} critic${completedCount === 1 ? "" : "s"}`
+    : null;
+
+  const stdoutLines: string[] = [
+    `df critic: review complete for ${reviewedSha}`,
+    `  verdict: ${verdict}`,
+    `  total findings: ${findingCount}`,
+    `  per-critic:`,
+    ...perCriticLines,
+    ...errorLines,
+    `  artifact: ${jsonPath}`,
+  ];
+  if (degradationBanner) {
+    stdoutLines.push(degradationBanner);
+  }
+  stdoutLines.push("");
+
+  // GITHUB_STEP_SUMMARY markdown. Headed so it nests under the job's
+  // existing "## agent-critic Summary" section visually. The degradation
+  // warning is rendered as a blockquote so GitHub surfaces it prominently.
+  const summaryLines: string[] = [
+    "### df critic — per-critic results",
+    "",
+    `- **Verdict:** \`${verdict}\``,
+    `- **Critics completed:** ${completedCount}/${totalCount}`,
+    `- **Total findings:** ${findingCount}`,
+    "",
+  ];
+  if (degradationBanner) {
+    summaryLines.push(`> ${degradationBanner}`, "");
+  }
+  if (errorLines.length > 0) {
+    summaryLines.push("**Per-critic errors:**", "");
+    for (const r of results) {
+      if (r.status !== "error") continue;
+      const message = r.error?.message ?? "(no error message captured)";
+      const code = r.error?.code ? ` \`code=${r.error.code}\`` : "";
+      summaryLines.push(`- \`${r.criticId}\` — ${message}${code}`);
+    }
+    summaryLines.push("");
+  }
+
+  return {
+    stdout: `${stdoutLines.join("\n")}\n`,
+    stepSummary: `${summaryLines.join("\n")}\n`,
+    completedCount,
+    totalCount,
+    degraded,
+  };
+}
+
 export interface WriteResult {
   jsonPath: string;
   // null when markdown render or write failed; the JSON is still authoritative.
