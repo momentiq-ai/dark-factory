@@ -122,10 +122,27 @@ export function compileCriticPrompt(options: CompilePromptOptions): CompiledProm
   return { text, byteLength: Buffer.byteLength(text, "utf8") };
 }
 
-function formatValidation(packet: ReviewPacket): string {
+export function formatValidation(packet: ReviewPacket): string {
   const lines: string[] = [];
   if (packet.validation.evidence.length === 0) {
-    lines.push("No deterministic quality-gate evidence available for this commit.");
+    if (packet.validation.missing.length > 0) {
+      // Gates WERE required for this commit but produced no evidence — a real
+      // gap the critic should be cautious about (the `missing` line below
+      // names which ones).
+      lines.push("No deterministic quality-gate evidence available for this commit.");
+    } else {
+      // No critic-side quality gates are configured/expected for this commit
+      // — e.g. a consumer repo that enforces quality via its own CI status
+      // checks rather than per-commit critic evidence (the common case after
+      // the W1→W3 cutover, where the hosted critic cannot run the consumer's
+      // build/test commands). Absence of evidence here is EXPECTED, not a
+      // gap; emitting the bare "no evidence" line caused critics to invoke
+      // the "cannot decide safely → CHANGES_REQUESTED" path and block clean
+      // consumer PRs. Make the non-gap case explicit instead.
+      lines.push(
+        "No critic-side quality gates are configured for this repo; quality is enforced by the repo's own CI status checks. The absence of per-commit gate evidence is expected here and is NOT itself a blocker — review the diff on its own merits.",
+      );
+    }
   } else {
     for (const r of packet.validation.evidence) {
       lines.push(
