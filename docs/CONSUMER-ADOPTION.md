@@ -3,9 +3,9 @@
 Audience: maintainers of a repo that wants to consume `@momentiq/dark-factory-cli` + the reusable GitHub Actions workflows published from `momentiq-ai/dark-factory`. After adoption your repo gets:
 
 - **Local subscription-backed critic** on every commit (`.husky/post-commit`) and a pre-push gate (`.husky/pre-push`) — uses your existing Cursor / Codex / Claude / Grok logins (flat-rate) instead of per-token API keys.
-- **CI critic** that runs the same multi-vendor adversarial-critic fleet against every PR HEAD.
+- **A PR-gate critic** that runs the same multi-vendor adversarial-critic fleet against every PR HEAD — either the **W3 hosted App** (`dark-factory/critic`, recommended) or the **W1 CI** workflow. Pick one, not both — see §0.
 - **Cycle-doc validation** so PRs cite a `Cycle:` or `Issue:` trailer and the validator enforces Spec-Driven Traceability.
-- **Binding enforcement** — a branch ruleset that makes the `agent-critic` check a *required* status check, so red verdicts actually block merges (not just post advisory comments). This is the difference between *installing* Dark Factory and *enforcing* it (§8).
+- **Binding enforcement** — a branch ruleset that makes your chosen PR-gate critic a *required* status check (`dark-factory/critic` for the hosted App, or `agent-critic / agent-critic` for CI), so red verdicts actually block merges (not just post advisory comments). This is the difference between *installing* Dark Factory and *enforcing* it (§8).
 - **Optional branch-protection drift detector** if your repo has a ruleset.
 
 This document is the canonical adoption guide. Concrete worked examples:
@@ -13,6 +13,27 @@ This document is the canonical adoption guide. Concrete worked examples:
 - **taxpilot2a F.5a** ([PR #45](https://github.com/momentiq-ai/taxpilot2a/pull/45)) — first external consumer; full CI wiring, `.agent-review/config.json`, `.npmrc` + root `package.json`.
 - **taxpilot2a F.5a follow-up** ([PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46)) — documents the prerequisite `actions/permissions/access` flip on `momentiq-ai/dark-factory` so cross-repo `uses:` works.
 - **lyra F.5b** (planned) — second external consumer (under `alien8d/`, fully outside momentiq-ai org).
+
+## 0. Choose your PR-gate critic: W3 hosted (recommended) or W1 CI — never both
+
+Dark Factory runs the **same** multi-vendor adversarial critic fleet against your PRs. You pick **one** substrate as your authoritative PR gate:
+
+- **W3 hosted critic (recommended).** Enroll your repo in the hosted Dark Factory GitHub App. The hosted runtime runs the fleet on Momentiq's compute and posts the **`dark-factory/critic`** check. No CI workflow to maintain, no per-token vendor keys in your repo, and — because it runs server-side with managed keys — it can gate **fork PRs**, which a secret-dependent CI check cannot (§8.4). Enrollment is an org-admin action (App settings → Repository access).
+- **W1 CI agent-critic (legacy / self-host).** The `dark-factory-pr.yml` reusable workflows (§6) run the same fleet on GitHub Actions using per-token API keys. Use this only if you are **not** on the hosted App (e.g. air-gapped, or self-hosting the OSS CLI end to end).
+
+> **Do not run both on the same repo.** They are the *same review* on different compute — running both doubles cost, shows two checks for one logical gate, and can produce **conflicting verdicts** (two independent LLM runs disagreeing on one diff). Choose one.
+
+**The local pre-push critic (§3) is kept either way.** It runs at a *different stage* — on your machine, before the PR exists, on flat-rate subscriptions — so it is not a duplicate of either PR-gate critic. It is the fast inner loop that catches blockers before they reach a PR.
+
+### If you choose W3 hosted (recommended)
+
+| Section | Do it? |
+|---|---|
+| §1–§5 (prerequisites, CLI install, local hooks, `.agent-review/config.json`, cycle docs) | **Yes** — the local layer + traceability are kept. |
+| §6 (`dark-factory-pr.yml` CI critic) | **Skip** as a permanent gate. Optionally wire it *transiently* to confirm the hosted critic's verdicts are sound on your repo, then delete it. |
+| §8 (enforcement) | **Yes**, but require the **`dark-factory/critic`** context instead of `agent-critic / agent-critic`. |
+
+**Already stood up the W1 CI critic and moving to hosted?** Cut over without an enforcement gap: enroll in W3 → confirm `dark-factory/critic` is green on a real PR → flip your ruleset's required context `agent-critic / agent-critic` → `dark-factory/critic` → delete `dark-factory-pr.yml` and the CI-critic API-key secrets. Keep the local hooks. Never leave the repo ungated between steps.
 
 ## 1. Prerequisites
 
@@ -196,6 +217,8 @@ Subsequent PRs in your repo cite `Cycle: 1` or, for tactical follow-ups after cl
 
 ## 6. `.github/workflows/dark-factory-pr.yml` — invoke the reusable workflows
 
+> **Legacy / transitional for W3-enrolled repos.** If you adopt the **W3 hosted App** (§0, recommended) you do **not** need this CI workflow as a permanent gate — `dark-factory/critic` is your authoritative gate. Wire `dark-factory-pr.yml` only if you self-host the critic (not on the hosted App), or *transiently* to validate the hosted critic before deleting it. Running both the CI critic and the hosted critic on one repo is a duplicate gate (see §0).
+
 Pin each reusable workflow to an exact **commit SHA** (NOT a `@v0` tag — per `CLAUDE.md` § Reusable workflow conventions, only `@vX.Y.Z` semver tags and commit SHAs are supported; floating `@v0`/`@v0.1` tags don't exist).
 
 ```yaml
@@ -291,6 +314,8 @@ Everything up to here makes the gates *run* and *post verdicts*. None of it make
 
 ### 8.1 Apply the enforcement ruleset
 
+> **W3 hosted repos:** require the **`dark-factory/critic`** context (posted by the hosted App) instead of `agent-critic / agent-critic`. The JSON below shows the W1/CI contexts — swap `agent-critic / agent-critic` for `dark-factory/critic` if your authoritative gate is the hosted App (§0). Everything else in this section applies unchanged.
+
 Create a branch ruleset on your repo that requires (a) the `agent-critic` status check to be green and (b) all bot review threads to be resolved before merge. The payload below is repo-agnostic — you target your repo in the `gh api` path, not in the JSON. Save it as `main-enforcement.json`:
 
 ```json
@@ -369,7 +394,8 @@ Requiring a context that never reports leaves every PR **blocked forever** waiti
 
 | Context | Require by default? | Why |
 |---|---|---|
-| `agent-critic / agent-critic` | **YES — mandatory** | The whole point. Without this, critic verdicts are advisory and merges aren't blocked. |
+| `dark-factory/critic` | **YES — for W3 hosted repos** | The hosted App's critic check, and the authoritative gate for repos enrolled in the W3 App. Require this *instead of* `agent-critic / agent-critic` (§0). |
+| `agent-critic / agent-critic` | **YES — for W1/self-host repos only** | The CI critic. Require it only if you are *not* on the W3 hosted App. Without a required PR-gate critic, verdicts are advisory and merges aren't blocked. Do **not** require both this and `dark-factory/critic`. |
 | `cycle-doc-validation / cycle-doc-validation` | **YES** | Spec-Driven Traceability is mandatory for consumers (§5). The validator reliably reports on every consumer PR. |
 | `branch-protection-audit / branch-protection-audit` | No | Usually wired with `gate-enabled: 'false'` (§6) → it's a documented no-op pass. Requiring a no-op check adds no safety. Require it only once you flip `gate-enabled: 'true'` and provision its App token. |
 | `schema-check / *` | No | The dark-factory `schema-check` workflow validates `@momentiq/dark-factory-schemas` specifically; for your own OpenAPI / JSON Schema drift you typically wire your own `schema-check`. Don't require dark-factory's unless your CI actually runs it and it reports. |
