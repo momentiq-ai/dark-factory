@@ -1,14 +1,15 @@
-// Cycle 5 Phase 1 — Dark Factory MCP server skeleton.
+// Cycle 5 Phase 1 — Dark Factory MCP server.
 //
 // `df mcp` exposes the CLI's surface as a Model Context Protocol server
 // over stdio so any MCP-speaking agent (Claude Code, Cursor, Codex,
 // Gemini) gets a structured tool + resource + prompt catalog instead of
 // having to shell out to `df` and parse stdout.
 //
-// This module ships the EMPTY catalog only — the next steps in the
-// Phase 1 implementation plan (docs/roadmap/cycles/cycle5-mcp-server.md,
-// "Phase 1 — local stdio") wire individual tools, resources, and
-// prompts on top of this skeleton, one per PR.
+// Cycle5 Phase 1 ships individual catalog entries one step at a time
+// (docs/roadmap/cycles/cycle5-mcp-server.md, "Phase 1 — local stdio").
+// Step 1 shipped the empty-catalog skeleton + initialize handshake.
+// Step 2 (THIS) registers the first tool, `df_doctor`. Resources and
+// prompts stay empty until later Phase 1 steps populate them.
 //
 // The MCP protocol version pinned by cycle5 is `2025-06-18`. The SDK we
 // depend on (`@modelcontextprotocol/sdk@^1.29.0`) supports a set of
@@ -26,8 +27,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   ListPromptsRequestSchema,
   ListResourcesRequestSchema,
-  ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+
+import { registerDoctorTool } from "./tools/doctor.js";
 
 interface PackageMeta {
   readonly name: string;
@@ -68,18 +70,23 @@ export function createMcpServer(): McpServer {
     },
   );
 
-  // Wire the three primitive list-handlers explicitly so the empty
-  // catalog still responds correctly. The McpServer wrapper would
-  // synthesize these once any tool/resource/prompt is registered via
-  // its registerX helpers; with zero registrations we register raw
-  // handlers on the underlying Server to keep the contract honest.
-  server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [] }));
+  // Resources and prompts are still empty in step 2 — wire explicit
+  // empty list handlers so /list returns [] instead of "Method not
+  // found". The tool registration below activates the SDK's automatic
+  // tools/list + tools/call handlers (the SDK guards against double-
+  // registration of the tools handler — that's why we no longer set
+  // an explicit empty tools/list handler here).
   server.server.setRequestHandler(ListResourcesRequestSchema, () => ({
     resources: [],
   }));
   server.server.setRequestHandler(ListPromptsRequestSchema, () => ({
     prompts: [],
   }));
+
+  // Phase 1 step 2 — first tool. Each subsequent step adds one more
+  // registerXxx call alongside this one and replaces the catalog-pin
+  // assertion in tests/mcp/server.test.ts.
+  registerDoctorTool(server);
 
   return server;
 }

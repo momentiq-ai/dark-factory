@@ -125,9 +125,15 @@ describe("df CLI — Phase G (cycle5 MCP) subcommand wiring", () => {
     const toolsResponse = JSON.parse(lines[1] ?? "") as {
       jsonrpc: string;
       id: number;
-      result?: { tools?: unknown[] };
+      result?: { tools?: Array<{ name: string }> };
     };
     expect(toolsResponse.id).toBe(2);
-    expect(toolsResponse.result?.tools).toEqual([]);
+    // Pin the catalog by name through the subprocess transport too —
+    // catches a regression where in-process tests pass but the real
+    // stdio path serves a different catalog (e.g. a wiring error in
+    // server.ts only present at the compiled-import boundary).
+    expect((toolsResponse.result?.tools ?? []).map((t) => t.name).sort()).toEqual([
+      "df_doctor",
+    ]);
   });
 });
