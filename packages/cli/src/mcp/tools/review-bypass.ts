@@ -76,6 +76,77 @@ function generateJobId(): string {
   return `job_${randomBytes(8).toString("hex")}`;
 }
 
+type ElicitedIssueOutcome =
+  | { kind: "url"; url: string }
+  | { kind: "no-issue" }
+  | { kind: "declined" }
+  | { kind: "cancelled" }
+  | { kind: "skipped" };
+
+async function tryElicitIssueUrl(server: McpServer): Promise<ElicitedIssueOutcome> {
+  // Cycle5 step 9 — wire elicitation/create for df_bypass's
+  // missing-issue case. The MCP spec's elicitation primitive lets
+  // the server prompt the user mid-tool-call for clarification.
+  // We ask for one of:
+  //   - issue_url (URL string)
+  //   - no_issue_needed (boolean checkbox)
+  // The user submits the form; we observe their answer.
+  //
+  // Clients that don't support elicitation throw (the underlying
+  // Server.elicitInput asserts the client capability). We catch
+  // and return 'skipped' so the caller falls back to the
+  // soft-warning behavior — backward-compatible for older clients.
+  let result;
+  try {
+    result = await server.server.elicitInput({
+      message:
+        "This bypass should cite a tracking issue. Paste the issue URL " +
+        "(GitHub, Linear, etc.), OR check 'no_issue_needed' to confirm " +
+        "the bypass is intentional without a tracking artifact.",
+      requestedSchema: {
+        type: "object" as const,
+        properties: {
+          issue_url: {
+            type: "string" as const,
+            title: "Issue URL",
+            description:
+              "Link to the tracking issue (https:// URL). Leave empty " +
+              "if you're explicitly choosing not to cite one.",
+          },
+          no_issue_needed: {
+            type: "boolean" as const,
+            title: "No issue needed",
+            description:
+              "Check this to confirm an intentional bypass without " +
+              "a tracking issue. The audit log records the explicit " +
+              "waiver.",
+          },
+        },
+        required: [],
+      },
+    });
+  } catch {
+    return { kind: "skipped" };
+  }
+
+  if (result.action === "decline") return { kind: "declined" };
+  if (result.action === "cancel") return { kind: "cancelled" };
+  // action === 'accept'
+  const content = result.content as
+    | { issue_url?: string; no_issue_needed?: boolean }
+    | undefined;
+  const url = content?.issue_url?.trim();
+  if (url && /^https?:\/\//.test(url)) {
+    return { kind: "url", url };
+  }
+  if (content?.no_issue_needed === true) {
+    return { kind: "no-issue" };
+  }
+  // Accepted but neither URL nor checkbox — treat as soft-skip so the
+  // user sees a warning. Same shape as a client without elicitation.
+  return { kind: "skipped" };
+}
+
 const ADAPTER_LOADERS: ReadonlyArray<{
   readonly id: string;
   readonly modulePath: string;
@@ -426,18 +497,55 @@ export function registerReviewBypassTools(
       const artifactDir = await resolveArtifactDir(loaded);
       const sink = new FileTelemetrySink(telemetryPath(artifactDir));
 
+      // Cycle5 step 9 — elicit a missing issue_url. When the caller
+      // didn't pass issue_url AND the client declares the elicitation
+      // capability, ask the user to either paste a URL or confirm
+      // "no issue needed". The result is captured in the audit
+      // entry's bypassReason metadata prefix:
+      //   - URL provided  → `issue:<url>` (same shape as the
+      //                     argument-supplied case)
+      //   - No issue      → `no-issue:elicited` (records that the
+      //                     user explicitly waived the issue link)
+      //   - Decline/cancel → original soft-warning behavior (record
+      //                     without metadata) — equivalent to the
+      //                     pre-step-9 path
+      // Clients that don't support elicitation skip this branch and
+      // fall through to the soft warning, preserving backward compat.
+      const warnings: string[] = [];
+      let elicitedIssueUrl: string | undefined;
+      let elicitedNoIssue = false;
+      if (!issue_url) {
+        const elicited = await tryElicitIssueUrl(server);
+        if (elicited.kind === "url") {
+          elicitedIssueUrl = elicited.url;
+        } else if (elicited.kind === "no-issue") {
+          elicitedNoIssue = true;
+        } else if (elicited.kind === "skipped") {
+          // Client doesn't support elicitation OR elicitation threw.
+          // Same soft-warning as before — preserves backward compat.
+          warnings.push(
+            "issue_url missing — bypasses should cite a tracking issue. " +
+              "This is a soft warning today; future cycles may enforce.",
+          );
+        }
+        // 'declined' / 'cancelled' → no warning + no metadata; the
+        // user explicitly chose not to engage with the prompt.
+      }
+
       const auditEntryId = `bypass_${randomBytes(8).toString("hex")}`;
       const recordedAt = new Date().toISOString();
       // TelemetryEvent's schema doesn't carry custom fields like
       // bypassId / bypassIssueUrl / bypassSource — extending it would
       // be a separate cycle. So we encode the structured metadata
-      // (audit_entry_id, issue_url, source) as a prefix on
-      // bypassReason. `df stats` reads the raw reason verbatim, so
-      // this is human-readable AND machine-parseable. The
-      // audit_entry_id stays in the response as a transient
+      // (audit_entry_id, issue_url, source, elicited-no-issue) as a
+      // prefix on bypassReason. `df stats` reads the raw reason
+      // verbatim, so this is human-readable AND machine-parseable.
+      // The audit_entry_id stays in the response as a transient
       // correlation handle clients can log internally.
       const metaParts: string[] = [`mcp:${auditEntryId}`];
-      if (issue_url) metaParts.push(`issue:${issue_url}`);
+      const finalIssueUrl = issue_url ?? elicitedIssueUrl;
+      if (finalIssueUrl) metaParts.push(`issue:${finalIssueUrl}`);
+      if (elicitedNoIssue) metaParts.push("no-issue:elicited");
       const reasonWithMeta = `[${metaParts.join(" ")}] ${reason}`;
       const event: TelemetryEvent = {
         ts: recordedAt,
@@ -446,14 +554,6 @@ export function registerReviewBypassTools(
         bypassReason: reasonWithMeta,
       };
       sink.emit(event);
-
-      const warnings: string[] = [];
-      if (!issue_url) {
-        warnings.push(
-          "issue_url missing — bypasses should cite a tracking issue. " +
-            "This is a soft warning today; future cycles may enforce.",
-        );
-      }
 
       const structured: Record<string, unknown> = {
         audit_entry_id: auditEntryId,
