@@ -443,7 +443,102 @@ First-time critic runs are advisory (the policy is `aggregation.blockOnReviewErr
 - When bumping, update both `package.json` (`devDependencies."@momentiq/dark-factory-cli"`) AND `.github/workflows/dark-factory-pr.yml` (`with: cli-version:`). The `df doctor` subcommand surfaces drift between them.
 - Reusable workflow SHA bumps are decoupled: you can bump the CLI without bumping the workflow SHA and vice versa. Test in a draft PR before landing in main.
 
-## 11. References
+## 11. Wire the MCP server into your agent
+
+`@momentiq/dark-factory-cli@0.2.0-alpha.0+` ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini) can connect over stdio and get a structured tool + resource + prompt catalog instead of shelling out to `df` and parsing stdout. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
+
+### What you get
+
+15 tools (read-only + write), 9 URI-addressable resources, and 5 prompts. Highlights:
+
+- `df_doctor` — env verification (Node, hooks, vendor auth, Doppler) as structured `{ ok, checks }`
+- `df_findings(commit)` — narrowed per-critic findings for a SHA
+- `df_show_run(commit)` — full ReviewArtifact JSON for a SHA
+- `df_cycle_list` / `df_cycle_read(cycle_id)` — your repo's cycle docs as structured `{ frontmatter, sections }`
+- `df_adr_list` / `df_adr_read(adr_id)` — ADRs under `docs/ADR/`
+- `df_critics_config` — parsed `.agent-review/config.json` (narrowed view)
+- `df_stats({since?, until?})` / `df_gate_push({stdin_protocol})` — audit + pre-push gate
+- `df_review` (async) / `df_review_status(job_id)` — kick off + poll a critic run
+- `df_bypass({reason, sha, issue_url?})` — record an audit-logged emergency bypass; elicits a missing `issue_url` from the user when the client supports MCP elicitation
+- `df_cycle_doc_generate` / `df_adr_generate` — server asks the **client's** LLM (via MCP sampling) to populate a skeleton, validates, writes the file
+
+Resources at `df://repo/cycles`, `df://repo/cycle/{id}`, `df://repo/adrs`, `df://repo/adr/{id}`, `df://repo/findings/{sha}`, `df://repo/runs/recent[?limit]`, `df://repo/config/critics`, `df://repo/audit-log[?since]`, `df://repo/principles`.
+
+Prompts (pure templates the client's LLM consumes): `df.write_cycle_doc`, `df.draft_adr`, `df.diagnose_critic_failure`, `df.summarize_recent_runs`, `df.onboarding_analysis`.
+
+### Configuration — Claude Code (`.mcp.json`)
+
+Add this to your repo's `.mcp.json` (project root):
+
+```json
+{
+  "mcpServers": {
+    "dark-factory": {
+      "command": "npx",
+      "args": ["df", "mcp"],
+      "env": {
+        "AGENT_REVIEW_PROFILE": "local"
+      }
+    }
+  }
+}
+```
+
+Claude Code will spawn `df mcp` as a subprocess on session start and the catalog appears under the `dark-factory` server in the model's tool surface.
+
+### Configuration — Cursor (`~/.cursor/mcp.json` or project-local)
+
+```json
+{
+  "mcpServers": {
+    "dark-factory": {
+      "command": "npx",
+      "args": ["df", "mcp"],
+      "env": {
+        "AGENT_REVIEW_PROFILE": "local"
+      }
+    }
+  }
+}
+```
+
+### Configuration — Codex (`.codex/config.toml`)
+
+```toml
+[mcp_servers.dark-factory]
+command = "npx"
+args = ["df", "mcp"]
+env = { AGENT_REVIEW_PROFILE = "local" }
+```
+
+### Configuration — Gemini CLI (`~/.gemini/settings.json`)
+
+```json
+{
+  "mcpServers": {
+    "dark-factory": {
+      "command": "npx",
+      "args": ["df", "mcp"]
+    }
+  }
+}
+```
+
+### Smoke-test the wiring
+
+After configuring your agent, start a new session and ask:
+
+> "Use the dark-factory MCP server to call `df_doctor` and summarize the result."
+
+The agent should connect, list tools, call `df_doctor`, and render the structured `{ ok, checks }` output. If the call fails, the agent will surface a clear remediation (missing config, wrong cwd, etc.) — no log-parsing required.
+
+### What the MCP server is NOT
+
+- **It does not replace the `df` CLI.** Husky hooks, GHA workflows, scripted CI, and human-driven invocations all keep using the CLI. The MCP server is for agent ↔ Dark Factory interaction specifically.
+- **No `resources/subscribe` in this release.** Subscriptions land in cycle 5 Phase 2 (the remote HTTP MCP gateway at `mcp.dark-factory.momentiq.ai`). Phase 1 stdio clients poll if they need freshness.
+- **The protocol version pinned for this release is `2025-06-18`.** Newer clients negotiate to whichever supported version they prefer; older clients negotiate down. The SDK manages this — you do nothing.
+
+## 12. References
 
 - **Onboarding-enforcement gap (this section's rationale):** [`momentiq-ai/dark-factory#17`](https://github.com/momentiq-ai/dark-factory/issues/17) — consumers adopting gates without enforcing them; evidence at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213).
 - **Fork-PR / secret-dependent required check:** [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15) — why fork PRs can't satisfy a required `agent-critic` until the 331.3 fork-handling design ships.
