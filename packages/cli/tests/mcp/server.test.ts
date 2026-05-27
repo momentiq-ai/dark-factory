@@ -216,8 +216,24 @@ describe("MCP server (cycle5 Phase 1)", () => {
       }),
     );
 
+    // Step 4 populated resources/list; detailed shape pins live in
+    // tests/mcp/resources.test.ts. Here we just assert the static
+    // catalog (6 URIs) is present (templated `list` callbacks may add
+    // entries on top in fixture-bearing tests, but in this no-fixture
+    // catalog-pin test the cycles and ADRs lists are empty).
     const resources = await client.listResources();
-    expect(resources.resources).toEqual([]);
+    const staticUris = resources.resources
+      .map((r) => r.uri)
+      .filter((uri) => !uri.match(/^df:\/\/repo\/(cycle|adr|findings)\//))
+      .sort();
+    expect(staticUris).toEqual([
+      "df://repo/adrs",
+      "df://repo/audit-log",
+      "df://repo/config/critics",
+      "df://repo/cycles",
+      "df://repo/principles",
+      "df://repo/runs/recent",
+    ]);
 
     const prompts = await client.listPrompts();
     expect(prompts.prompts).toEqual([]);
