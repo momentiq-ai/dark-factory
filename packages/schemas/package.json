@@ -1,6 +1,6 @@
 {
   "name": "@momentiq/dark-factory-schemas",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.1-alpha.8",
   "description": "Dark Factory schemas — TypeScript types and JSON Schemas for darkfactory.yaml, evidence, and cycle-doc trailers",
   "license": "Apache-2.0",
   "type": "module",
@@ -12,7 +12,11 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
