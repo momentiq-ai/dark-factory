@@ -64,6 +64,19 @@ jobs:
     if: needs.release-please.outputs.cli_released == 'true'
     runs-on: ubuntu-latest
     steps:
+      # Fail fast (before doing checkout/install/build work) if the npm
+      # token isn't configured -- otherwise the job runs for ~30s and
+      # then dies at `npm publish` with an opaque auth error.
+      - name: Preflight (NPM_ACCESS_TOKEN must be set)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::NPM_ACCESS_TOKEN repo secret is unset. Generate an @momentiq automation token at npmjs.com and set it via: gh secret set NPM_ACCESS_TOKEN --repo momentiq-ai/dark-factory"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -78,12 +91,18 @@ jobs:
       - name: Build (schemas first, then CLI -- order required by workspace)
         run: npm run build
 
-      - name: Validate CLI package (ESM smoke test)
+      - name: Validate CLI package (ESM smoke test + entrypoint resolves)
         working-directory: packages/cli
         run: |
           set -euo pipefail
+          # ESM import smoke -- module-init side effects must not throw.
           node --input-type=module -e "import * as cli from './dist/index.js'; console.log('ESM import ok, exports:', Object.keys(cli).length, 'symbols')"
-          test -x dist/cli.js || (echo "::error::dist/cli.js missing" && exit 1)
+          # tsc doesn't set the +x bit; check file exists and the bin
+          # entrypoint can be loaded as ESM. We don't run --help because
+          # the CLI may try to read config / hit the network at startup.
+          test -f dist/cli.js || (echo "::error::dist/cli.js missing" && exit 1)
+          node --input-type=module -e "import('./dist/cli.js').catch(e => { console.error('bin import failed:', e.message); process.exit(1); })" \
+            || (echo "::error::dist/cli.js failed to load as a module" && exit 1)
 
       - name: Publish (--tag alpha while pre-1.0)
         working-directory: packages/cli
@@ -104,6 +123,16 @@ jobs:
     if: needs.release-please.outputs.schemas_released == 'true'
     runs-on: ubuntu-latest
     steps:
+      - name: Preflight (NPM_ACCESS_TOKEN must be set)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::NPM_ACCESS_TOKEN repo secret is unset. Generate an @momentiq automation token at npmjs.com and set it via: gh secret set NPM_ACCESS_TOKEN --repo momentiq-ai/dark-factory"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
