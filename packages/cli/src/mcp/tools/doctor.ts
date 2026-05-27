@@ -198,7 +198,20 @@ function renderMarkdownSummary(result: DfDoctorResult): string {
   return [header, ...lines].join("\n");
 }
 
-export function registerDoctorTool(server: McpServer): void {
+export interface RegisterDoctorToolOptions {
+  /**
+   * Optional cwd override — used by tests to point at a fixture repo
+   * root. Production code lets it default to `process.cwd()` so the
+   * `.agent-review/config.json` lookup honors wherever the agent
+   * client launched `df mcp` from.
+   */
+  cwd?: string;
+}
+
+export function registerDoctorTool(
+  server: McpServer,
+  opts: RegisterDoctorToolOptions = {},
+): void {
   server.registerTool(
     "df_doctor",
     {
@@ -256,7 +269,9 @@ export function registerDoctorTool(server: McpServer): void {
       },
     },
     async () => {
-      const result = await runDfDoctorTool();
+      const result = await runDfDoctorTool(
+        opts.cwd !== undefined ? { cwd: opts.cwd } : {},
+      );
       return {
         // The SDK types `structuredContent` as a generic
         // Record<string, unknown> (it's validated against the

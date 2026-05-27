@@ -16,6 +16,10 @@
 // A separate subprocess test (tests/mcp/cli-routing.test.ts) covers the
 // `df mcp` CLI wiring + stdio transport end-to-end.
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -84,7 +88,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     await server.close();
   });
 
-  it("tools/list pins the cycle5 catalog (df_doctor after step 2)", async () => {
+  it("tools/list pins the cycle5 catalog (df_doctor + df_cycle_list + df_cycle_read after step 3a)", async () => {
     const server = createMcpServer();
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -100,25 +104,51 @@ describe("MCP server (cycle5 Phase 1)", () => {
     // Replace the assertion (not augment it) each time a new tool lands
     // so every step's diff is self-describing in PR review. See the
     // file-header comment for the cycle5 step-by-step approach.
-    expect(tools.tools.map((t) => t.name).sort()).toEqual(["df_doctor"]);
+    expect(tools.tools.map((t) => t.name).sort()).toEqual([
+      "df_cycle_list",
+      "df_cycle_read",
+      "df_doctor",
+    ]);
 
-    const dfDoctor = tools.tools.find((t) => t.name === "df_doctor");
-    expect(dfDoctor).toBeDefined();
-    // Annotation: df_doctor is read-only — clients can show it without
-    // a destructive-action confirmation prompt.
+    // Schema-surface pins per tool. Detailed schemas live in each
+    // tool's own test file (and per-tool unit tests where applicable);
+    // here we pin the top-level contract that tools/list reports.
+    const byName = new Map(tools.tools.map((t) => [t.name, t]));
+
+    const dfDoctor = byName.get("df_doctor");
     expect(dfDoctor?.annotations?.readOnlyHint).toBe(true);
-    // Input schema: zero arguments (cycle5 spec says input: {}).
     expect(dfDoctor?.inputSchema?.type).toBe("object");
     expect((dfDoctor?.inputSchema?.properties ?? {}) as Record<string, unknown>).toEqual({});
-    // Output schema: { ok: boolean, checks: [...] }. The check entries'
-    // detailed schema is validated in tools/doctor.test.ts; here we just
-    // pin the top-level contract surface.
-    const outSchema = dfDoctor?.outputSchema as
-      | { type: string; properties?: Record<string, unknown>; required?: string[] }
-      | undefined;
-    expect(outSchema?.type).toBe("object");
-    expect(outSchema?.properties).toHaveProperty("ok");
-    expect(outSchema?.properties).toHaveProperty("checks");
+    expect(
+      (dfDoctor?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toEqual(
+      expect.objectContaining({ ok: expect.anything(), checks: expect.anything() }),
+    );
+
+    const dfCycleList = byName.get("df_cycle_list");
+    expect(dfCycleList?.annotations?.readOnlyHint).toBe(true);
+    expect(dfCycleList?.annotations?.openWorldHint).toBe(false);
+    expect(dfCycleList?.inputSchema?.type).toBe("object");
+    expect((dfCycleList?.inputSchema?.properties ?? {}) as Record<string, unknown>).toEqual({});
+    expect(
+      (dfCycleList?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toHaveProperty("cycles");
+
+    const dfCycleRead = byName.get("df_cycle_read");
+    expect(dfCycleRead?.annotations?.readOnlyHint).toBe(true);
+    expect(dfCycleRead?.inputSchema?.type).toBe("object");
+    const cycleReadInputProps =
+      (dfCycleRead?.inputSchema?.properties ?? {}) as Record<string, unknown>;
+    expect(cycleReadInputProps).toHaveProperty("cycle_id");
+    expect(
+      (dfCycleRead?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toEqual(
+      expect.objectContaining({
+        id: expect.anything(),
+        frontmatter: expect.anything(),
+        sections: expect.anything(),
+      }),
+    );
 
     const resources = await client.listResources();
     expect(resources.resources).toEqual([]);
@@ -176,6 +206,169 @@ describe("MCP server (cycle5 Phase 1)", () => {
 
     await client.close();
     await server.close();
+  });
+
+  it("tools/call df_cycle_list returns the structured cycle catalog from cwd", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "df-mcp-cycle-list-"));
+    try {
+      mkdirSync(join(fixtureRoot, "docs", "roadmap", "cycles"), { recursive: true });
+      writeFileSync(
+        join(fixtureRoot, "docs", "roadmap", "cycles", "cycle1-alpha.md"),
+        `---
+title: "Cycle 1 — alpha"
+status: "done"
+owner: "@pj"
+target: "2026-01-15"
+---
+
+# Cycle 1 — alpha
+
+## Scope
+
+x
+`,
+        "utf8",
+      );
+      writeFileSync(
+        join(fixtureRoot, "docs", "roadmap", "cycles", "cycle2-beta.md"),
+        `---
+title: "Cycle 2 — beta"
+status: "active"
+---
+
+# Cycle 2 — beta
+
+## Scope
+
+y
+`,
+        "utf8",
+      );
+
+      const server = createMcpServer({ cwd: fixtureRoot });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_cycle_list",
+        arguments: {},
+      });
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as
+        | {
+            cycles: Array<{
+              id: string;
+              title: string;
+              status: string;
+              owner?: string;
+              target?: string;
+            }>;
+          }
+        | undefined;
+      expect(structured?.cycles?.map((c) => c.id).sort()).toEqual([
+        "cycle1",
+        "cycle2",
+      ]);
+      const cycle1 = structured?.cycles?.find((c) => c.id === "cycle1");
+      expect(cycle1?.owner).toBe("@pj");
+      expect(cycle1?.target).toBe("2026-01-15");
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("tools/call df_cycle_read returns frontmatter + sections for a valid id", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "df-mcp-cycle-read-"));
+    try {
+      mkdirSync(join(fixtureRoot, "docs", "roadmap", "cycles"), { recursive: true });
+      writeFileSync(
+        join(fixtureRoot, "docs", "roadmap", "cycles", "cycle1-alpha.md"),
+        `---
+title: "Cycle 1"
+status: "done"
+---
+
+# Cycle 1
+
+## Scope
+
+scope text
+
+## Exit criteria
+
+exit text
+`,
+        "utf8",
+      );
+
+      const server = createMcpServer({ cwd: fixtureRoot });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_cycle_read",
+        arguments: { cycle_id: "cycle1" },
+      });
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as
+        | { id: string; frontmatter: Record<string, unknown>; sections: Record<string, string> }
+        | undefined;
+      expect(structured?.id).toBe("cycle1");
+      expect(structured?.frontmatter).toMatchObject({ title: "Cycle 1", status: "done" });
+      expect(Object.keys(structured?.sections ?? {}).sort()).toEqual([
+        "exit_criteria",
+        "scope",
+      ]);
+      expect(structured?.sections?.scope?.trim()).toBe("scope text");
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("tools/call df_cycle_read with an unknown id returns isError=true", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "df-mcp-cycle-read-miss-"));
+    try {
+      mkdirSync(join(fixtureRoot, "docs", "roadmap", "cycles"), { recursive: true });
+
+      const server = createMcpServer({ cwd: fixtureRoot });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_cycle_read",
+        arguments: { cycle_id: "cycle999" },
+      });
+      expect(result.isError).toBe(true);
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it("advertises the three primitive capabilities the catalog will fill", async () => {

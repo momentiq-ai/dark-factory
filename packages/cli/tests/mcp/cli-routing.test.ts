@@ -133,6 +133,8 @@ describe("df CLI — Phase G (cycle5 MCP) subcommand wiring", () => {
     // stdio path serves a different catalog (e.g. a wiring error in
     // server.ts only present at the compiled-import boundary).
     expect((toolsResponse.result?.tools ?? []).map((t) => t.name).sort()).toEqual([
+      "df_cycle_list",
+      "df_cycle_read",
       "df_doctor",
     ]);
   });
