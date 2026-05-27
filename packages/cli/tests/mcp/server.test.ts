@@ -89,7 +89,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     await server.close();
   });
 
-  it("tools/list pins the cycle5 catalog (5 tools after step 3b: doctor, cycle_list, cycle_read, findings, show_run)", async () => {
+  it("tools/list pins the cycle5 catalog (7 tools after step 3c: 5 prior + adr_list + adr_read)", async () => {
     const server = createMcpServer();
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -106,6 +106,8 @@ describe("MCP server (cycle5 Phase 1)", () => {
     // so every step's diff is self-describing in PR review. See the
     // file-header comment for the cycle5 step-by-step approach.
     expect(tools.tools.map((t) => t.name).sort()).toEqual([
+      "df_adr_list",
+      "df_adr_read",
       "df_cycle_list",
       "df_cycle_read",
       "df_doctor",
@@ -172,6 +174,30 @@ describe("MCP server (cycle5 Phase 1)", () => {
     expect(
       (dfShowRun?.outputSchema as { properties?: Record<string, unknown> })?.properties,
     ).toHaveProperty("artifact");
+
+    const dfAdrList = byName.get("df_adr_list");
+    expect(dfAdrList?.annotations?.readOnlyHint).toBe(true);
+    expect(dfAdrList?.annotations?.openWorldHint).toBe(false);
+    expect((dfAdrList?.inputSchema?.properties ?? {}) as Record<string, unknown>).toEqual({});
+    expect(
+      (dfAdrList?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toHaveProperty("adrs");
+
+    const dfAdrRead = byName.get("df_adr_read");
+    expect(dfAdrRead?.annotations?.readOnlyHint).toBe(true);
+    expect(
+      ((dfAdrRead?.inputSchema?.properties ?? {}) as Record<string, unknown>),
+    ).toHaveProperty("adr_id");
+    expect(
+      (dfAdrRead?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toEqual(
+      expect.objectContaining({
+        id: expect.anything(),
+        frontmatter: expect.anything(),
+        body: expect.anything(),
+        status: expect.anything(),
+      }),
+    );
 
     const resources = await client.listResources();
     expect(resources.resources).toEqual([]);
@@ -674,6 +700,163 @@ exit text
         (c) => c.type === "text",
       )?.text;
       expect(text).toMatch(/no review artifact/);
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // df_adr_list / df_adr_read integration tests with a fixture
+  // docs/ADR/ tree. The ADR parser tests in tests/mcp/adr/ cover
+  // parser behavior exhaustively; these tests pin the MCP-side
+  // wiring (tools/call returns the right structured shape via
+  // InMemoryTransport).
+  // ---------------------------------------------------------------
+
+  function setupAdrFixture(): string {
+    const root = mkdtempSync(join(tmpdir(), "df-mcp-adr-"));
+    mkdirSync(join(root, "docs", "ADR"), { recursive: true });
+    writeFileSync(
+      join(root, "docs", "ADR", "2026-05-w1-w3-gate-migration.md"),
+      `# ADR 2026-05 — W1→W3 gate migration: hosted critic is authoritative
+
+- **Status:** Accepted
+- **Date:** 2026-05-26
+- **Deciders:** PJ
+- **Supersedes (in part):** ADR 2026-04 (local critic posture).
+
+## Context
+
+context
+
+## Decision
+
+decision
+`,
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "docs", "ADR", "2026-03-kms-vault.md"),
+      `# ADR 2026-03 — KMS vault for vendor keys
+
+- **Status:** Proposed
+- **Date:** 2026-03-15
+- **Deciders:** PJ
+
+## Context
+
+c
+
+## Decision
+
+d
+`,
+      "utf8",
+    );
+    return root;
+  }
+
+  it("tools/call df_adr_list returns the structured ADR catalog from cwd", async () => {
+    const root = setupAdrFixture();
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_adr_list",
+        arguments: {},
+      });
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as
+        | {
+            adrs: Array<{ id: string; title: string; status: string; date: string }>;
+          }
+        | undefined;
+      expect(structured?.adrs?.map((a) => a.id).sort()).toEqual([
+        "2026-03-kms-vault",
+        "2026-05-w1-w3-gate-migration",
+      ]);
+      const w1w3 = structured?.adrs?.find((a) => a.id === "2026-05-w1-w3-gate-migration");
+      expect(w1w3?.status).toBe("Accepted");
+      expect(w1w3?.date).toBe("2026-05-26");
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tools/call df_adr_read returns frontmatter + body + status + supersedes", async () => {
+    const root = setupAdrFixture();
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_adr_read",
+        arguments: { adr_id: "2026-05-w1-w3-gate-migration" },
+      });
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as
+        | {
+            id: string;
+            frontmatter: Record<string, string>;
+            body: string;
+            status: string;
+            supersedes?: string;
+          }
+        | undefined;
+      expect(structured?.id).toBe("2026-05-w1-w3-gate-migration");
+      expect(structured?.status).toBe("Accepted");
+      expect(structured?.supersedes).toMatch(/ADR 2026-04/);
+      expect(structured?.frontmatter?.Date).toBe("2026-05-26");
+      expect(structured?.body).toMatch(/## Context/);
+      expect(structured?.body).toMatch(/## Decision/);
+      expect(structured?.body).not.toMatch(/^# ADR 2026-05/m);
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tools/call df_adr_read with unknown id returns isError=true", async () => {
+    const root = setupAdrFixture();
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_adr_read",
+        arguments: { adr_id: "missing" },
+      });
+      expect(result.isError).toBe(true);
 
       await client.close();
       await server.close();
