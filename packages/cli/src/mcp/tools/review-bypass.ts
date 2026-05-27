@@ -39,7 +39,10 @@ import type {
 
 import { AdapterRegistry } from "../../adapters/critic.js";
 import type { CriticAdapter } from "../../adapters/critic.js";
-import { FileTelemetrySink } from "../../evidence/audit-trail.js";
+import {
+  FileTelemetrySink,
+  type TelemetrySink,
+} from "../../evidence/audit-trail.js";
 import { resolveArtifactDir, telemetryPath } from "../../paths.js";
 import { loadAgentReviewConfig } from "../../policy/config.js";
 import { resolveProfile } from "../../policy/profile.js";
@@ -74,6 +77,74 @@ function generateJobId(): string {
   // 16 hex chars = 64 bits of entropy. Plenty for in-process uniqueness
   // even at high call volumes.
   return `job_${randomBytes(8).toString("hex")}`;
+}
+
+// step 10 — tee telemetry events into MCP logging/message
+// notifications so clients can render in-flight progress while
+// df_review's runReview is running. Wraps an inner TelemetrySink
+// (the FileTelemetrySink that writes _runs.ndjson) and ALSO calls
+// the supplied notify() callback with a human-readable line.
+// notify() is best-effort: failures are swallowed so a flaky
+// transport never corrupts the audit trail.
+class LoggingTeeSink implements TelemetrySink {
+  constructor(
+    private readonly inner: TelemetrySink,
+    private readonly notify: (level: "info" | "warning" | "error", text: string) => void,
+  ) {}
+  emit(event: TelemetryEvent): void {
+    this.inner.emit(event);
+    const line = formatEventForLog(event);
+    if (line) {
+      const level: "info" | "warning" | "error" =
+        event.event === "review_error" ||
+        event.event === "critic_run_error" ||
+        event.event === "gate_blocked"
+          ? "error"
+          : event.event === "gate_bypassed" ||
+              event.event === "rubric_strip" ||
+              event.event === "cache_invalidated_reason"
+            ? "warning"
+            : "info";
+      this.notify(level, line);
+    }
+  }
+}
+
+function formatEventForLog(event: TelemetryEvent): string | null {
+  // Map the canonical event types to a one-line operator-friendly
+  // status the client can render inline. Returns null for events
+  // we don't care to surface to the client — those still hit the
+  // FileTelemetrySink so the audit trail stays complete.
+  const sha = event.commit ? ` ${event.commit.slice(0, 12)}` : "";
+  const critic = event.criticId ? ` (${event.criticId})` : "";
+  switch (event.event) {
+    case "review_started":
+      return `[df] review started${sha}`;
+    case "critic_run_started":
+      return `[df] running critic${critic}${sha}`;
+    case "critic_run_finished": {
+      const verdict = event.verdict ? `: ${event.verdict}` : "";
+      const dur =
+        event.durationMs !== undefined ? ` in ${event.durationMs}ms` : "";
+      return `[df] critic finished${critic}${verdict}${dur}`;
+    }
+    case "critic_run_error":
+      return `[df] critic errored${critic}: ${event.error ?? "(no message)"}`;
+    case "review_finished":
+      return `[df] review finished${sha}${
+        event.verdict ? `: ${event.verdict}` : ""
+      }`;
+    case "review_error":
+      return `[df] review errored${sha}: ${event.error ?? "(no message)"}`;
+    case "gate_passed":
+      return `[df] gate passed${sha}`;
+    case "gate_blocked":
+      return `[df] gate BLOCKED${sha}`;
+    case "gate_bypassed":
+      return `[df] gate bypassed${sha}: ${event.bypassReason ?? "(no reason)"}`;
+    default:
+      return null;
+  }
 }
 
 type ElicitedIssueOutcome =
@@ -265,7 +336,17 @@ export function registerReviewBypassTools(
 
       const registry = await buildAdapterRegistry();
       const artifactDir = await resolveArtifactDir(loaded);
-      const sink = new FileTelemetrySink(telemetryPath(artifactDir));
+      const fileSink = new FileTelemetrySink(telemetryPath(artifactDir));
+      // Tee into MCP logging/message so the client sees in-flight
+      // progress. Notifications are best-effort — sendLoggingMessage
+      // rejections never abort the underlying review.
+      const sink = new LoggingTeeSink(fileSink, (level, text) => {
+        server.server
+          .sendLoggingMessage({ level, logger: "df_review", data: text })
+          .catch(() => {
+            // swallow — client may not have subscribed.
+          });
+      });
 
       const jobId = generateJobId();
       const startedAt = new Date().toISOString();

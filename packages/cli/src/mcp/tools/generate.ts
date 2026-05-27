@@ -56,6 +56,22 @@ interface SamplingTokenUsage {
   stop_reason?: string;
 }
 
+// step 10 — best-effort logging/message notification helper. Failures
+// are swallowed so a flaky transport never aborts the underlying
+// generation flow.
+function notifyLog(
+  server: McpServer,
+  toolName: string,
+  level: "info" | "warning" | "error",
+  text: string,
+): void {
+  server.server
+    .sendLoggingMessage({ level, logger: toolName, data: text })
+    .catch(() => {
+      // swallow — client may not have subscribed.
+    });
+}
+
 function estimateTokens(text: string): number {
   // Rough heuristic: ~4 chars per token. Good enough for the
   // cost-guardrail threshold. Real token counting requires the
@@ -484,7 +500,9 @@ async function runGeneration({
     }
   }
 
-  // 3. Sampling — ask the client's LLM.
+  // 3. Sampling — ask the client's LLM. Emit a progress log so the
+  // client can render "[df] sending prompt to LLM..." inline.
+  notifyLog(server, toolName, "info", `sending prompt (~${promptEstimate} tokens) to client LLM`);
   let samplingResult;
   try {
     samplingResult = await server.server.createMessage({
@@ -494,6 +512,12 @@ async function runGeneration({
       maxTokens: MAX_OUTPUT_TOKENS,
     });
   } catch (err) {
+    notifyLog(
+      server,
+      toolName,
+      "error",
+      `sampling/createMessage failed — ${(err as Error).message}`,
+    );
     return {
       isError: true,
       content: [
@@ -516,10 +540,22 @@ async function runGeneration({
       ? { stop_reason: String(samplingResult.stopReason) }
       : {}),
   };
+  notifyLog(
+    server,
+    toolName,
+    "info",
+    `LLM response received (model=${tokenUsage.model}, ~${tokenUsage.completion_estimate} completion tokens); validating`,
+  );
 
   // 4. Validate the response.
   const { ok, issues } = validate(rawText);
   if (!ok) {
+    notifyLog(
+      server,
+      toolName,
+      "error",
+      `validation failed: ${issues.join("; ")} — file NOT written`,
+    );
     return {
       isError: true,
       content: [
@@ -537,6 +573,7 @@ async function runGeneration({
   // 5. Write the file.
   mkdirSync(dirname(absoluteTarget), { recursive: true });
   writeFileSync(absoluteTarget, rawText, "utf8");
+  notifyLog(server, toolName, "info", `wrote ${absoluteTarget}`);
 
   // 6. Return path + token usage.
   return {
