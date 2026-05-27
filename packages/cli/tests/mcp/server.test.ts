@@ -16,6 +16,7 @@
 // A separate subprocess test (tests/mcp/cli-routing.test.ts) covers the
 // `df mcp` CLI wiring + stdio transport end-to-end.
 
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,7 +89,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     await server.close();
   });
 
-  it("tools/list pins the cycle5 catalog (df_doctor + df_cycle_list + df_cycle_read after step 3a)", async () => {
+  it("tools/list pins the cycle5 catalog (5 tools after step 3b: doctor, cycle_list, cycle_read, findings, show_run)", async () => {
     const server = createMcpServer();
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -108,6 +109,8 @@ describe("MCP server (cycle5 Phase 1)", () => {
       "df_cycle_list",
       "df_cycle_read",
       "df_doctor",
+      "df_findings",
+      "df_show_run",
     ]);
 
     // Schema-surface pins per tool. Detailed schemas live in each
@@ -137,9 +140,9 @@ describe("MCP server (cycle5 Phase 1)", () => {
     const dfCycleRead = byName.get("df_cycle_read");
     expect(dfCycleRead?.annotations?.readOnlyHint).toBe(true);
     expect(dfCycleRead?.inputSchema?.type).toBe("object");
-    const cycleReadInputProps =
-      (dfCycleRead?.inputSchema?.properties ?? {}) as Record<string, unknown>;
-    expect(cycleReadInputProps).toHaveProperty("cycle_id");
+    expect(
+      ((dfCycleRead?.inputSchema?.properties ?? {}) as Record<string, unknown>),
+    ).toHaveProperty("cycle_id");
     expect(
       (dfCycleRead?.outputSchema as { properties?: Record<string, unknown> })?.properties,
     ).toEqual(
@@ -149,6 +152,26 @@ describe("MCP server (cycle5 Phase 1)", () => {
         sections: expect.anything(),
       }),
     );
+
+    const dfFindings = byName.get("df_findings");
+    expect(dfFindings?.annotations?.readOnlyHint).toBe(true);
+    expect(
+      ((dfFindings?.inputSchema?.properties ?? {}) as Record<string, unknown>),
+    ).toHaveProperty("commit");
+    expect(
+      (dfFindings?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toEqual(
+      expect.objectContaining({ commit: expect.anything(), critics: expect.anything() }),
+    );
+
+    const dfShowRun = byName.get("df_show_run");
+    expect(dfShowRun?.annotations?.readOnlyHint).toBe(true);
+    expect(
+      ((dfShowRun?.inputSchema?.properties ?? {}) as Record<string, unknown>),
+    ).toHaveProperty("commit");
+    expect(
+      (dfShowRun?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toHaveProperty("artifact");
 
     const resources = await client.listResources();
     expect(resources.resources).toEqual([]);
@@ -368,6 +391,294 @@ exit text
       await server.close();
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // df_findings / df_show_run integration — these need a real git
+  // repo so resolveCommit + resolveArtifactDir succeed. setupArtifactRepo
+  // creates a tmp repo, .agent-review/config.json, one commit, and writes
+  // a fixture artifact JSON for the HEAD SHA. We pass `cwd: tmpRoot` to
+  // createMcpServer so the tools target the fixture.
+  // ---------------------------------------------------------------
+
+  function setupArtifactRepo(opts: {
+    /** Override criticResults; otherwise a minimal fixture is used. */
+    criticResults?: unknown[];
+  } = {}): { root: string; commitSha: string } {
+    const root = mkdtempSync(join(tmpdir(), "df-mcp-findings-"));
+    spawnSync("git", ["init", "-q", "-b", "main", root]);
+    spawnSync("git", ["config", "user.email", "t@t.com"], { cwd: root });
+    spawnSync("git", ["config", "user.name", "t"], { cwd: root });
+    spawnSync("git", ["config", "commit.gpgsign", "false"], { cwd: root });
+    writeFileSync(join(root, "README.md"), "# x\n");
+    spawnSync("git", ["add", "."], { cwd: root });
+    spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
+    const rev = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    const commitSha = String(rev.stdout).trim();
+
+    mkdirSync(join(root, ".agent-review"), { recursive: true });
+    writeFileSync(
+      join(root, ".agent-review", "config.json"),
+      JSON.stringify({
+        version: 1,
+        critics: [
+          {
+            id: "cursor-local-chief-engineer",
+            name: "Cursor",
+            adapter: "cursor-sdk",
+            required: true,
+            runtime: "local",
+            model: { id: "gpt-5.5", params: [] },
+          },
+        ],
+        aggregation: {
+          policy: "block-if-any",
+          blockingSeverities: ["blocker", "high"],
+        },
+        git: {
+          hookPath: ".husky",
+          artifactDir: "agent-reviews",
+          artifactScope: "git-common-dir",
+        },
+        policy: {
+          blockOnMissingReview: true,
+          blockOnReviewError: true,
+          allowEmergencyBypass: true,
+          postCommitMode: "async",
+        },
+        context: {
+          guidanceFiles: [],
+          promptFragments: [],
+          maxChangedFileBytes: 1000,
+          includeFullChangedFiles: true,
+        },
+        validation: {
+          runBeforeReview: false,
+          resultFile: "agent-reviews/quality-gates/latest.json",
+          requiredQualityGates: [],
+          optionalQualityGates: [],
+        },
+        security: {
+          redactSecretsInDiagnostics: true,
+          treatDiffAsUntrustedInput: true,
+        },
+      }),
+      "utf8",
+    );
+
+    const criticResults = opts.criticResults ?? [
+      {
+        criticId: "cursor-local-chief-engineer",
+        status: "complete",
+        verdict: "CHANGES_REQUESTED",
+        requiresHumanJudgment: false,
+        reviewer: {
+          name: "Cursor",
+          adapter: "cursor-sdk",
+          model: { id: "gpt-5.5", params: [] },
+          runtime: "local",
+        },
+        summary: "1 blocker.",
+        findings: [
+          {
+            severity: "blocker",
+            category: "untyped-any",
+            file: "src/foo.ts",
+            line: 42,
+            evidence: "function bar(x: any) { ... }",
+            impact: "Type safety lost.",
+            requiredFix: "Annotate x.",
+          },
+        ],
+        validation: { qualityGateResults: [], qualityGatesMissing: [] },
+        confidence: "high",
+      },
+    ];
+
+    mkdirSync(join(root, ".git", "agent-reviews"), { recursive: true });
+    writeFileSync(
+      join(root, ".git", "agent-reviews", `${commitSha}.json`),
+      JSON.stringify({
+        version: 2,
+        status: "complete",
+        repo: "test/test",
+        commit: commitSha,
+        parent: "0000000000000000000000000000000000000000",
+        range: `0000000..${commitSha.slice(0, 7)}`,
+        diffHash: "sha256:test",
+        artifactScope: "git-common-dir",
+        gateVerdict: "CHANGES_REQUESTED",
+        aggregationPolicy: "block-if-any",
+        criticResults,
+        createdAt: "2026-05-27T15:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    return { root, commitSha };
+  }
+
+  it("tools/call df_findings returns the narrowed shape for a real artifact", async () => {
+    const { root, commitSha } = setupArtifactRepo();
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_findings",
+        arguments: { commit: "HEAD" },
+      });
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as
+        | {
+            commit: string;
+            critics: Array<{
+              id: string;
+              status: string;
+              verdict?: string;
+              findings: Array<{
+                severity: string;
+                file?: string;
+                line?: number;
+                rule: string;
+                message: string;
+              }>;
+            }>;
+          }
+        | undefined;
+      expect(structured?.commit).toBe(commitSha);
+      expect(structured?.critics).toHaveLength(1);
+      expect(structured?.critics[0]?.id).toBe("cursor-local-chief-engineer");
+      expect(structured?.critics[0]?.verdict).toBe("CHANGES_REQUESTED");
+      expect(structured?.critics[0]?.findings).toHaveLength(1);
+      expect(structured?.critics[0]?.findings[0]).toMatchObject({
+        severity: "blocker",
+        file: "src/foo.ts",
+        line: 42,
+        rule: "untyped-any",
+        message: "function bar(x: any) { ... }",
+      });
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tools/call df_show_run returns the full artifact JSON", async () => {
+    const { root, commitSha } = setupArtifactRepo();
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_show_run",
+        arguments: { commit: commitSha },
+      });
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as
+        | { artifact: { commit: string; criticResults?: Array<{ findings?: unknown[] }> } }
+        | undefined;
+      expect(structured?.artifact?.commit).toBe(commitSha);
+      // The full artifact preserves fields df_findings narrows away —
+      // impact + requiredFix are present here.
+      const firstFinding = structured?.artifact?.criticResults?.[0]?.findings?.[0] as
+        | { impact?: string; requiredFix?: string }
+        | undefined;
+      expect(firstFinding?.impact).toBe("Type safety lost.");
+      expect(firstFinding?.requiredFix).toBe("Annotate x.");
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tools/call df_findings returns isError when the artifact is missing", async () => {
+    // Set up a repo but DON'T write the artifact file.
+    const root = mkdtempSync(join(tmpdir(), "df-mcp-findings-missing-"));
+    spawnSync("git", ["init", "-q", "-b", "main", root]);
+    spawnSync("git", ["config", "user.email", "t@t.com"], { cwd: root });
+    spawnSync("git", ["config", "user.name", "t"], { cwd: root });
+    spawnSync("git", ["config", "commit.gpgsign", "false"], { cwd: root });
+    writeFileSync(join(root, "README.md"), "# x\n");
+    spawnSync("git", ["add", "."], { cwd: root });
+    spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
+    mkdirSync(join(root, ".agent-review"), { recursive: true });
+    writeFileSync(
+      join(root, ".agent-review", "config.json"),
+      JSON.stringify({
+        version: 1,
+        critics: [
+          {
+            id: "cursor-local-chief-engineer",
+            name: "Cursor",
+            adapter: "cursor-sdk",
+            required: true,
+            runtime: "local",
+            model: { id: "gpt-5.5", params: [] },
+          },
+        ],
+        aggregation: { policy: "block-if-any", blockingSeverities: ["blocker", "high"] },
+        git: { hookPath: ".husky", artifactDir: "agent-reviews", artifactScope: "git-common-dir" },
+        policy: {
+          blockOnMissingReview: true,
+          blockOnReviewError: true,
+          allowEmergencyBypass: true,
+          postCommitMode: "async",
+        },
+        context: { guidanceFiles: [], promptFragments: [], maxChangedFileBytes: 1000, includeFullChangedFiles: true },
+        validation: { runBeforeReview: false, resultFile: "x", requiredQualityGates: [], optionalQualityGates: [] },
+        security: { redactSecretsInDiagnostics: true, treatDiffAsUntrustedInput: true },
+      }),
+      "utf8",
+    );
+
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_findings",
+        arguments: { commit: "HEAD" },
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ type: string; text?: string }>).find(
+        (c) => c.type === "text",
+      )?.text;
+      expect(text).toMatch(/no review artifact/);
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
