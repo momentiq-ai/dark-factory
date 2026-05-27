@@ -4,11 +4,10 @@
   "plugins": ["node-workspace"],
   "include-component-in-tag": true,
   "separate-pull-requests": false,
-  "bump-minor-pre-major": true,
-  "bump-patch-for-minor-pre-major": true,
   "draft": false,
   "prerelease": true,
   "prerelease-type": "alpha",
+  "versioning-strategy": "prerelease",
   "packages": {
     "packages/cli": {
       "package-name": "@momentiq/dark-factory-cli",
