@@ -67,6 +67,7 @@
     "@momentiq/dark-factory-schemas": "0.1.1-alpha.8",
     "@openai/codex-sdk": "^0.130.0",
     "openai": "^6.37.0",
+    "yaml": "^2.9.0",
     "zod": "^3.23.0",
     "zod-to-json-schema": "^3.25.2"
   },

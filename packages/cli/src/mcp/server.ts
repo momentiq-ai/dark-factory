@@ -8,8 +8,9 @@
 // Cycle5 Phase 1 ships individual catalog entries one step at a time
 // (docs/roadmap/cycles/cycle5-mcp-server.md, "Phase 1 — local stdio").
 // Step 1 shipped the empty-catalog skeleton + initialize handshake.
-// Step 2 (THIS) registers the first tool, `df_doctor`. Resources and
-// prompts stay empty until later Phase 1 steps populate them.
+// Step 2 registered df_doctor. Step 3a (THIS) adds df_cycle_list +
+// df_cycle_read. Resources and prompts stay empty until later Phase 1
+// steps populate them.
 //
 // The MCP protocol version pinned by cycle5 is `2025-06-18`. The SDK we
 // depend on (`@modelcontextprotocol/sdk@^1.29.0`) supports a set of
@@ -29,6 +30,7 @@ import {
   ListResourcesRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
+import { registerCycleTools } from "./tools/cycle.js";
 import { registerDoctorTool } from "./tools/doctor.js";
 
 interface PackageMeta {
@@ -51,7 +53,17 @@ function readPackageMeta(): PackageMeta {
   };
 }
 
-export function createMcpServer(): McpServer {
+export interface CreateMcpServerOptions {
+  /**
+   * Override for the per-tool root used to discover cycle docs,
+   * `.agent-review/config.json`, etc. Production code lets it default
+   * to `process.cwd()` (the agent client's cwd at `df mcp` launch);
+   * tests pass a fixture directory.
+   */
+  readonly cwd?: string;
+}
+
+export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
   const meta = readPackageMeta();
   // serverInfo.name is what clients render in their UI; the suffix marks
   // this as the MCP surface of the CLI rather than the CLI itself.
@@ -83,10 +95,12 @@ export function createMcpServer(): McpServer {
     prompts: [],
   }));
 
-  // Phase 1 step 2 — first tool. Each subsequent step adds one more
-  // registerXxx call alongside this one and replaces the catalog-pin
-  // assertion in tests/mcp/server.test.ts.
-  registerDoctorTool(server);
+  // Catalog. Each step in the cycle5 Phase 1 plan adds one
+  // registerXxx call here and replaces the catalog-pin assertion in
+  // tests/mcp/server.test.ts so every step's PR diff is reviewable.
+  const toolOpts = opts.cwd !== undefined ? { cwd: opts.cwd } : {};
+  registerDoctorTool(server, toolOpts);         // step 2
+  registerCycleTools(server, toolOpts);         // step 3a — df_cycle_list + df_cycle_read
 
   return server;
 }
