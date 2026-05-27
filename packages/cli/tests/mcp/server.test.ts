@@ -89,7 +89,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     await server.close();
   });
 
-  it("tools/list pins the cycle5 catalog (7 tools after step 3c: 5 prior + adr_list + adr_read)", async () => {
+  it("tools/list pins the cycle5 catalog (8 tools after step 3d: 7 prior + critics_config — closes step 3)", async () => {
     const server = createMcpServer();
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -108,6 +108,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     expect(tools.tools.map((t) => t.name).sort()).toEqual([
       "df_adr_list",
       "df_adr_read",
+      "df_critics_config",
       "df_cycle_list",
       "df_cycle_read",
       "df_doctor",
@@ -196,6 +197,22 @@ describe("MCP server (cycle5 Phase 1)", () => {
         frontmatter: expect.anything(),
         body: expect.anything(),
         status: expect.anything(),
+      }),
+    );
+
+    const dfCriticsConfig = byName.get("df_critics_config");
+    expect(dfCriticsConfig?.annotations?.readOnlyHint).toBe(true);
+    expect(dfCriticsConfig?.annotations?.openWorldHint).toBe(false);
+    expect(
+      (dfCriticsConfig?.inputSchema?.properties ?? {}) as Record<string, unknown>,
+    ).toEqual({});
+    expect(
+      (dfCriticsConfig?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toEqual(
+      expect.objectContaining({
+        critics: expect.anything(),
+        aggregation: expect.anything(),
+        prompts: expect.anything(),
       }),
     );
 
@@ -857,6 +874,161 @@ d
         arguments: { adr_id: "missing" },
       });
       expect(result.isError).toBe(true);
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // df_critics_config integration tests — fixture is a repo root with
+  // a valid .agent-review/config.json (no git init needed; the tool
+  // doesn't touch git).
+  // ---------------------------------------------------------------
+
+  function setupCriticsConfigFixture(): string {
+    const root = mkdtempSync(join(tmpdir(), "df-mcp-critics-cfg-"));
+    // loadAgentReviewConfig calls `git rev-parse --show-toplevel` to
+    // locate the repo root, so the fixture has to be a real git
+    // worktree even though the tool itself doesn't touch git.
+    spawnSync("git", ["init", "-q", "-b", "main", root]);
+    mkdirSync(join(root, ".agent-review", "prompts"), { recursive: true });
+    // Guidance files + prompt fragments referenced in context.* must
+    // exist on disk (loadAgentReviewConfig validates them by default).
+    writeFileSync(join(root, "CLAUDE.md"), "# CLAUDE\n", "utf8");
+    writeFileSync(join(root, "AGENTS.md"), "# AGENTS\n", "utf8");
+    writeFileSync(
+      join(root, ".agent-review", "prompts", "local-critic.md"),
+      "# local-critic prompt\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(root, ".agent-review", "config.json"),
+      JSON.stringify({
+        version: 1,
+        critics: [
+          {
+            id: "cursor-local",
+            name: "Cursor",
+            adapter: "cursor-sdk",
+            required: true,
+            runtime: "local",
+            model: { id: "gpt-5.5", params: [] },
+          },
+          {
+            id: "codex-local",
+            name: "Codex",
+            adapter: "codex-sdk",
+            required: false,
+            runtime: "local",
+            model: { id: "gpt-5.5", params: [] },
+          },
+        ],
+        aggregation: {
+          policy: "min-complete-quorum",
+          blockingSeverities: ["blocker", "high"],
+          quorum: 2,
+        },
+        git: {
+          hookPath: ".husky",
+          artifactDir: "agent-reviews",
+          artifactScope: "git-common-dir",
+        },
+        policy: {
+          blockOnMissingReview: true,
+          blockOnReviewError: true,
+          allowEmergencyBypass: true,
+          postCommitMode: "async",
+        },
+        context: {
+          guidanceFiles: ["CLAUDE.md", "AGENTS.md"],
+          promptFragments: [".agent-review/prompts/local-critic.md"],
+          maxChangedFileBytes: 200000,
+          includeFullChangedFiles: true,
+        },
+        validation: {
+          runBeforeReview: false,
+          resultFile: "agent-reviews/quality-gates/latest.json",
+          requiredQualityGates: [],
+          optionalQualityGates: [],
+        },
+        security: {
+          redactSecretsInDiagnostics: true,
+          treatDiffAsUntrustedInput: true,
+        },
+      }),
+      "utf8",
+    );
+    return root;
+  }
+
+  it("tools/call df_critics_config returns critics + aggregation + prompts", async () => {
+    const root = setupCriticsConfigFixture();
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_critics_config",
+        arguments: {},
+      });
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as
+        | {
+            critics: Array<{ id: string; adapter: string; required: boolean }>;
+            aggregation: { policy: string; blockingSeverities: string[]; quorum: number };
+            prompts: { guidanceFiles: string[]; promptFragments: string[] };
+          }
+        | undefined;
+      expect(structured?.critics?.map((c) => c.id).sort()).toEqual([
+        "codex-local",
+        "cursor-local",
+      ]);
+      expect(structured?.aggregation?.policy).toBe("min-complete-quorum");
+      expect(structured?.aggregation?.quorum).toBe(2);
+      expect(structured?.prompts?.guidanceFiles).toEqual(["CLAUDE.md", "AGENTS.md"]);
+      expect(structured?.prompts?.promptFragments).toEqual([
+        ".agent-review/prompts/local-critic.md",
+      ]);
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tools/call df_critics_config returns isError when .agent-review/config.json is missing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "df-mcp-critics-cfg-missing-"));
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] =
+        InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_critics_config",
+        arguments: {},
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ type: string; text?: string }>).find(
+        (c) => c.type === "text",
+      )?.text;
+      expect(text).toMatch(/failed to load/);
 
       await client.close();
       await server.close();
