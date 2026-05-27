@@ -93,6 +93,11 @@ import { runQualityGates } from "./evidence/quality-gates.js";
 import { matchAnyGlob } from "./glob.js";
 import { collectChangedPaths } from "./evidence/index.js";
 import { summarizeGate } from "./policy/gate.js";
+// Cycle 5 Phase 1 — `df mcp` stdio MCP server. The mcp/ module is kept
+// out of cli.ts because its lifecycle (long-running stdio transport,
+// stderr-only diagnostics) is structurally distinct from the other
+// subcommands. See docs/roadmap/cycles/cycle5-mcp-server.md.
+import { cmdMcp } from "./mcp/cli.js";
 
 interface PackageMeta {
   name?: string;
@@ -158,6 +163,14 @@ function printHelp(meta: PackageMeta): void {
       "                              triggered verification routes. No LLM calls.",
       "  df stats                    Pretty-print critic call stats + bypass audit.",
       "                              Alias for `df audit stats`. No LLM calls.",
+      "",
+      "Subcommands (Phase G — agentic MCP surface, cycle5):",
+      "  df mcp                      Start the local stdio Model Context Protocol",
+      "                              server. Exposes the CLI surface to any MCP-",
+      "                              speaking agent (Claude Code, Cursor, Codex,",
+      "                              Gemini) as a structured tool + resource +",
+      "                              prompt catalog. Run `df mcp --help` for the",
+      "                              .mcp.json wiring snippet.",
       "",
       "Cost model:",
       "  The local hook path (review/gate-push) consumes Cursor / Codex / Claude",
@@ -281,6 +294,13 @@ const PHASE_F_LOCAL_SUBCOMMANDS = new Set([
   "gates",
   "stats",
 ]);
+
+// Cycle 5 Phase 1 — `df mcp` is the local stdio MCP server. It is a
+// long-running subcommand whose stdout is OWNED by the MCP JSON-RPC
+// transport, so the early-help routing in main() MUST forward
+// `mcp --help` to the subcommand's own help printer (which is the only
+// stdout writer in that subtree) rather than the global printHelp().
+const PHASE_G_SUBCOMMANDS = new Set(["mcp"]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // PR Status Check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -1235,13 +1255,17 @@ async function main(argv: string[]): Promise<number> {
       printHelp(meta);
       return 0;
     }
-    // If a subcommand is present alongside --help, forward to Python.
+    // If a subcommand is present alongside --help, forward to its own
+    // help printer rather than the global one (this is critical for
+    // `df mcp --help`: cmdMcp owns stdout in stdio mode and must be the
+    // only writer of help text for its subcommand).
     const sub0 = args[0] ?? "";
     if (
       !PHASE_C_SUBCOMMANDS.has(sub0) &&
       !PHASE_D_SUBCOMMANDS.has(sub0) &&
       !PHASE_F_SUBCOMMANDS.has(sub0) &&
-      !PHASE_F_LOCAL_SUBCOMMANDS.has(sub0)
+      !PHASE_F_LOCAL_SUBCOMMANDS.has(sub0) &&
+      !PHASE_G_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -1284,6 +1308,10 @@ async function main(argv: string[]): Promise<number> {
   }
   if (sub === "stats") {
     return await cmdStats(rest);
+  }
+  // Phase G — agentic MCP surface (cycle5).
+  if (sub === "mcp") {
+    return await cmdMcp(rest);
   }
   return notImplemented(sub);
 }
