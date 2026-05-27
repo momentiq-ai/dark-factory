@@ -106,6 +106,11 @@ df gate-push --commit HEAD --ci       # CI replay
 df doctor --profile local             # env + per-adapter auth check
 df gates                              # static gates, no LLM
 df stats                              # alias for `df audit stats`
+
+# Phase G — MCP server (cycle 5). Stdio Model Context Protocol server
+# exposing the CLI surface to any MCP-speaking agent.
+df mcp                                # start the stdio MCP server
+df mcp --help                         # config snippets for Claude Code, Cursor, Codex
 ```
 
 > **Note on `--use-bundled-default-spec`**: the bundled `spec-default.yaml`

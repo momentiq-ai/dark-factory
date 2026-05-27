@@ -20,9 +20,20 @@ Pre-launch. Active extraction from `momentiq-ai/sage3c` via [cycle 331](https://
 
 ## What's here (post-extraction target state)
 
-- `@momentiq/dark-factory-cli` — OSS CLI (Cursor / Codex / Gemini / Grok adapters, min-complete-quorum aggregation)
+- `@momentiq/dark-factory-cli` — OSS CLI (Cursor / Codex / Gemini / Grok adapters, min-complete-quorum aggregation) **+ a local stdio MCP server (`df mcp`)** that exposes the CLI surface to any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini) as a structured tool + resource + prompt catalog. See [CONSUMER-ADOPTION.md §11](docs/CONSUMER-ADOPTION.md#11-wire-the-mcp-server-into-your-agent) for wiring.
 - `@momentiq/dark-factory-schemas` — JSON Schemas for `darkfactory.yaml` + per-SHA evidence + cycle-doc trailer formats
 - `.github/workflows/*.yml` — reusable GitHub Actions consumers reference via `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@v0.1.0`
+
+## Agentic surface — `df mcp`
+
+The CLI ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Connect any MCP-speaking agent over stdio and you get:
+
+- **15 tools** — `df_doctor`, `df_findings`, `df_show_run`, `df_cycle_list`, `df_cycle_read`, `df_adr_list`, `df_adr_read`, `df_critics_config`, `df_stats`, `df_gate_push`, `df_review` (async) + `df_review_status`, `df_bypass` (with elicitation for missing issue URLs), `df_cycle_doc_generate` + `df_adr_generate` (via MCP sampling — the server asks the **client's** LLM to populate skeletons)
+- **9 URI-addressable resources** — `df://repo/cycles`, `df://repo/cycle/{id}`, ADRs, findings, runs/recent, audit-log, principles, etc. Templated `list` callbacks auto-enumerate known cycles + ADRs, so `resources/list` at session start gives the agent a complete index of the agentic context
+- **5 prompts** — `df.write_cycle_doc`, `df.draft_adr`, `df.diagnose_critic_failure`, `df.summarize_recent_runs`, `df.onboarding_analysis`. Pure templates (no LLM call server-side); the client's LLM renders them
+- **Logging notifications** — long-running tools emit `notifications/message` so the user sees "[df] running cursor critic..." → "[df] critic finished: APPROVED" inline
+
+Pinned MCP protocol version: `2025-06-18`. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
 
 ## Reusable workflow shapes (Phase E)
 
