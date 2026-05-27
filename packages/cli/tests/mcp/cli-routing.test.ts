@@ -135,6 +135,7 @@ describe("df CLI — Phase G (cycle5 MCP) subcommand wiring", () => {
     expect((toolsResponse.result?.tools ?? []).map((t) => t.name).sort()).toEqual([
       "df_adr_list",
       "df_adr_read",
+      "df_critics_config",
       "df_cycle_list",
       "df_cycle_read",
       "df_doctor",
