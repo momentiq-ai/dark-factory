@@ -17,7 +17,7 @@
 // `df mcp` CLI wiring + stdio transport end-to-end.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -89,7 +89,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     await server.close();
   });
 
-  it("tools/list pins the cycle5 catalog (10 tools after step 5: 8 prior + stats + gate_push)", async () => {
+  it("tools/list pins the cycle5 catalog (13 tools after step 6: 10 prior + review + review_status + bypass)", async () => {
     const server = createMcpServer();
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -108,12 +108,15 @@ describe("MCP server (cycle5 Phase 1)", () => {
     expect(tools.tools.map((t) => t.name).sort()).toEqual([
       "df_adr_list",
       "df_adr_read",
+      "df_bypass",
       "df_critics_config",
       "df_cycle_list",
       "df_cycle_read",
       "df_doctor",
       "df_findings",
       "df_gate_push",
+      "df_review",
+      "df_review_status",
       "df_show_run",
       "df_stats",
     ]);
@@ -245,6 +248,52 @@ describe("MCP server (cycle5 Phase 1)", () => {
         properties?: { verdict?: { enum?: string[] } };
       })?.properties?.verdict?.enum?.sort(),
     ).toEqual(["allow", "block", "bypass-required"]);
+
+    const dfReview = byName.get("df_review");
+    expect(dfReview?.annotations?.readOnlyHint).toBe(false);
+    expect(dfReview?.annotations?.destructiveHint).toBe(false);
+    expect(dfReview?.annotations?.idempotentHint).toBe(false);
+    expect(
+      ((dfReview?.inputSchema?.properties ?? {}) as Record<string, unknown>),
+    ).toHaveProperty("commit");
+    expect(
+      (dfReview?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toEqual(
+      expect.objectContaining({
+        job_id: expect.anything(),
+        started_at: expect.anything(),
+        expected_completion_seconds: expect.anything(),
+      }),
+    );
+
+    const dfReviewStatus = byName.get("df_review_status");
+    expect(dfReviewStatus?.annotations?.readOnlyHint).toBe(true);
+    expect(
+      ((dfReviewStatus?.inputSchema?.properties ?? {}) as Record<string, unknown>),
+    ).toHaveProperty("job_id");
+    expect(
+      (dfReviewStatus?.outputSchema as {
+        properties?: { status?: { enum?: string[] } };
+      })?.properties?.status?.enum?.sort(),
+    ).toEqual(["completed", "errored", "running"]);
+
+    const dfBypass = byName.get("df_bypass");
+    expect(dfBypass?.annotations?.readOnlyHint).toBe(false);
+    expect(dfBypass?.annotations?.destructiveHint).toBe(true);
+    const bypassInputProps =
+      (dfBypass?.inputSchema?.properties ?? {}) as Record<string, unknown>;
+    expect(bypassInputProps).toHaveProperty("reason");
+    expect(bypassInputProps).toHaveProperty("sha");
+    expect(bypassInputProps).toHaveProperty("issue_url");
+    expect(
+      (dfBypass?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toEqual(
+      expect.objectContaining({
+        audit_entry_id: expect.anything(),
+        recorded_at: expect.anything(),
+        warnings: expect.anything(),
+      }),
+    );
 
     // Step 4 populated resources/list; detailed shape pins live in
     // tests/mcp/resources.test.ts. Here we just assert the static
@@ -1389,6 +1438,271 @@ d
       expect(structured.verdict).toBe("block");
       expect(structured.bypass_allowed).toBe(false);
       expect(structured.reasons.length).toBeGreaterThan(0);
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // df_review + df_review_status integration — the test injects a
+  // mock runReview via createMcpServer's _testRunReview opt so we
+  // don't have to instantiate the real vendor adapter fleet.
+  // ---------------------------------------------------------------
+
+  function setupReviewBypassFixture(opts: { allowEmergencyBypass?: boolean } = {}): {
+    root: string;
+    sha: string;
+  } {
+    const root = mkdtempSync(join(tmpdir(), "df-mcp-review-bypass-"));
+    spawnSync("git", ["init", "-q", "-b", "main", root]);
+    spawnSync("git", ["config", "user.email", "t@t.com"], { cwd: root });
+    spawnSync("git", ["config", "user.name", "t"], { cwd: root });
+    spawnSync("git", ["config", "commit.gpgsign", "false"], { cwd: root });
+    writeFileSync(join(root, "README.md"), "# x\n");
+    spawnSync("git", ["add", "."], { cwd: root });
+    spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
+    const sha = String(
+      spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout,
+    ).trim();
+
+    mkdirSync(join(root, ".agent-review", "prompts"), { recursive: true });
+    writeFileSync(join(root, "CLAUDE.md"), "# CLAUDE\n", "utf8");
+    writeFileSync(
+      join(root, ".agent-review", "prompts", "local-critic.md"),
+      "# local\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(root, ".agent-review", "config.json"),
+      JSON.stringify({
+        version: 1,
+        critics: [
+          {
+            id: "cursor-local",
+            name: "Cursor",
+            adapter: "cursor-sdk",
+            required: true,
+            runtime: "local",
+            model: { id: "gpt-5.5", params: [] },
+          },
+        ],
+        aggregation: { policy: "block-if-any", blockingSeverities: ["blocker", "high"] },
+        git: { hookPath: ".husky", artifactDir: "agent-reviews", artifactScope: "git-common-dir" },
+        policy: {
+          blockOnMissingReview: true,
+          blockOnReviewError: true,
+          allowEmergencyBypass: opts.allowEmergencyBypass ?? true,
+          postCommitMode: "async",
+        },
+        context: {
+          guidanceFiles: ["CLAUDE.md"],
+          promptFragments: [".agent-review/prompts/local-critic.md"],
+          maxChangedFileBytes: 200000,
+          includeFullChangedFiles: true,
+        },
+        validation: {
+          runBeforeReview: false,
+          resultFile: "agent-reviews/quality-gates/latest.json",
+          requiredQualityGates: [],
+          optionalQualityGates: [],
+        },
+        security: { redactSecretsInDiagnostics: true, treatDiffAsUntrustedInput: true },
+      }),
+      "utf8",
+    );
+    return { root, sha };
+  }
+
+  it("tools/call df_review returns job_id and df_review_status reports completion via the injected runner", async () => {
+    const { root, sha } = setupReviewBypassFixture();
+    try {
+      // A synthetic outcome the mock runReview returns. The findings
+      // mapper is tested separately; here we just pin the shape pass-
+      // through.
+      const fakeOutcome = {
+        artifact: {
+          version: 2 as const,
+          status: "complete" as const,
+          repo: "test/test",
+          commit: sha,
+          parent: "0000000000000000000000000000000000000000",
+          range: `0000000..${sha.slice(0, 7)}`,
+          diffHash: "sha256:test",
+          artifactScope: "git-common-dir" as const,
+          gateVerdict: "APPROVED" as const,
+          aggregationPolicy: "block-if-any" as const,
+          criticResults: [
+            {
+              criticId: "cursor-local",
+              status: "complete" as const,
+              verdict: "APPROVED" as const,
+              requiresHumanJudgment: false,
+              reviewer: {
+                name: "Cursor",
+                adapter: "cursor-sdk",
+                model: { id: "gpt-5.5", params: [] },
+                runtime: "local",
+              },
+              summary: "ok",
+              findings: [],
+              validation: { qualityGateResults: [], qualityGatesMissing: [] },
+              confidence: "high" as const,
+            },
+          ],
+          createdAt: "2026-05-27T15:00:00.000Z",
+        },
+        paths: {
+          jsonPath: join(root, ".git", "agent-reviews", `${sha}.json`),
+          markdownPath: null,
+        },
+        packet: {} as never,
+        acquired: true,
+      };
+
+      const server = createMcpServer({
+        cwd: root,
+        _testRunReview: async () => fakeOutcome,
+      });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const reviewResult = await client.callTool({
+        name: "df_review",
+        arguments: { commit: sha },
+      });
+      expect(reviewResult.isError).toBeFalsy();
+      const reviewStructured = reviewResult.structuredContent as
+        | {
+            job_id: string;
+            started_at: string;
+            expected_completion_seconds: number;
+          }
+        | undefined;
+      expect(reviewStructured?.job_id).toMatch(/^job_[0-9a-f]+$/);
+      expect(reviewStructured?.expected_completion_seconds).toBeGreaterThan(0);
+
+      // Wait for the async runReview to settle. The fake returns
+      // synchronously, but the .then() callback runs after the
+      // current task — give the event loop a tick or two.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      const jobId = reviewStructured!.job_id;
+      const statusResult = await client.callTool({
+        name: "df_review_status",
+        arguments: { job_id: jobId },
+      });
+      expect(statusResult.isError).toBeFalsy();
+      const statusStructured = statusResult.structuredContent as
+        | {
+            status: string;
+            verdict?: string;
+            findings?: { commit: string; critics: unknown[] };
+          }
+        | undefined;
+      expect(statusStructured?.status).toBe("completed");
+      expect(statusStructured?.verdict).toBe("APPROVED");
+      expect(statusStructured?.findings?.commit).toBe(sha);
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tools/call df_review_status returns isError for an unknown job_id", async () => {
+    const { root } = setupReviewBypassFixture();
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      const result = await client.callTool({
+        name: "df_review_status",
+        arguments: { job_id: "job_doesnotexist" },
+      });
+      expect(result.isError).toBe(true);
+
+      await client.close();
+      await server.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("tools/call df_bypass appends a structured audit entry; missing issue_url surfaces a warning", async () => {
+    const { root, sha } = setupReviewBypassFixture();
+    try {
+      const server = createMcpServer({ cwd: root });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      // Without issue_url → warns.
+      const noIssue = await client.callTool({
+        name: "df_bypass",
+        arguments: { reason: "emergency hotfix for staging outage", sha },
+      });
+      expect(noIssue.isError).toBeFalsy();
+      const noIssueStructured = noIssue.structuredContent as
+        | { audit_entry_id: string; recorded_at: string; warnings: string[] }
+        | undefined;
+      expect(noIssueStructured?.audit_entry_id).toMatch(/^bypass_[0-9a-f]+$/);
+      expect(noIssueStructured?.warnings ?? []).toEqual(
+        expect.arrayContaining([expect.stringMatching(/issue_url missing/)]),
+      );
+
+      // With issue_url → no warning, and the audit entry encodes both
+      // mcp:<id> and issue:<url> into bypassReason.
+      const withIssue = await client.callTool({
+        name: "df_bypass",
+        arguments: {
+          reason: "follow-up cleanup",
+          sha,
+          issue_url: "https://github.com/momentiq-ai/dark-factory/issues/999",
+        },
+      });
+      const withIssueStructured = withIssue.structuredContent as
+        | { warnings: string[]; audit_entry_id: string }
+        | undefined;
+      expect(withIssueStructured?.warnings).toEqual([]);
+
+      // Both entries should now be in the telemetry NDJSON. Read it
+      // back and pin the structured-reason prefix encoding.
+      const ndjson = readFileSync(
+        join(root, ".git", "agent-reviews", "_runs.ndjson"),
+        "utf8",
+      );
+      const lines = ndjson
+        .split("\n")
+        .filter((l) => l.trim().length > 0)
+        .map((l) => JSON.parse(l) as { event: string; bypassReason?: string; commit?: string });
+      expect(lines).toHaveLength(2);
+      expect(lines.every((l) => l.event === "gate_bypassed")).toBe(true);
+      expect(lines.every((l) => l.commit === sha)).toBe(true);
+      // Reasons carry the prefix metadata.
+      expect(lines[0]?.bypassReason).toMatch(/^\[mcp:bypass_[0-9a-f]+\] /);
+      expect(lines[1]?.bypassReason).toMatch(
+        /^\[mcp:bypass_[0-9a-f]+ issue:https:\/\/github\.com\/momentiq-ai\/dark-factory\/issues\/999\] /,
+      );
 
       await client.close();
       await server.close();

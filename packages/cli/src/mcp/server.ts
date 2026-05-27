@@ -9,9 +9,11 @@
 // (docs/roadmap/cycles/cycle5-mcp-server.md, "Phase 1 — local stdio").
 // Step 1 shipped the empty-catalog skeleton + initialize handshake.
 // Steps 2 + 3a/b/c/d shipped the 8-tool read-only catalog. Step 4
-// added the URI-addressable resource surface. Step 5 (THIS) adds
-// df_stats + df_gate_push — the audit-trail stats tool and the
-// pre-push gate evaluator. Prompts stay empty until step 7.
+// added the URI-addressable resource surface. Step 5 added
+// df_stats + df_gate_push. Step 6 (THIS) adds the first
+// non-readonly tools: df_review (async, returns job_id) +
+// df_review_status (poll) + df_bypass (audit-logged emergency
+// bypass). Prompts stay empty until step 7.
 //
 // The MCP protocol version pinned by cycle5 is `2025-06-18`. The SDK we
 // depend on (`@modelcontextprotocol/sdk@^1.29.0`) supports a set of
@@ -34,6 +36,7 @@ import { registerCriticsConfigTool } from "./tools/critics-config.js";
 import { registerCycleTools } from "./tools/cycle.js";
 import { registerDoctorTool } from "./tools/doctor.js";
 import { registerFindingsTools } from "./tools/findings.js";
+import { registerReviewBypassTools } from "./tools/review-bypass.js";
 import { registerStatsGateTools } from "./tools/stats-gate.js";
 
 interface PackageMeta {
@@ -64,6 +67,16 @@ export interface CreateMcpServerOptions {
    * tests pass a fixture directory.
    */
   readonly cwd?: string;
+  /**
+   * Test-only escape hatch — substitute the runReview function used
+   * by df_review with a stub so unit tests don't have to instantiate
+   * the vendor adapter fleet. Production code leaves this undefined;
+   * the real runReview ships. The underscore prefix marks it as
+   * non-public surface.
+   */
+  readonly _testRunReview?: (
+    options: import("../runner.js").ReviewRunOptions,
+  ) => Promise<import("../runner.js").ReviewRunOutcome>;
 }
 
 export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
@@ -104,6 +117,12 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
   registerAdrTools(server, toolOpts);           // step 3c — df_adr_list + df_adr_read
   registerCriticsConfigTool(server, toolOpts);  // step 3d — df_critics_config (closes step 3)
   registerStatsGateTools(server, toolOpts);     // step 5 — df_stats + df_gate_push
+  registerReviewBypassTools(server, {
+    ...toolOpts,
+    ...(opts._testRunReview !== undefined
+      ? { _internalRunReview: opts._testRunReview }
+      : {}),
+  });                                            // step 6 — df_review + df_review_status + df_bypass
 
   // step 4 — URI-addressable resources (df://repo/...). Single call
   // registers all 9 resources at once; see src/mcp/resources.ts.
