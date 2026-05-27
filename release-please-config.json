@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node-workspace",
+  "include-component-in-tag": true,
+  "separate-pull-requests": false,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "draft": false,
+  "prerelease": true,
+  "prerelease-type": "alpha",
+  "packages": {
+    "packages/cli": {
+      "package-name": "@momentiq/dark-factory-cli",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "packages/schemas": {
+      "package-name": "@momentiq/dark-factory-schemas",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}
