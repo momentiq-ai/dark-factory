@@ -1,0 +1,1230 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the full tools + resourceTemplates + prompts catalog 1`] = `
+{
+  "prompts": [
+    {
+      "arguments": [
+        {
+          "description": "GitHub check_run id (or any opaque handle naming the failed run) the agent will reference.",
+          "name": "check_run_id",
+          "required": true,
+        },
+      ],
+      "description": "Return a runbook-walk prompt that guides an agent through triaging a failed critic check.",
+      "name": "df.diagnose_critic_failure",
+      "title": "Diagnose a critic failure",
+    },
+    {
+      "arguments": [
+        {
+          "description": "Comma- or newline-separated list of alternatives considered. Each is added as a bullet under the Alternatives section.",
+          "name": "alternatives",
+          "required": true,
+        },
+        {
+          "description": "One-paragraph context — why is this decision needed now?",
+          "name": "context",
+          "required": true,
+        },
+        {
+          "description": "One-sentence statement of the decision being made.",
+          "name": "decision",
+          "required": true,
+        },
+      ],
+      "description": "Return a templated Architecture Decision Record skeleton with bullet metadata + standard sections.",
+      "name": "df.draft_adr",
+      "title": "Draft an ADR",
+    },
+    {
+      "arguments": [
+        {
+          "description": "Local filesystem path to the candidate consumer repo. The prompt instructs the agent to scan + describe the repo's current state; the actual scanning is done by the agent's tools, not by this prompt.",
+          "name": "repo_path",
+          "required": true,
+        },
+      ],
+      "description": "Return the analysis prompt template that the cycle2 \`df onboard\` agent uses when scanning a candidate consumer repo. Pure template — no side effects.",
+      "name": "df.onboarding_analysis",
+      "title": "Onboarding analysis prompt",
+    },
+    {
+      "arguments": [
+        {
+          "description": "How many most-recent events to embed (string for prompt API compat; parsed as int; clamped 1..500; default 25).",
+          "name": "limit",
+          "required": true,
+        },
+      ],
+      "description": "Embed a snapshot of recent telemetry events into a structured prompt + ask the client's LLM to produce an operator-friendly summary. The server reads telemetry from disk; no LLM call.",
+      "name": "df.summarize_recent_runs",
+      "title": "Summarize recent critic runs",
+    },
+    {
+      "arguments": [
+        {
+          "description": "Cycle id (e.g. 'cycle6' or 'cycle331.7'). Maps to the filename \`docs/roadmap/cycles/<id>-slug.md\`.",
+          "name": "cycle_id",
+          "required": true,
+        },
+        {
+          "description": "One-paragraph scope statement — what's in vs out for this cycle.",
+          "name": "scope",
+          "required": true,
+        },
+        {
+          "description": "Short title for the cycle (after the em-dash).",
+          "name": "title",
+          "required": true,
+        },
+      ],
+      "description": "Return a templated cycle-doc skeleton with frontmatter + standard sections. The client's LLM populates the body.",
+      "name": "df.write_cycle_doc",
+      "title": "Write a cycle doc",
+    },
+  ],
+  "resourceTemplates": [
+    {
+      "description": "Structured ADR — { id, frontmatter, body, status, supersedes? }. Same data as df_adr_read.",
+      "mimeType": "application/json",
+      "name": "adr",
+      "uriTemplate": "df://repo/adr/{adr_id}",
+    },
+    {
+      "description": "Same as df://repo/audit-log; routes ?since=… reads.",
+      "mimeType": "application/x-ndjson",
+      "name": "audit-log-since",
+      "uriTemplate": "df://repo/audit-log{?since}",
+    },
+    {
+      "description": "Structured cycle doc — { id, frontmatter, sections }. Same data as df_cycle_read.",
+      "mimeType": "application/json",
+      "name": "cycle",
+      "uriTemplate": "df://repo/cycle/{cycle_id}",
+    },
+    {
+      "description": "Narrowed findings for a commit — { commit, critics: [...] }. Same data as df_findings.",
+      "mimeType": "application/json",
+      "name": "findings",
+      "uriTemplate": "df://repo/findings/{commit_sha}",
+    },
+    {
+      "description": "Same as df://repo/runs/recent; routes ?limit=N reads.",
+      "mimeType": "application/json",
+      "name": "runs-recent-limited",
+      "uriTemplate": "df://repo/runs/recent{?limit}",
+    },
+  ],
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+      },
+      "description": "Use the CLIENT's LLM via sampling/createMessage to populate an ADR skeleton from { adr_id, decision, context, alternatives }, validate the result, and write it to disk. Returns the written path + approximate token usage. Refuses to overwrite.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "adr_id": {
+            "description": "ADR identifier, e.g. '2026-06-cycle-tracker-extraction'. Used in the h1 header + (default) filename.",
+            "minLength": 1,
+            "type": "string",
+          },
+          "alternatives": {
+            "description": "Alternatives considered. Each becomes a bullet in the Alternatives section.",
+            "items": {
+              "type": "string",
+            },
+            "minItems": 1,
+            "type": "array",
+          },
+          "context": {
+            "description": "One-paragraph context — why is this needed now?",
+            "minLength": 1,
+            "type": "string",
+          },
+          "decision": {
+            "description": "One-sentence statement of the decision.",
+            "minLength": 1,
+            "type": "string",
+          },
+          "target_path": {
+            "description": "Cwd-relative output path. Default: \`docs/ADR/<adr_id>.md\`. Absolute paths + \`..\`-traversal are rejected.",
+            "type": "string",
+          },
+        },
+        "required": [
+          "adr_id",
+          "decision",
+          "context",
+          "alternatives",
+        ],
+        "type": "object",
+      },
+      "name": "df_adr_generate",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+          },
+          "sampling_token_usage": {
+            "additionalProperties": false,
+            "properties": {
+              "completion_estimate": {
+                "type": "number",
+              },
+              "model": {
+                "type": "string",
+              },
+              "prompt_estimate": {
+                "type": "number",
+              },
+              "stop_reason": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "prompt_estimate",
+              "completion_estimate",
+              "model",
+            ],
+            "type": "object",
+          },
+        },
+        "required": [
+          "path",
+          "sampling_token_usage",
+        ],
+        "type": "object",
+      },
+      "title": "Generate an ADR (sampling-driven)",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Enumerate Architecture Decision Records under \`docs/ADR/\` for the current repo. Returns one summary per file: id (filename basename), title (from h1, with 'ADR <prefix> — ' stripped when present), status, date. Read-only.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {},
+        "type": "object",
+      },
+      "name": "df_adr_list",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "adrs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "date": {
+                  "description": "Date from the bullet metadata, YYYY-MM-DD.",
+                  "type": "string",
+                },
+                "id": {
+                  "description": "Filename basename without \`.md\` — unique even when multiple ADRs share a date prefix.",
+                  "type": "string",
+                },
+                "status": {
+                  "description": "ADR status from the bullet metadata: typically 'Accepted' | 'Proposed' | 'Superseded' | 'Deprecated'.",
+                  "type": "string",
+                },
+                "title": {
+                  "description": "Title from the h1, after the 'ADR <prefix> — ' separator.",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "id",
+                "title",
+                "status",
+                "date",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "adrs",
+        ],
+        "type": "object",
+      },
+      "title": "List ADRs",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Read a single ADR by id. Returns the parsed bullet-metadata (frontmatter), the body markdown (h2 + onward, unmodified), the status, and the supersedes pointer when present. Read-only.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "adr_id": {
+            "description": "ADR id — the filename basename without \`.md\`, e.g. '2026-05-w1-w3-gate-migration'.",
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "adr_id",
+        ],
+        "type": "object",
+      },
+      "name": "df_adr_read",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "description": "Markdown body after the metadata block (h2 + onward).",
+            "type": "string",
+          },
+          "frontmatter": {
+            "additionalProperties": {
+              "type": "string",
+            },
+            "description": "Bullet-metadata map. Keys are the bullet labels verbatim — 'Status', 'Date', 'Deciders', 'Scope', etc.",
+            "type": "object",
+          },
+          "id": {
+            "description": "Echoed ADR id.",
+            "type": "string",
+          },
+          "status": {
+            "description": "Convenience: pulled from frontmatter.Status.",
+            "type": "string",
+          },
+          "supersedes": {
+            "description": "Convenience: pulled from frontmatter.Supersedes or frontmatter['Supersedes (in part)'] when either is present. Omitted otherwise.",
+            "type": "string",
+          },
+        },
+        "required": [
+          "id",
+          "frontmatter",
+          "body",
+          "status",
+        ],
+        "type": "object",
+      },
+      "title": "Read an ADR",
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+      },
+      "description": "Record a structured emergency-bypass audit entry into \`.git/agent-reviews/_runs.ndjson\` (the same file the husky hook writes to, so \`df stats\` aggregates uniformly). Requires a structured \`reason\`; an \`issue_url\` is RECOMMENDED — tools that omit it get a soft warning today and may be rejected in a future cycle once the policy tightens.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "issue_url": {
+            "description": "RECOMMENDED. Link to the tracking issue (GitHub URL, Linear ticket, etc.). Bypasses without this get a structured-warning string on the response.",
+            "type": "string",
+          },
+          "reason": {
+            "description": "Free-form bypass reason. Should explain WHY the bypass is necessary and reference any tracking artifact.",
+            "minLength": 1,
+            "type": "string",
+          },
+          "sha": {
+            "description": "Commit SHA the bypass applies to. The audit entry binds the bypass to this specific SHA so \`df show\` and the dashboard can surface it correctly.",
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "reason",
+          "sha",
+        ],
+        "type": "object",
+      },
+      "name": "df_bypass",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "audit_entry_id": {
+            "description": "Stable opaque id for the audit entry — surfaces in the telemetry NDJSON's \`bypassId\` field.",
+            "type": "string",
+          },
+          "recorded_at": {
+            "description": "ISO8601 timestamp the entry was appended.",
+            "type": "string",
+          },
+          "warnings": {
+            "description": "Soft-warning strings (empty when the bypass meets all recommendations).",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "audit_entry_id",
+          "recorded_at",
+          "warnings",
+        ],
+        "type": "object",
+      },
+      "title": "Record an emergency bypass",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Read the parsed \`.agent-review/config.json\` for the current repo. Returns the critic fleet, aggregation policy, and the prompt-shaping context (guidance files + prompt fragments paths). Read-only — does not modify any state.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {},
+        "type": "object",
+      },
+      "name": "df_critics_config",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "aggregation": {
+            "additionalProperties": {},
+            "description": "Aggregation policy block (policy, blockingSeverities, quorum). Typed shape: AggregationConfig.",
+            "type": "object",
+          },
+          "critics": {
+            "description": "Parsed critic entries from .agent-review/config.json.critics. Each entry preserves the on-disk shape (id, name, adapter, required, runtime, model, etc.); the typed shape lives in @momentiq/dark-factory-schemas as CriticConfig.",
+            "items": {
+              "additionalProperties": {},
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "prompts": {
+            "additionalProperties": false,
+            "description": "Curated subset of context.* — the prompt-shaping configuration. (Cycle5 spec calls this 'prompts'; the on-disk config groups it under context.)",
+            "properties": {
+              "guidanceFiles": {
+                "description": "Paths (relative to repo root) of guidance files (e.g. CLAUDE.md) every critic loads as context.",
+                "items": {
+                  "type": "string",
+                },
+                "type": "array",
+              },
+              "promptFragments": {
+                "description": "Paths of prompt-fragment files appended to each critic's system prompt. Conventionally under \`.agent-review/prompts/\`.",
+                "items": {
+                  "type": "string",
+                },
+                "type": "array",
+              },
+            },
+            "required": [
+              "guidanceFiles",
+              "promptFragments",
+            ],
+            "type": "object",
+          },
+        },
+        "required": [
+          "critics",
+          "aggregation",
+          "prompts",
+        ],
+        "type": "object",
+      },
+      "title": "Read critics config",
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+      },
+      "description": "Use the CLIENT's LLM via sampling/createMessage to populate a cycle-doc skeleton from { cycle_id, title, scope }, validate the result, and write it to disk. Returns the written path + approximate token usage. Refuses to overwrite an existing file at target_path.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "cycle_id": {
+            "description": "Cycle id, e.g. 'cycle42' or 'cycle331.7'. Used in the h1 header and (when target_path is omitted) the filename.",
+            "minLength": 1,
+            "type": "string",
+          },
+          "scope": {
+            "description": "One-paragraph scope statement. The LLM is allowed to expand it into the Scope section.",
+            "minLength": 1,
+            "type": "string",
+          },
+          "target_path": {
+            "description": "Cwd-relative output path. Default: \`docs/roadmap/cycles/<cycle_id>-<slug(title)>.md\`. Absolute paths and \`..\`-traversal are rejected.",
+            "type": "string",
+          },
+          "title": {
+            "description": "Short cycle title (rendered after the em-dash).",
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "cycle_id",
+          "title",
+          "scope",
+        ],
+        "type": "object",
+      },
+      "name": "df_cycle_doc_generate",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Absolute path to the written file (resolved against cwd).",
+            "type": "string",
+          },
+          "sampling_token_usage": {
+            "additionalProperties": false,
+            "description": "Approximate token usage — prompt + completion estimates (chars/4) and the client-reported model. NOT exact; the server doesn't have the model's tokenizer.",
+            "properties": {
+              "completion_estimate": {
+                "type": "number",
+              },
+              "model": {
+                "type": "string",
+              },
+              "prompt_estimate": {
+                "type": "number",
+              },
+              "stop_reason": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "prompt_estimate",
+              "completion_estimate",
+              "model",
+            ],
+            "type": "object",
+          },
+        },
+        "required": [
+          "path",
+          "sampling_token_usage",
+        ],
+        "type": "object",
+      },
+      "title": "Generate a cycle doc (sampling-driven)",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Enumerate cycle docs under \`docs/roadmap/cycles/\` for the current repo. Returns one summary per file: id (e.g. 'cycle5'), title, status, owner (optional), target (optional). Read-only — no filesystem writes.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {},
+        "type": "object",
+      },
+      "name": "df_cycle_list",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "cycles": {
+            "description": "Sorted by cycle id (lexicographic on the filename).",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "description": "Stable cycle id (e.g. 'cycle5' or 'cycle331.6').",
+                  "type": "string",
+                },
+                "owner": {
+                  "description": "Owner handle from frontmatter, when set.",
+                  "type": "string",
+                },
+                "status": {
+                  "description": "Lifecycle state — typically 'draft' | 'active' | 'done' | 'abandoned'.",
+                  "type": "string",
+                },
+                "target": {
+                  "description": "Target date from frontmatter, when set.",
+                  "type": "string",
+                },
+                "title": {
+                  "description": "Cycle title from frontmatter.",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "id",
+                "title",
+                "status",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "cycles",
+        ],
+        "type": "object",
+      },
+      "title": "List cycle docs",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Read a single cycle doc by id (e.g. 'cycle5'). Returns the parsed YAML frontmatter and a map of h2 section names (lower snake_case) → section body markdown. Nested headings (###+) stay inline inside their parent section. Read-only.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "cycle_id": {
+            "description": "Cycle id as derived from the filename \`cycleN[.M]-slug.md\`. Examples: 'cycle5', 'cycle331.6'.",
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "cycle_id",
+        ],
+        "type": "object",
+      },
+      "name": "df_cycle_read",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "frontmatter": {
+            "additionalProperties": {},
+            "description": "Raw parsed YAML frontmatter — caller pulls out fields it cares about.",
+            "type": "object",
+          },
+          "id": {
+            "description": "Echoed cycle id.",
+            "type": "string",
+          },
+          "sections": {
+            "additionalProperties": {
+              "type": "string",
+            },
+            "description": "Map of section name (snake_case) → section body markdown. Empty object when the cycle doc has no h2 sections.",
+            "type": "object",
+          },
+        },
+        "required": [
+          "id",
+          "frontmatter",
+          "sections",
+        ],
+        "type": "object",
+      },
+      "title": "Read a cycle doc",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Verify the local environment for Dark Factory critic invocation: Node version, husky hook wiring, artifact dir writability, Doppler bootstrap (if configured), and each registered adapter's credential check. Read-only — does not modify any state.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {},
+        "type": "object",
+      },
+      "name": "df_doctor",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "checks": {
+            "description": "Ordered list of individual check results — same order as runDoctor emits them.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "message": {
+                  "description": "Human-readable detail; for non-pass entries the remediation hint is appended after ' — fix: '.",
+                  "type": "string",
+                },
+                "name": {
+                  "description": "Stable id for the check (e.g. 'node_version').",
+                  "type": "string",
+                },
+                "status": {
+                  "description": "'pass' — check OK. 'fail' — check failed and gates ok=false. 'warn' — check failed but is optional (shadow-mode); does not gate ok.",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "warn",
+                  ],
+                  "type": "string",
+                },
+              },
+              "required": [
+                "name",
+                "status",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "ok": {
+            "description": "True if every non-optional check passed. Optional (shadow-mode) check failures emit status='warn' but do not gate ok.",
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "ok",
+          "checks",
+        ],
+        "type": "object",
+      },
+      "title": "Dark Factory doctor",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Read the per-critic findings recorded for a commit by \`df review\`. Returns the narrowed view: severity, file, line, rule, message. For full artifact context (verdict reasoning, quality-gate evidence, retry counts) call df_show_run.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "description": "Commit reference — anything \`git rev-parse\` accepts (SHA, 'HEAD', branch name, ref). Resolved server-side.",
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "commit",
+        ],
+        "type": "object",
+      },
+      "name": "df_findings",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "description": "Resolved commit SHA the artifact records.",
+            "type": "string",
+          },
+          "critics": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "findings": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "file": {
+                        "description": "File path the critic cites, when present.",
+                        "type": "string",
+                      },
+                      "line": {
+                        "description": "Line number the critic cites, when present.",
+                        "type": "number",
+                      },
+                      "message": {
+                        "description": "Concrete evidence text from the critic. For full impact + remediation context call df_show_run on the same commit.",
+                        "type": "string",
+                      },
+                      "rule": {
+                        "description": "Rule-like classifier — maps to the source ReviewFinding.category. Critic-supplied; format depends on the critic.",
+                        "type": "string",
+                      },
+                      "severity": {
+                        "description": "Severity tag from the source ReviewFinding ('blocker' | 'high' | 'medium' | 'low' | 'note').",
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "severity",
+                      "rule",
+                      "message",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+                "id": {
+                  "description": "Critic id (e.g. 'cursor-local-chief-engineer').",
+                  "type": "string",
+                },
+                "status": {
+                  "description": "'pending' | 'running' | 'complete' | 'error'.",
+                  "type": "string",
+                },
+                "verdict": {
+                  "description": "'APPROVED' | 'CHANGES_REQUESTED', when set.",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "id",
+                "status",
+                "findings",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "commit",
+          "critics",
+        ],
+        "type": "object",
+      },
+      "title": "Read review findings for a commit",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Evaluate \`df gate-push\`'s gate against each commit in a git pre-push protocol range. The \`stdin_protocol\` input is what git would write to the husky pre-push hook's stdin — newline-separated \`<localRef> <localSha> <remoteRef> <remoteSha>\` lines. Returns the aggregate verdict + per-commit blocking reasons. Read-only (does not push, does not write artifacts).",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "Profile name (overrides AGENT_REVIEW_PROFILE env). Defaults to \`local\`.",
+            "type": "string",
+          },
+          "stdin_protocol": {
+            "description": "Git pre-push protocol content (the same text git writes to a husky pre-push hook's stdin). Format: one line per ref update, \`<localRef> <localSha> <remoteRef> <remoteSha>\`, separated by newlines.",
+            "type": "string",
+          },
+        },
+        "required": [
+          "stdin_protocol",
+        ],
+        "type": "object",
+      },
+      "name": "df_gate_push",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "bypass_allowed": {
+            "description": "Mirror of loaded config policy.allowEmergencyBypass — set regardless of verdict for client UX.",
+            "type": "boolean",
+          },
+          "commits_evaluated": {
+            "description": "How many commits the input range contained.",
+            "type": "number",
+          },
+          "reasons": {
+            "description": "Per-commit blocking reasons (empty when verdict=allow).",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "commit": {
+                  "type": "string",
+                },
+                "criticId": {
+                  "type": "string",
+                },
+                "detail": {
+                  "type": "string",
+                },
+                "reason": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "commit",
+                "reason",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "verdict": {
+            "description": "'allow' — all commits pass. 'block' — at least one commit blocked AND policy.allowEmergencyBypass is false (no override path). 'bypass-required' — at least one commit blocked but policy permits emergency bypass; an agent client can prompt the user for a reason and call df_bypass.",
+            "enum": [
+              "block",
+              "allow",
+              "bypass-required",
+            ],
+            "type": "string",
+          },
+        },
+        "required": [
+          "verdict",
+          "reasons",
+          "commits_evaluated",
+          "bypass_allowed",
+        ],
+        "type": "object",
+      },
+      "title": "Evaluate the pre-push gate for a pushed range",
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+      },
+      "description": "Kick off the multi-vendor adversarial critic against a commit. Returns a \`job_id\` immediately; the review runs in the background. Poll \`df_review_status\` with the same job_id to retrieve the verdict + findings once complete. Honors \`AGENT_REVIEW_PROFILE\` for subscription-auth pinning.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "description": "Git ref to review — anything \`git rev-parse\` accepts.",
+            "minLength": 1,
+            "type": "string",
+          },
+          "profile": {
+            "description": "Profile name (default: env AGENT_REVIEW_PROFILE or 'local'). Pins per-critic \`auth\` so subscription-auth flows are honored — see profile docs in @momentiq/dark-factory-cli.",
+            "type": "string",
+          },
+        },
+        "required": [
+          "commit",
+        ],
+        "type": "object",
+      },
+      "name": "df_review",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "expected_completion_seconds": {
+            "description": "Approximate seconds until completion based on the cycle's default profile budget. Real time may exceed this.",
+            "type": "number",
+          },
+          "job_id": {
+            "description": "Opaque identifier — pass back to df_review_status.",
+            "type": "string",
+          },
+          "started_at": {
+            "description": "ISO8601 timestamp of when the job started running.",
+            "type": "string",
+          },
+        },
+        "required": [
+          "job_id",
+          "started_at",
+          "expected_completion_seconds",
+        ],
+        "type": "object",
+      },
+      "title": "Run a critic review (async)",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Look up the status of a review started via df_review. Returns 'running' while the review is in flight, 'completed' with verdict + findings once done, or 'errored' with the failure reason.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "description": "Job id returned by df_review.",
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "job_id",
+        ],
+        "type": "object",
+      },
+      "name": "df_review_status",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "description": "Set when status='errored'.",
+            "type": "string",
+          },
+          "findings": {
+            "additionalProperties": false,
+            "description": "Narrowed findings (same shape as df_findings) — set when status='completed'.",
+            "properties": {
+              "commit": {
+                "type": "string",
+              },
+              "critics": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "findings": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "file": {
+                            "type": "string",
+                          },
+                          "line": {
+                            "type": "number",
+                          },
+                          "message": {
+                            "type": "string",
+                          },
+                          "rule": {
+                            "type": "string",
+                          },
+                          "severity": {
+                            "type": "string",
+                          },
+                        },
+                        "required": [
+                          "severity",
+                          "rule",
+                          "message",
+                        ],
+                        "type": "object",
+                      },
+                      "type": "array",
+                    },
+                    "id": {
+                      "type": "string",
+                    },
+                    "status": {
+                      "type": "string",
+                    },
+                    "verdict": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "id",
+                    "status",
+                    "findings",
+                  ],
+                  "type": "object",
+                },
+                "type": "array",
+              },
+            },
+            "required": [
+              "commit",
+              "critics",
+            ],
+            "type": "object",
+          },
+          "status": {
+            "description": "Lifecycle phase.",
+            "enum": [
+              "running",
+              "completed",
+              "errored",
+            ],
+            "type": "string",
+          },
+          "verdict": {
+            "description": "Set when status='completed'.",
+            "enum": [
+              "APPROVED",
+              "CHANGES_REQUESTED",
+            ],
+            "type": "string",
+          },
+        },
+        "required": [
+          "status",
+        ],
+        "type": "object",
+      },
+      "title": "Poll a running review",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Read the unmodified ReviewArtifact JSON for a commit — verdict, per-critic results (status, findings with full evidence + impact + requiredFix), validation evidence, range, diff hash, bypass record (if any). For the narrowed-findings view see df_findings.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "description": "Commit reference accepted by \`git rev-parse\` (SHA, 'HEAD', branch, etc.).",
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "commit",
+        ],
+        "type": "object",
+      },
+      "name": "df_show_run",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": {},
+            "description": "Full ReviewArtifact JSON as written by \`df review\`. See @momentiq/dark-factory-schemas for the typed shape.",
+            "type": "object",
+          },
+        },
+        "required": [
+          "artifact",
+        ],
+        "type": "object",
+      },
+      "title": "Read the full review artifact for a commit",
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Summarize the .git/agent-reviews/_runs.ndjson audit trail. Optional ISO8601 \`since\` / \`until\` to constrain the window. Returns the narrowed spec view: { runs, bypasses, by_critic, by_verdict }. Read-only.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "since": {
+            "description": "ISO8601 timestamp — drop events with ts < since (lexicographic comparison; works correctly for UTC ISO timestamps).",
+            "type": "string",
+          },
+          "until": {
+            "description": "ISO8601 timestamp — drop events with ts > until.",
+            "type": "string",
+          },
+        },
+        "type": "object",
+      },
+      "name": "df_stats",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "by_critic": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "approved": {
+                  "type": "number",
+                },
+                "changes_requested": {
+                  "type": "number",
+                },
+                "errors": {
+                  "type": "number",
+                },
+                "finishes": {
+                  "type": "number",
+                },
+                "starts": {
+                  "type": "number",
+                },
+                "total_blockers": {
+                  "type": "number",
+                },
+                "total_findings": {
+                  "type": "number",
+                },
+                "total_high": {
+                  "type": "number",
+                },
+              },
+              "required": [
+                "starts",
+                "finishes",
+                "errors",
+                "approved",
+                "changes_requested",
+                "total_findings",
+                "total_blockers",
+                "total_high",
+              ],
+              "type": "object",
+            },
+            "description": "Per-critic-id stats over the window.",
+            "type": "object",
+          },
+          "by_verdict": {
+            "additionalProperties": false,
+            "description": "Aggregate verdict counts.",
+            "properties": {
+              "approved": {
+                "type": "number",
+              },
+              "changes_requested": {
+                "type": "number",
+              },
+            },
+            "required": [
+              "approved",
+              "changes_requested",
+            ],
+            "type": "object",
+          },
+          "bypasses": {
+            "description": "Count of gate_bypassed events.",
+            "type": "number",
+          },
+          "runs": {
+            "description": "Count of review_started or review_finished events.",
+            "type": "number",
+          },
+          "window": {
+            "additionalProperties": false,
+            "description": "Window metadata so callers can sanity-check the filter.",
+            "properties": {
+              "events_in_window": {
+                "type": "number",
+              },
+              "events_total": {
+                "type": "number",
+              },
+              "since": {
+                "type": "string",
+              },
+              "until": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "events_in_window",
+              "events_total",
+            ],
+            "type": "object",
+          },
+        },
+        "required": [
+          "runs",
+          "bypasses",
+          "by_critic",
+          "by_verdict",
+          "window",
+        ],
+        "type": "object",
+      },
+      "title": "Audit-trail stats",
+    },
+  ],
+}
+`;
