@@ -10,10 +10,13 @@
 // Step 1 shipped the empty-catalog skeleton + initialize handshake.
 // Steps 2 + 3a/b/c/d shipped the 8-tool read-only catalog. Step 4
 // added the URI-addressable resource surface. Step 5 added
-// df_stats + df_gate_push. Step 6 (THIS) adds the first
-// non-readonly tools: df_review (async, returns job_id) +
-// df_review_status (poll) + df_bypass (audit-logged emergency
-// bypass). Prompts stay empty until step 7.
+// df_stats + df_gate_push. Step 6 added df_review (async) +
+// df_review_status + df_bypass. Step 7 (THIS) populates the
+// prompts surface — 5 pure-template prompts (write_cycle_doc,
+// draft_adr, diagnose_critic_failure, summarize_recent_runs,
+// onboarding_analysis). The full MCP catalog is now live except
+// for the side-effecting generation tools (step 8 — sampling)
+// and the polish steps (elicitation, logging, conformance, docs).
 //
 // The MCP protocol version pinned by cycle5 is `2025-06-18`. The SDK we
 // depend on (`@modelcontextprotocol/sdk@^1.29.0`) supports a set of
@@ -28,7 +31,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ListPromptsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { registerPrompts } from "./prompts.js";
 
 import { registerResources } from "./resources.js";
 import { registerAdrTools } from "./tools/adr.js";
@@ -98,14 +101,11 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
     },
   );
 
-  // Prompts are still empty in step 4 — wire an explicit empty list
-  // handler so resources/list returns []. Resources are populated by
-  // registerResources() below; that call activates the SDK's
-  // automatic resources/list + resources/read handlers. Tools have
-  // been auto-wired by registerTool since step 2.
-  server.server.setRequestHandler(ListPromptsRequestSchema, () => ({
-    prompts: [],
-  }));
+  // Step 7 — populate prompts via registerPrompts (below), which
+  // activates the SDK's automatic prompts/list + prompts/get
+  // handlers. Tools have been auto-wired since step 2; resources
+  // since step 4. There are no remaining explicit empty-list
+  // handlers on the underlying Server.
 
   // Catalog. Each step in the cycle5 Phase 1 plan adds one
   // registerXxx call here and replaces the catalog-pin assertion in
@@ -127,6 +127,10 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
   // step 4 — URI-addressable resources (df://repo/...). Single call
   // registers all 9 resources at once; see src/mcp/resources.ts.
   registerResources(server, toolOpts);
+
+  // step 7 — 5 prompts as pure templates (no LLM calls server-side).
+  // See src/mcp/prompts.ts.
+  registerPrompts(server, toolOpts);
 
   return server;
 }
