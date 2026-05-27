@@ -1,6 +1,6 @@
 {
   "name": "@momentiq/dark-factory-cli",
-  "version": "0.1.1-alpha.9",
+  "version": "0.2.0-alpha.9",
   "description": "Dark Factory OSS CLI — multi-vendor adversarial critic orchestration (Cursor, Codex, Gemini, Grok) with min-complete-quorum aggregation and trusted-surface rebind",
   "license": "Apache-2.0",
   "type": "module",
