@@ -9,8 +9,9 @@
 // (docs/roadmap/cycles/cycle5-mcp-server.md, "Phase 1 — local stdio").
 // Step 1 shipped the empty-catalog skeleton + initialize handshake.
 // Steps 2 + 3a/b/c/d shipped the 8-tool read-only catalog. Step 4
-// (THIS) adds the URI-addressable resource surface. Prompts stay
-// empty until step 7.
+// added the URI-addressable resource surface. Step 5 (THIS) adds
+// df_stats + df_gate_push — the audit-trail stats tool and the
+// pre-push gate evaluator. Prompts stay empty until step 7.
 //
 // The MCP protocol version pinned by cycle5 is `2025-06-18`. The SDK we
 // depend on (`@modelcontextprotocol/sdk@^1.29.0`) supports a set of
@@ -33,6 +34,7 @@ import { registerCriticsConfigTool } from "./tools/critics-config.js";
 import { registerCycleTools } from "./tools/cycle.js";
 import { registerDoctorTool } from "./tools/doctor.js";
 import { registerFindingsTools } from "./tools/findings.js";
+import { registerStatsGateTools } from "./tools/stats-gate.js";
 
 interface PackageMeta {
   readonly name: string;
@@ -101,6 +103,7 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
   registerFindingsTools(server, toolOpts);      // step 3b — df_findings + df_show_run
   registerAdrTools(server, toolOpts);           // step 3c — df_adr_list + df_adr_read
   registerCriticsConfigTool(server, toolOpts);  // step 3d — df_critics_config (closes step 3)
+  registerStatsGateTools(server, toolOpts);     // step 5 — df_stats + df_gate_push
 
   // step 4 — URI-addressable resources (df://repo/...). Single call
   // registers all 9 resources at once; see src/mcp/resources.ts.

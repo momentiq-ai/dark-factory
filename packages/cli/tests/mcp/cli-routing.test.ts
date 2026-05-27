@@ -140,7 +140,9 @@ describe("df CLI — Phase G (cycle5 MCP) subcommand wiring", () => {
       "df_cycle_read",
       "df_doctor",
       "df_findings",
+      "df_gate_push",
       "df_show_run",
+      "df_stats",
     ]);
   });
 });
