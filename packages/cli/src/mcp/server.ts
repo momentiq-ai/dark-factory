@@ -8,12 +8,9 @@
 // Cycle5 Phase 1 ships individual catalog entries one step at a time
 // (docs/roadmap/cycles/cycle5-mcp-server.md, "Phase 1 — local stdio").
 // Step 1 shipped the empty-catalog skeleton + initialize handshake.
-// Step 2 registered df_doctor. Step 3a added df_cycle_list +
-// df_cycle_read. Step 3b added df_findings + df_show_run. Step 3c
-// added df_adr_list + df_adr_read. Step 3d (THIS) adds
-// df_critics_config — closing cycle5 Phase 1 step 3 (the "read-only
-// batch"). Resources and prompts stay empty until later Phase 1
-// steps populate them.
+// Steps 2 + 3a/b/c/d shipped the 8-tool read-only catalog. Step 4
+// (THIS) adds the URI-addressable resource surface. Prompts stay
+// empty until step 7.
 //
 // The MCP protocol version pinned by cycle5 is `2025-06-18`. The SDK we
 // depend on (`@modelcontextprotocol/sdk@^1.29.0`) supports a set of
@@ -28,11 +25,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  ListPromptsRequestSchema,
-  ListResourcesRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { ListPromptsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
+import { registerResources } from "./resources.js";
 import { registerAdrTools } from "./tools/adr.js";
 import { registerCriticsConfigTool } from "./tools/critics-config.js";
 import { registerCycleTools } from "./tools/cycle.js";
@@ -88,15 +83,11 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
     },
   );
 
-  // Resources and prompts are still empty in step 2 — wire explicit
-  // empty list handlers so /list returns [] instead of "Method not
-  // found". The tool registration below activates the SDK's automatic
-  // tools/list + tools/call handlers (the SDK guards against double-
-  // registration of the tools handler — that's why we no longer set
-  // an explicit empty tools/list handler here).
-  server.server.setRequestHandler(ListResourcesRequestSchema, () => ({
-    resources: [],
-  }));
+  // Prompts are still empty in step 4 — wire an explicit empty list
+  // handler so resources/list returns []. Resources are populated by
+  // registerResources() below; that call activates the SDK's
+  // automatic resources/list + resources/read handlers. Tools have
+  // been auto-wired by registerTool since step 2.
   server.server.setRequestHandler(ListPromptsRequestSchema, () => ({
     prompts: [],
   }));
@@ -110,6 +101,10 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
   registerFindingsTools(server, toolOpts);      // step 3b — df_findings + df_show_run
   registerAdrTools(server, toolOpts);           // step 3c — df_adr_list + df_adr_read
   registerCriticsConfigTool(server, toolOpts);  // step 3d — df_critics_config (closes step 3)
+
+  // step 4 — URI-addressable resources (df://repo/...). Single call
+  // registers all 9 resources at once; see src/mcp/resources.ts.
+  registerResources(server, toolOpts);
 
   return server;
 }
