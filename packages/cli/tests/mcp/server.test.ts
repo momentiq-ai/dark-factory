@@ -314,8 +314,17 @@ describe("MCP server (cycle5 Phase 1)", () => {
       "df://repo/runs/recent",
     ]);
 
+    // Step 7 populated prompts/list with 5 pure-template prompts.
+    // Detailed shape pins live in tests/mcp/prompts.test.ts. Here we
+    // just assert the catalog set.
     const prompts = await client.listPrompts();
-    expect(prompts.prompts).toEqual([]);
+    expect(prompts.prompts.map((p) => p.name).sort()).toEqual([
+      "df.diagnose_critic_failure",
+      "df.draft_adr",
+      "df.onboarding_analysis",
+      "df.summarize_recent_runs",
+      "df.write_cycle_doc",
+    ]);
 
     await client.close();
     await server.close();
