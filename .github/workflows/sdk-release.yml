@@ -1,0 +1,132 @@
+name: SDK Release
+
+# Release-please-driven publishing for @momentiq/dark-factory-cli and
+# @momentiq/dark-factory-schemas. Pattern modeled on momentiq-ai/cerebe-
+# platform/.github/workflows/sdk-release.yml.
+#
+# Replaces the manual `npm publish` dance (used for all alpha.4 -> alpha.9
+# publishes), which has the failure modes we've already seen:
+#   1. Local package.json bumps get reverted post-publish, so the source
+#      drifts from the registry (local says alpha.7 while registry latest
+#      is alpha.9). No git tag, no audit trail.
+#   2. Without `--tag alpha`, npm assigns the publish to the default
+#      `latest` dist-tag, so `npm install @momentiq/dark-factory-cli`
+#      (no version) hands out a pre-release to every consumer.
+#
+# The flow this PR establishes:
+#   conventional commits -> release-please opens "Release PR" with
+#   version bumps + CHANGELOG -> human merges -> tag pushed -> this
+#   workflow publishes to npm under the `alpha` dist-tag (while pre-1.0).
+#
+# Prerequisites (one-time):
+#   - Repository secret `NPM_ACCESS_TOKEN`: an automation token for
+#     `@momentiq` scope with publish permission (npmjs.com -> Access
+#     tokens -> Generate New Token -> Automation -> scoped to @momentiq).
+#   - Branch protection on main allowing the release-please bot to push
+#     its release PRs (default is fine; the action uses GITHUB_TOKEN).
+#
+# Until the secret is set, the `release-please` job still runs and opens
+# Release PRs successfully -- only the publish jobs will fail-fast on
+# missing token, which is the desired safety property.
+#
+# Security note: all `${{ ... }}` interpolations used in `run:` blocks are
+# routed through `env:` declarations and dereferenced as `$VAR` to prevent
+# shell-injection. See:
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write   # reserved for future npm provenance via OIDC
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      cli_released:      ${{ steps.release.outputs['packages/cli--release_created'] }}
+      cli_version:       ${{ steps.release.outputs['packages/cli--version'] }}
+      schemas_released:  ${{ steps.release.outputs['packages/schemas--release_created'] }}
+      schemas_version:   ${{ steps.release.outputs['packages/schemas--version'] }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish-cli:
+    name: Publish @momentiq/dark-factory-cli
+    needs: release-please
+    if: needs.release-please.outputs.cli_released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Install (workspace)
+        run: npm ci
+
+      - name: Build (schemas first, then CLI -- order required by workspace)
+        run: npm run build
+
+      - name: Validate CLI package (ESM smoke test)
+        working-directory: packages/cli
+        run: |
+          set -euo pipefail
+          node --input-type=module -e "import * as cli from './dist/index.js'; console.log('ESM import ok, exports:', Object.keys(cli).length, 'symbols')"
+          test -x dist/cli.js || (echo "::error::dist/cli.js missing" && exit 1)
+
+      - name: Publish (--tag alpha while pre-1.0)
+        working-directory: packages/cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
+          CLI_VERSION: ${{ needs.release-please.outputs.cli_version }}
+        run: |
+          set -euo pipefail
+          if [[ "$CLI_VERSION" == 0.* ]]; then
+            npm publish --access public --tag alpha
+          else
+            npm publish --access public
+          fi
+
+  publish-schemas:
+    name: Publish @momentiq/dark-factory-schemas
+    needs: release-please
+    if: needs.release-please.outputs.schemas_released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Install (workspace)
+        run: npm ci
+
+      - name: Build schemas
+        run: npm run build --workspace=@momentiq/dark-factory-schemas
+
+      - name: Publish (--tag alpha while pre-1.0)
+        working-directory: packages/schemas
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
+          SCHEMAS_VERSION: ${{ needs.release-please.outputs.schemas_version }}
+        run: |
+          set -euo pipefail
+          if [[ "$SCHEMAS_VERSION" == 0.* ]]; then
+            npm publish --access public --tag alpha
+          else
+            npm publish --access public
+          fi
