@@ -89,7 +89,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     await server.close();
   });
 
-  it("tools/list pins the cycle5 catalog (13 tools after step 6: 10 prior + review + review_status + bypass)", async () => {
+  it("tools/list pins the cycle5 catalog (15 tools after step 8: 13 prior + cycle_doc_generate + adr_generate)", async () => {
     const server = createMcpServer();
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -106,10 +106,12 @@ describe("MCP server (cycle5 Phase 1)", () => {
     // so every step's diff is self-describing in PR review. See the
     // file-header comment for the cycle5 step-by-step approach.
     expect(tools.tools.map((t) => t.name).sort()).toEqual([
+      "df_adr_generate",
       "df_adr_list",
       "df_adr_read",
       "df_bypass",
       "df_critics_config",
+      "df_cycle_doc_generate",
       "df_cycle_list",
       "df_cycle_read",
       "df_doctor",

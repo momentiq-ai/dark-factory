@@ -11,12 +11,11 @@
 // Steps 2 + 3a/b/c/d shipped the 8-tool read-only catalog. Step 4
 // added the URI-addressable resource surface. Step 5 added
 // df_stats + df_gate_push. Step 6 added df_review (async) +
-// df_review_status + df_bypass. Step 7 (THIS) populates the
-// prompts surface — 5 pure-template prompts (write_cycle_doc,
-// draft_adr, diagnose_critic_failure, summarize_recent_runs,
-// onboarding_analysis). The full MCP catalog is now live except
-// for the side-effecting generation tools (step 8 — sampling)
-// and the polish steps (elicitation, logging, conformance, docs).
+// df_review_status + df_bypass. Step 7 added the 5 pure-template
+// prompts. Step 8 (THIS) adds the side-effecting generation
+// tools: df_cycle_doc_generate + df_adr_generate, which use
+// `sampling/createMessage` to ask the client's LLM to populate
+// a skeleton + write the result to disk.
 //
 // The MCP protocol version pinned by cycle5 is `2025-06-18`. The SDK we
 // depend on (`@modelcontextprotocol/sdk@^1.29.0`) supports a set of
@@ -39,6 +38,7 @@ import { registerCriticsConfigTool } from "./tools/critics-config.js";
 import { registerCycleTools } from "./tools/cycle.js";
 import { registerDoctorTool } from "./tools/doctor.js";
 import { registerFindingsTools } from "./tools/findings.js";
+import { registerGenerateTools } from "./tools/generate.js";
 import { registerReviewBypassTools } from "./tools/review-bypass.js";
 import { registerStatsGateTools } from "./tools/stats-gate.js";
 
@@ -123,6 +123,7 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
       ? { _internalRunReview: opts._testRunReview }
       : {}),
   });                                            // step 6 — df_review + df_review_status + df_bypass
+  registerGenerateTools(server, toolOpts);      // step 8 — df_cycle_doc_generate + df_adr_generate (sampling)
 
   // step 4 — URI-addressable resources (df://repo/...). Single call
   // registers all 9 resources at once; see src/mcp/resources.ts.
