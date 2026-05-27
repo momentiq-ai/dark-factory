@@ -12,10 +12,11 @@
 // added the URI-addressable resource surface. Step 5 added
 // df_stats + df_gate_push. Step 6 added df_review (async) +
 // df_review_status + df_bypass. Step 7 added the 5 pure-template
-// prompts. Step 8 (THIS) adds the side-effecting generation
-// tools: df_cycle_doc_generate + df_adr_generate, which use
-// `sampling/createMessage` to ask the client's LLM to populate
-// a skeleton + write the result to disk.
+// prompts. Step 8 added df_cycle_doc_generate + df_adr_generate.
+// Step 9 wired elicitation for df_bypass. Step 10 (THIS) wires
+// logging/message notifications so long-running tools (df_review,
+// the generate tools) emit progress that the client can render
+// inline.
 //
 // The MCP protocol version pinned by cycle5 is `2025-06-18`. The SDK we
 // depend on (`@modelcontextprotocol/sdk@^1.29.0`) supports a set of
@@ -93,6 +94,12 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
         tools: {},
         resources: {},
         prompts: {},
+        // step 10 — server emits logging/message notifications for
+        // long-running tool progress (df_review, the generate tools).
+        // Clients that subscribe via `logging/setLevel` see in-flight
+        // status; clients that don't subscribe see nothing
+        // (notifications are best-effort).
+        logging: {},
       },
       instructions:
         "Dark Factory MCP server (cycle5 Phase 1). Tools, resources, " +
