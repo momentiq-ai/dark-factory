@@ -543,6 +543,47 @@ test("review: spawnError (ENOENT) → permanent_failure with install remediation
   expect_match(result.error!.message, /cursor-agent login/);
 });
 
+test("review: spawnError (EACCES) → permanent_failure with install remediation", async () => {
+  const eaccesError = Object.assign(new Error("spawn cursor-agent EACCES"), {
+    code: "EACCES",
+  });
+  const { runner } = makeRunner({
+    outcome: { spawnError: eaccesError, exitCode: null },
+  });
+  const adapter = new CursorCliAdapter({ runCursorAgentCli: runner });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker"],
+  });
+  expect_eq(result.status, "error");
+  expect_eq(result.error?.retryable, false);
+  expect_match(result.error!.message, /\(EACCES\)/);
+  expect_match(result.error!.message, /failed to spawn/);
+});
+
+test("review: spawnError (EPIPE) falls through to no_terminal_result with CLI stderr", async () => {
+  // EPIPE typically happens when stdin write fails because the CLI
+  // exited early on a bad argument; the CLI's own stderr is the
+  // actionable signal, not the misleading "install + login" pitch.
+  // Copilot review feedback on PR #52.
+  const epipeError = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+  const { runner } = makeRunner({
+    outcome: {
+      spawnError: epipeError,
+      events: [],
+      exitCode: 2,
+      stderr: "Error: Cannot use this model: bogus\n",
+    },
+  });
+  const adapter = new CursorCliAdapter({ runCursorAgentCli: runner });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker"],
+  });
+  expect_eq(result.status, "error");
+  expect_eq(result.error?.retryable, false);
+  expect_eq(result.error?.code, "no_terminal_result");
+  expect_match(result.error!.message, /Cannot use this model: bogus/);
+});
+
 test("review: no result envelope (CLI exited early) → permanent_failure with stderr", async () => {
   const { runner } = makeRunner({
     outcome: {
@@ -708,6 +749,50 @@ test("doctor: critic.auth='api' → cursor_cli_auth_pin fails directing to curso
   const byName = Object.fromEntries(checks.map((c) => [c.name, c]));
   expect_eq(byName["cursor_cli_auth_pin"]?.passed, false);
   expect_match(byName["cursor_cli_auth_pin"]?.remediation ?? "", /cursor-sdk adapter/);
+});
+
+test("doctor: model substring should NOT false-positive against -fast variant (whole-token match)", async () => {
+  // Copilot review feedback on PR #52: `modelsStdout.includes(modelId)`
+  // false-positives when the only available model is a substring
+  // match (e.g. composer-2.5 contained in composer-2.5-fast). The fix
+  // splits the output on whitespace/commas and matches exact tokens.
+  const exec = async (_path: string, args: readonly string[]) => {
+    if (args[0] === "--version") return { stdout: "v", stderr: "" };
+    if (args[0] === "--help") return { stdout: "--trust\n", stderr: "" };
+    if (args[0] === "status") return { stdout: "Logged in", stderr: "" };
+    // Only the -fast variant is offered; the non-fast id is a strict
+    // substring but NOT a whole token.
+    if (args[0] === "models") return { stdout: "composer-2.5-fast\nother-model\n", stderr: "" };
+    return { stdout: "", stderr: "" };
+  };
+  const adapter = new CursorCliAdapter({ execCursorAgent: exec });
+  // CRITIC has fast=false → resolved id is "composer-2.5".
+  const checks = await adapter.doctor(CRITIC);
+  const byName = Object.fromEntries(checks.map((c) => [c.name, c]));
+  expect_eq(byName["cursor_cli_model_available"]?.passed, false);
+  expect_match(byName["cursor_cli_model_available"]?.remediation ?? "", /config\.json/);
+});
+
+test("doctor: comma-separated models output (argv-error shape) also exact-token matches", async () => {
+  // The CLI's "Cannot use this model: X. Available models: a, b, c"
+  // shape comes through some code paths; the doctor should tokenize
+  // commas too.
+  const exec = async (_path: string, args: readonly string[]) => {
+    if (args[0] === "--version") return { stdout: "v", stderr: "" };
+    if (args[0] === "--help") return { stdout: "--trust\n", stderr: "" };
+    if (args[0] === "status") return { stdout: "Logged in", stderr: "" };
+    if (args[0] === "models") {
+      return {
+        stdout: "auto, composer-2-fast, composer-2, composer-2.5, claude-opus-4-7",
+        stderr: "",
+      };
+    }
+    return { stdout: "", stderr: "" };
+  };
+  const adapter = new CursorCliAdapter({ execCursorAgent: exec });
+  const checks = await adapter.doctor(CRITIC);
+  const byName = Object.fromEntries(checks.map((c) => [c.name, c]));
+  expect_eq(byName["cursor_cli_model_available"]?.passed, true);
 });
 
 test("doctor: model not in cursor-agent models output → fail with config-edit remediation", async () => {

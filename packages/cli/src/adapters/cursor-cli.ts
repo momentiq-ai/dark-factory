@@ -425,7 +425,16 @@ export const defaultCursorCliRunner: CursorCliRunner = async (args) => {
   }
 
   // Honor AbortSignal — kill the subprocess if the caller aborts.
+  // SIGTERM gives the CLI a chance to clean up its own pty/session
+  // state (a clean shutdown emits a partial result envelope we still
+  // want); SIGKILL after a 5s grace period guarantees the runner
+  // returns even if the CLI ignores SIGTERM. Without the escalation
+  // path, an unresponsive cursor-agent could hang the review forever
+  // despite the caller having aborted. (Copilot review feedback,
+  // dark-factory PR #52.)
   let abortHandler: (() => void) | null = null;
+  let killEscalationTimer: ReturnType<typeof setTimeout> | null = null;
+  const KILL_ESCALATION_GRACE_MS = 5_000;
   if (args.signal) {
     abortHandler = () => {
       try {
@@ -433,16 +442,35 @@ export const defaultCursorCliRunner: CursorCliRunner = async (args) => {
       } catch {
         // Best effort.
       }
+      killEscalationTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Best effort.
+        }
+      }, KILL_ESCALATION_GRACE_MS);
     };
     args.signal.addEventListener("abort", abortHandler);
   }
 
+  // Resolve on 'close', not 'exit'. The 'exit' event fires when the
+  // child terminates, but stdout/stderr streams may still have
+  // buffered data being delivered to our 'data' handlers — so flushing
+  // lineBuf on 'exit' can miss the trailing NDJSON line (often the
+  // terminal result event), causing a spurious no_terminal_result
+  // failure. The 'close' event waits for ALL stdio streams to drain
+  // before firing, so by the time we get here we've received every
+  // byte the CLI ever wrote. (Copilot review feedback, dark-factory
+  // PR #52.)
   const exitCode = await new Promise<number | null>((resolve) => {
-    child.on("exit", (code, _sig) => {
+    child.on("close", (code, _sig) => {
       resolve(code);
     });
   });
 
+  if (killEscalationTimer) {
+    clearTimeout(killEscalationTimer);
+  }
   if (args.signal && abortHandler) {
     args.signal.removeEventListener("abort", abortHandler);
   }
@@ -746,8 +774,58 @@ export class CursorCliAdapter implements CriticAdapter {
       };
     }
 
-    // 1. Spawn failure (ENOENT / EACCES) — permanent install failure.
+    // 1. Spawn failure — classify by error code. The runner sets
+    //    `spawnError` in three places:
+    //      (a) synchronous `spawn()` throw,
+    //      (b) async 'error' event after spawn returned (often ENOENT
+    //          on some platforms),
+    //      (c) stdin write failure (e.g. EPIPE because the CLI exited
+    //          early on a bad argument).
+    //
+    //    Only ENOENT (binary not on PATH) and EACCES (binary not
+    //    executable) are unambiguous install/permission problems
+    //    warranting the "install + login" remediation. Other errors —
+    //    notably EPIPE from (c) — can coexist with the CLI having
+    //    already written a useful error to stderr before exiting, so
+    //    we fall through to the no_terminal_result path below, which
+    //    surfaces exitCode + stderr instead of the misleading
+    //    install message. (Copilot review feedback, dark-factory
+    //    PR #52.)
     if (outcome.spawnError) {
+      const errCode = (outcome.spawnError as NodeJS.ErrnoException).code;
+      const isInstallProblem = errCode === "ENOENT" || errCode === "EACCES";
+      if (isInstallProblem) {
+        options.emit?.({
+          ts: new Date().toISOString(),
+          event: "critic_run_error",
+          commit: packet.commit.sha,
+          criticId: critic.id,
+          adapter: this.id,
+          model: critic.model.id,
+          durationMs: Date.now() - startMs,
+          error: outcome.spawnError.message,
+          status: "startup_failure",
+          retryCount: attemptIdx,
+        });
+        return {
+          kind: "permanent_failure",
+          errorCode: null,
+          statusMessage: null,
+          result: buildErrorResult({
+            critic,
+            message:
+              `cursor-cli failed to spawn ${binaryPath} (${errCode}): ${outcome.spawnError.message}. ` +
+              `Install the Cursor CLI (\`curl https://cursor.com/install -fsS | bash\`) and run \`cursor-agent login\`.`,
+            retryable: false,
+            retryCount: attemptIdx,
+          }),
+        };
+      }
+      // Non-install spawnError (EPIPE, etc.) — log it but fall through
+      // so the no_terminal_result path below can surface the CLI's
+      // own stderr message (which is usually the more actionable
+      // signal — "Error: invalid argument" tells the operator more
+      // than "EPIPE writing to subprocess").
       options.emit?.({
         ts: new Date().toISOString(),
         event: "critic_run_error",
@@ -756,23 +834,10 @@ export class CursorCliAdapter implements CriticAdapter {
         adapter: this.id,
         model: critic.model.id,
         durationMs: Date.now() - startMs,
-        error: outcome.spawnError.message,
-        status: "startup_failure",
+        error: `spawnError ${errCode ?? "?"}: ${outcome.spawnError.message}`,
+        status: "spawn_warning",
         retryCount: attemptIdx,
       });
-      return {
-        kind: "permanent_failure",
-        errorCode: null,
-        statusMessage: null,
-        result: buildErrorResult({
-          critic,
-          message:
-            `cursor-cli failed to spawn ${binaryPath}: ${outcome.spawnError.message}. ` +
-            `Install the Cursor CLI (\`curl https://cursor.com/install -fsS | bash\`) and run \`cursor-agent login\`.`,
-          retryable: false,
-          retryCount: attemptIdx,
-        }),
-      };
     }
 
     // 2. Parse the event stream.
@@ -1207,7 +1272,22 @@ export class CursorCliAdapter implements CriticAdapter {
         remediation: `verify \`cursor-agent models\` works (requires \`cursor-agent login\`); then confirm "${modelId}" is in the list`,
       });
     } else {
-      const present = modelsStdout.includes(modelId);
+      // Whole-token exact match across both observed output shapes:
+      //   - `cursor-agent models` subcommand: one model per line.
+      //   - Argv-error path ("Cannot use this model: X. Available
+      //     models: ...") and some CLI versions: comma-separated list
+      //     on a single line.
+      // Splitting on any newline/whitespace/comma/colon and exact-
+      // matching the token prevents `composer-2.5` false-positiving
+      // against `composer-2.5-fast` (or `gpt-5` against `gpt-5.5`).
+      // (Copilot review feedback, dark-factory PR #52.)
+      const modelTokens = new Set(
+        modelsStdout
+          .split(/[\s,:]+/)
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0),
+      );
+      const present = modelTokens.has(modelId);
       checks.push({
         name: "cursor_cli_model_available",
         passed: present,
