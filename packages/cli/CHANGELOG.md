@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.2.0-alpha.9...dark-factory-cli-v0.3.0-alpha.9) (2026-05-28)
+
+
+### Features
+
+* **cli:** add cursor-cli adapter for subscription auth — closes [#28](https://github.com/momentiq-ai/dark-factory/issues/28) ([#52](https://github.com/momentiq-ai/dark-factory/issues/52)) ([6a205d1](https://github.com/momentiq-ai/dark-factory/commit/6a205d1f608229541960643ebf7096ca58e13d5a))
+
 ## [0.2.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.1.1-alpha.9...dark-factory-cli-v0.2.0-alpha.9) (2026-05-27)
 
 
