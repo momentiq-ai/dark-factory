@@ -389,6 +389,7 @@ const ADAPTER_LOADERS: ReadonlyArray<{
   readonly className: string;
 }> = [
   { id: "cursor-sdk", modulePath: "./adapters/cursor-sdk.js", className: "CursorSdkAdapter" },
+  { id: "cursor-cli", modulePath: "./adapters/cursor-cli.js", className: "CursorCliAdapter" },
   { id: "codex-sdk", modulePath: "./adapters/codex-sdk.js", className: "CodexSdkAdapter" },
   { id: "gemini-sdk", modulePath: "./adapters/gemini-sdk.js", className: "GeminiSdkAdapter" },
   { id: "grok-direct-sdk", modulePath: "./adapters/grok-direct-sdk.js", className: "GrokDirectSdkAdapter" },

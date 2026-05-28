@@ -88,6 +88,37 @@ export {
   type CodexSdkAdapterOptions,
 } from "./codex-sdk.js";
 
+// Issue #28 — Cursor CLI subscription adapter. Routes the local profile
+// through the cursor-agent CLI (subscription auth via Keychain) instead
+// of @cursor/sdk (which requires CURSOR_API_KEY). Coexists with
+// cursor-sdk: cloud/CI profiles continue to use cursor-sdk with the
+// Doppler-provisioned key; local profiles use cursor-cli with no key.
+export {
+  CursorCliAdapter,
+  CURSOR_CLI_ADAPTER_ID,
+  CURSOR_CLI_BINARY,
+  CURSOR_API_KEY_ENV as CURSOR_CLI_API_KEY_ENV_STRIPPED,
+  CURSOR_CLI_AUTH_CHATGPT,
+  CURSOR_CLI_AUTH_MODES,
+  CURSOR_CLI_PERMANENT_SUBTYPES,
+  buildCursorCliArgs,
+  buildSubscriptionEnv,
+  defaultCursorCliRunner,
+  extractAssistantText as cursorCliExtractAssistantText,
+  extractInitEvent,
+  extractResultEnvelope,
+  isPermanentResultSubtype,
+  resolveAuthOrFail as cursorCliResolveAuthOrFail,
+  resolveCursorCliModelId,
+  type CursorCliAdapterOptions,
+  type CursorCliAuthMode,
+  type CursorCliInitEvent,
+  type CursorCliResultEnvelope,
+  type CursorCliRunArgs,
+  type CursorCliRunOutcome,
+  type CursorCliRunner,
+} from "./cursor-cli.js";
+
 export {
   AdapterRegistry,
   collectRequiredEnvVars,
