@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "pr_number": 2309,
+  "merged_at": "2026-05-27T12:19:03Z",
+  "merged_commit_sha": "3fdf806d58292cf1df738156e53fc70124315431",
+  "base_commit_sha": "451a4786ff982f5109f322b351d256b671c8366f",
+  "outcome_quality": 0,
+  "input_quality": 0,
+  "process_quality": 0,
+  "iteration_count": 0,
+  "push_count": 1,
+  "time_to_merge_hours": 0.25,
+  "regressions_introduced": 0,
+  "admin_merge_used": false,
+  "bypass_used": false,
+  "patterns_detected": [],
+  "root_causes": [],
+  "improvement_actions": [],
+  "cost_observed": {
+    "tier1_haiku_input_tokens": 0,
+    "tier1_haiku_output_tokens": 0,
+    "tier1_haiku_cost_usd": 0,
+    "tier2_opus_input_tokens": 0,
+    "tier2_opus_output_tokens": 0,
+    "tier2_opus_cost_usd": 0,
+    "total_cost_usd": 0
+  },
+  "critic_evidence_missing": true,
+  "degraded": true,
+  "assessment_run_id": "dark-factory-flow-assessor-2026-05-27-1219-2309",
+  "attempts": [
+    {
+      "attempt_number": 1,
+      "started_at": "2026-05-27T12:20:03.005Z",
+      "ended_at": "2026-05-27T12:20:03.005Z",
+      "duration_ms": 0,
+      "status": "succeeded"
+    }
+  ],
+  "cycle_id": "333"
+}

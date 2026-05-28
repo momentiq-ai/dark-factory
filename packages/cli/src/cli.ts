@@ -98,6 +98,9 @@ import { summarizeGate } from "./policy/gate.js";
 // stderr-only diagnostics) is structurally distinct from the other
 // subcommands. See docs/roadmap/cycles/cycle5-mcp-server.md.
 import { cmdMcp } from "./mcp/cli.js";
+// Cycle 6 Phase 6.1 — `df flow` reads df-assessments via gh api. Each
+// subcommand has its own help printer; the dispatcher lives in flow/index.
+import { cmdFlow } from "./flow/index.js";
 
 interface PackageMeta {
   name?: string;
@@ -171,6 +174,16 @@ function printHelp(meta: PackageMeta): void {
       "                              Gemini) as a structured tool + resource +",
       "                              prompt catalog. Run `df mcp --help` for the",
       "                              .mcp.json wiring snippet.",
+      "",
+      "Subcommands (Cycle 6 Phase 6.1 — PR Flow Assessor surfacing):",
+      "  df flow show                Print one PR's full assessment artifact",
+      "  df flow agent               Print the agent-trust rollup for one agent",
+      "  df flow patterns            Rank the 10 tracked patterns by recurrence",
+      "  df flow cost                Aggregate spend (excludes replay/backfill)",
+      "  df flow trends              Weekly time series for a chosen metric",
+      "  df flow rollup              Aggregate scores+cost+patterns for a cycle",
+      "                              or issue. Run `df flow --help` for the full",
+      "                              subcommand index.",
       "",
       "Cost model:",
       "  The local hook path (review/gate-push) consumes Cursor / Codex / Claude",
@@ -301,6 +314,11 @@ const PHASE_F_LOCAL_SUBCOMMANDS = new Set([
 // `mcp --help` to the subcommand's own help printer (which is the only
 // stdout writer in that subtree) rather than the global printHelp().
 const PHASE_G_SUBCOMMANDS = new Set(["mcp"]);
+
+// Cycle 6 Phase 6.1 — `df flow` namespace (show/agent/patterns/cost/trends/
+// rollup). Treated like Phase G in the main() routing: `df flow --help` is
+// forwarded to the flow dispatcher's own help printer.
+const PHASE_FLOW_SUBCOMMANDS = new Set(["flow"]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // PR Status Check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -1265,7 +1283,8 @@ async function main(argv: string[]): Promise<number> {
       !PHASE_D_SUBCOMMANDS.has(sub0) &&
       !PHASE_F_SUBCOMMANDS.has(sub0) &&
       !PHASE_F_LOCAL_SUBCOMMANDS.has(sub0) &&
-      !PHASE_G_SUBCOMMANDS.has(sub0)
+      !PHASE_G_SUBCOMMANDS.has(sub0) &&
+      !PHASE_FLOW_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -1312,6 +1331,10 @@ async function main(argv: string[]): Promise<number> {
   // Phase G — agentic MCP surface (cycle5).
   if (sub === "mcp") {
     return await cmdMcp(rest);
+  }
+  // Cycle 6 Phase 6.1 — `df flow` namespace.
+  if (sub === "flow") {
+    return await cmdFlow(rest);
   }
   return notImplemented(sub);
 }

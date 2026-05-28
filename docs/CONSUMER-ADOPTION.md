@@ -538,7 +538,65 @@ The agent should connect, list tools, call `df_doctor`, and render the structure
 - **No `resources/subscribe` in this release.** Subscriptions land in cycle 5 Phase 2 (the remote HTTP MCP gateway at `mcp.dark-factory.momentiq.ai`). Phase 1 stdio clients poll if they need freshness.
 - **The protocol version pinned for this release is `2025-06-18`.** Newer clients negotiate to whichever supported version they prefer; older clients negotiate down. The SDK manages this — you do nothing.
 
-## 12. References
+## 12. Query the PR Flow Assessor with `df flow`
+
+`@momentiq/dark-factory-cli@0.2.0-alpha.10+` (cycle 6 Phase 6.1) ships a `df flow` subcommand namespace that surfaces the PR Flow Assessor's `momentiq-ai/df-assessments` store — per-PR quality scores, agent-trust ledgers, pattern recurrence, cost tracking, weekly trends, and cycle/issue rollups. See [cycle 6](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle6-flow-assessor-surfacing-and-tools.md) for the spec.
+
+### What you get
+
+Six read-only subcommands, all with a `--json` flag for machine consumption (the JSON shapes are stable contracts; cycle 5's MCP server wraps each one as a resource):
+
+| Subcommand | Reads | Output |
+|---|---|---|
+| `df flow show --pr <N>` | `store/tenant/<slug>/pr/<N>.json` | text frontmatter + scores + cost; `--json` returns full `AssessmentArtifact` |
+| `df flow agent <agent-id>` | `agents-trust-summary.json` + `agents-trust.ndjson` | per-agent rollup (scores, regressions, bypass count, most-frequent pattern) |
+| `df flow patterns [--top N]` | `recurrence/<pattern-id>.ndjson` × 10 patterns | ranked table by observation count |
+| `df flow cost [--from D --to D]` | `cost-tracking.ndjson` | total + tier1/tier2 split + daily breakdown (excludes replay/backfill) |
+| `df flow trends [--metric M]` | all `pr/*.json` in date range | weekly time series for one of: `process_quality`, `outcome_quality`, `cost`, `iteration_count` |
+| `df flow rollup --cycle ID \| --issue REF` | all `pr/*.json` filtered by `cycle_id` / `issue_ids` | aggregate scores + total cost + pattern union + contributing PRs |
+
+All subcommands accept `--tenant <slug>` (defaults to `sage3c`, the LA pilot tenant). The reference formats `--cycle 333 == --cycle cycle333` and `--issue 38 == --issue #38 == --issue org/repo#38` are normalized.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (including empty aggregates) |
+| 1 | Argument / parse error |
+| 2 | Data not found — single-record lookups only (`show`, `agent`) |
+| 3 | gh API error (rate limit, auth failure, network) |
+
+### Trust boundary (LA-acceptable limitation)
+
+The CLI shells out to `gh api repos/momentiq-ai/df-assessments/contents/...` directly. The trust boundary is **df-assessments repo read access** via ambient `gh` CLI auth — analogous to `gh` access to any source repo. There is no installation-id RBAC at this layer; the hosted runtime's aggregation service (cycle 6 Phase 6.2, lands later in dark-factory-platform) owns that surface for the dashboard + chat tools. This split is documented in the cycle 6 spec's Decision 5 trade-offs and the load-bearing safeguards section.
+
+Practical consequence: an operator can read any tenant's assessor data as long as `gh auth login` has cleared `momentiq-ai/df-assessments` repo access. For the LA pilot (one tenant, one operator team) this is the intended posture. GA will either (a) introduce an authenticated CLI mode that talks to the aggregation service, or (b) shard df-assessments per tenant so repo access naturally maps to tenant scope.
+
+### Smoke-test the wiring
+
+After installing the CLI (§2) and authenticating gh (`gh auth login` once per workstation):
+
+```bash
+df flow show --pr 2310 --json | jq '.outcome_quality, .patterns_detected[0].pattern_id'
+# 0.88
+# "agent-thrash-high-push-count"
+
+df flow patterns --top 5
+# Pattern                                   Obs  PRs  Last seen
+# --------------------------------------------------------------------------------
+# agent-thrash-high-push-count                1    1  2026-05-27T18:30:05.805Z
+# ...
+```
+
+If the calls 404, your `gh auth` may not have access to the private `momentiq-ai/df-assessments` repo (membership in `momentiq-ai` org is required). Run `gh api repos/momentiq-ai/df-assessments/contents` to confirm access.
+
+### What `df flow` is NOT
+
+- **No installation-id RBAC.** The CLI is the developer-tool path; the dashboard / chat-tool surfaces in cycle 6 Phase 6.2+ go through the aggregation service which DOES enforce installation-id RBAC. Don't try to gate untrusted readers with the CLI.
+- **No write operations.** `df flow` reads df-assessments; the assessor runtime (`momentiq-ai/sage3c` cycle 333) owns the write path. Issue filing + pattern promotion happen there.
+- **No MCP wrapping (this release).** Cycle 5's MCP server (`df mcp`, §11) exposes other DF data today; the cycle 6 surfaces will be wrapped as MCP resources in a follow-up landed against the same server.
+
+## 13. References
 
 - **Onboarding-enforcement gap (this section's rationale):** [`momentiq-ai/dark-factory#17`](https://github.com/momentiq-ai/dark-factory/issues/17) — consumers adopting gates without enforcing them; evidence at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213).
 - **Fork-PR / secret-dependent required check:** [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15) — why fork PRs can't satisfy a required `agent-critic` until the 331.3 fork-handling design ships.

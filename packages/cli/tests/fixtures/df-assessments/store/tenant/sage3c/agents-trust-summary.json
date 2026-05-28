@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-27T18:30:30Z",
+  "rows_folded": 5,
+  "agents": {
+    "claude-opus-4-7": {
+      "n_assessments": 3,
+      "avg_process_quality": 0.64,
+      "avg_iteration_count": 1.33,
+      "total_regressions_introduced": 0,
+      "admin_merge_count": 0,
+      "bypass_count": 1,
+      "last_seen_at": "2026-05-27T15:05:11Z"
+    },
+    "codex-c": {
+      "n_assessments": 2,
+      "avg_process_quality": 0.81,
+      "avg_iteration_count": 0.5,
+      "total_regressions_introduced": 0,
+      "admin_merge_count": 0,
+      "bypass_count": 0,
+      "last_seen_at": "2026-05-26T11:42:00Z"
+    }
+  }
+}

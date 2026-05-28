@@ -307,3 +307,42 @@ describe("df CLI — Phase F reusable-workflow gates", () => {
     expect(r.exitCode).toBe(0);
   });
 });
+
+describe("df CLI — Cycle 6 Phase 6.1 flow subcommands", () => {
+  it("top-level --help lists the df flow namespace", async () => {
+    const r = await runDfCli(["--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df flow show");
+    expect(r.stdout).toContain("df flow agent");
+    expect(r.stdout).toContain("df flow patterns");
+    expect(r.stdout).toContain("df flow cost");
+    expect(r.stdout).toContain("df flow trends");
+    expect(r.stdout).toContain("df flow rollup");
+  });
+
+  it("df flow --help lists all six subcommands with descriptions", async () => {
+    const r = await runDfCli(["flow", "--help"]);
+    expect(r.exitCode).toBe(0);
+    // Subcommand names.
+    for (const sub of ["show", "agent", "patterns", "cost", "trends", "rollup"]) {
+      expect(r.stdout).toContain(sub);
+    }
+    // Global-flag documentation.
+    expect(r.stdout).toContain("--json");
+    expect(r.stdout).toContain("--tenant");
+    // Exit-code documentation.
+    expect(r.stdout).toContain("Exit codes");
+  });
+
+  it("df flow without a subcommand prints the namespace help", async () => {
+    const r = await runDfCli(["flow"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df flow");
+  });
+
+  it("df flow with an unknown subcommand exits 1", async () => {
+    const r = await runDfCli(["flow", "bogus"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("unknown subcommand");
+  });
+});

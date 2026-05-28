@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "pr_number": 2310,
+  "merged_at": "2026-05-27T15:05:11Z",
+  "merged_commit_sha": "00eb58bb1ef9eab3e94585df3ce32c104673aa61",
+  "base_commit_sha": "3fdf806d58292cf1df738156e53fc70124315431",
+  "outcome_quality": 0.88,
+  "input_quality": 0.84,
+  "process_quality": 0.52,
+  "iteration_count": 0,
+  "push_count": 9,
+  "time_to_merge_hours": 0.35,
+  "regressions_introduced": 0,
+  "admin_merge_used": false,
+  "bypass_used": false,
+  "patterns_detected": [
+    {
+      "pattern_id": "agent-thrash-high-push-count",
+      "confidence": 0.96,
+      "evidence_snippets": [
+        "Triage decision: push_count = 9 indicates multiple iterations (and plausibly matches the agent-thrash-high-push-count pattern), so the PR requires deep scoring.",
+        "TIMING:\n  push_count = 9\n  time_to_merge_hours = 0.35\n  bypass_used = false\n  bypass_reasons = []\n  admin_merge_used = false",
+        "COMMITS (9):\n  4bcb6d52  alien8d  2026-05-27T13:12:26Z  feat(df-flow-assessor): per-capability cost helper for Cerebe chat calls\n  150737b7  alien8d  2026-05-27T13:13:52Z  feat(df-flow-assessor): tier 1 + tier 2 prompt modules for Cerebe chat\n  bd7f01fd  alien8d  2026-05-27T13:21:08Z  refactor(df-flow-assessor): call Cerebe via generic LLM chat, not domain endpoint\n  aab1d466  alien8d  2026-05-27T13:22:45Z  docs(333): Decision 12 — rubric relocation + firewall revocation\n  fc1ac380  alien8d  2026-05-27T13:23:32Z  docs(plans): implementation plan for issue-38 Cerebe refactor\n  1e70cbdd  alien8d  2026-05-27T14:28:38Z  fix(df-flow-assessor): address local-critic findings on the issue-38 refactor\n  8ae7124b  alien8d  2026-05-27T14:43:16Z  fix(df-flow-assessor): correct Opus 4.7 rate to $5/$25 per Mtok\n  9cd7bf56  alien8d  2026-05-27T14:59:32Z  docs(plans): mark issue-38 plan as implemented (archival)\n  f19d8a8e  alien8d  2026-05-27T15:01:41Z  docs(plans): fix MD028 blank-line-in-blockquote in issue-38 plan header"
+      ]
+    }
+  ],
+  "root_causes": [
+    {
+      "description": "The implementation landed successfully but required many same-day follow-up commits, indicating missing up-front validation of pricing, timeout, and output-contract details before the main refactor merged.",
+      "links_to_components": [
+        "agent-review/cursor-sdk",
+        "tools/df-flow-assessor",
+        "ci/cycle-doc-validation"
+      ]
+    },
+    {
+      "description": "Spec quality was generally good, but late-breaking architectural constraints around Cerebe prompt ACLs forced an in-PR design adjustment and additional documentation churn.",
+      "links_to_components": [
+        "cycle-doc",
+        "tools/df-flow-assessor",
+        "cerebe-api"
+      ]
+    },
+    {
+      "description": "Unresolved bot review comments at merge suggest review feedback was not fully closed out in-thread, reducing confidence in iteration efficiency even though no bypass/admin merge was used.",
+      "links_to_components": [
+        "agent-review/cursor-sdk",
+        "github-review-flow"
+      ]
+    }
+  ],
+  "improvement_actions": [
+    {
+      "proposed_issue_title": "Add pre-merge checklist for DF Flow Assessor LLM endpoint refactors",
+      "suggested_fix": "Require a short design/validation checklist before coding endpoint migrations: pricing table verified, timeout budget verified, JSON schema validation behavior exercised, pattern-id filtering tested, and review comments linked to commits that resolve them.",
+      "validation_criterion": "A subsequent similar PR merges with <=5 pushes and includes checklist evidence in the PR body or linked plan issue.",
+      "pattern_id": "agent-thrash-high-push-count"
+    }
+  ],
+  "cost_observed": {
+    "tier1_haiku_input_tokens": 1108,
+    "tier1_haiku_output_tokens": 245,
+    "tier1_haiku_cost_usd": 0.002333,
+    "tier2_opus_input_tokens": 4174,
+    "tier2_opus_output_tokens": 887,
+    "tier2_opus_cost_usd": 0.043045,
+    "total_cost_usd": 0.045378
+  },
+  "critic_evidence_missing": true,
+  "degraded": false,
+  "assessment_run_id": "dark-factory-flow-assessor-2026-05-27-1505-2310",
+  "attempts": [
+    {
+      "attempt_number": 1,
+      "started_at": "2026-05-27T18:29:44.947Z",
+      "ended_at": "2026-05-27T18:30:05.805Z",
+      "duration_ms": 20858,
+      "status": "succeeded"
+    }
+  ],
+  "cycle_id": "333",
+  "issue_ids": [
+    38
+  ]
+}
