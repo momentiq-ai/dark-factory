@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.5.0-alpha.9...dark-factory-cli-v0.6.0-alpha.9) (2026-05-30)
+
+
+### Features
+
+* **cli:** df flow — surface PR Flow Assessor records — Cycle 11 Phase 11.1 ([#63](https://github.com/momentiq-ai/dark-factory/issues/63)) ([6869da1](https://github.com/momentiq-ai/dark-factory/commit/6869da18f84f631608fbd61925a57015e46ad852))
+
 ## [0.5.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.4.0-alpha.9...dark-factory-cli-v0.5.0-alpha.9) (2026-05-30)
 
 
