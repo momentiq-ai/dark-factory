@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.3.0-alpha.9...dark-factory-cli-v0.4.0-alpha.9) (2026-05-30)
+
+
+### Features
+
+* **cli:** agent handoff protocol — df handoff/accept/rehydrate/handoffs + MCP tools/prompts — Cycle 8 Phase 8.2 ([5818387](https://github.com/momentiq-ai/dark-factory/commit/581838768bfcc6a12c7dbe4406cf4ea6bf82426e))
+* **cli:** agent handoff protocol — df handoff/accept/rehydrate/handoffs + MCP tools/prompts — Cycle 8 Phase 8.2 ([c7a5a88](https://github.com/momentiq-ai/dark-factory/commit/c7a5a88a61b186a08dd94683ecd9573c4431cd6c))
+
 ## [0.3.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.2.0-alpha.9...dark-factory-cli-v0.3.0-alpha.9) (2026-05-28)
 
 
