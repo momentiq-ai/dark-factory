@@ -107,7 +107,11 @@ export function formatShowText(art: AssessmentArtifact, tenant: string): string 
   lines.push(`  total:                 ${usd(co.total_cost_usd)}`);
   lines.push("");
   lines.push(`assessment_run_id: ${art.assessment_run_id}`);
-  lines.push(`PR:                https://github.com/momentiq-ai/sage3c/pull/${art.pr_number}`);
+  // We emit only the df-assessments URL because it's tenant-correct via the
+  // path. The github.com PR URL would need an installation_id → source-repo
+  // map (the tenant-map.ts that lands in Phase 11.2 aggregation); until that
+  // exists, a hardcoded `momentiq-ai/sage3c` would mislead any non-LA tenant.
+  // Operators have the pr_number above; cross-link manually if needed.
   lines.push(
     `Source JSON:       https://github.com/momentiq-ai/df-assessments/blob/main/store/tenant/${tenant}/pr/${art.pr_number}.json`,
   );

@@ -3,13 +3,16 @@
 // The CLI uses these for the `df flow patterns` text output so operators see
 // the human description next to the pattern_id, not just the bare slug.
 //
-// Drift risk: this is hand-copied. If sage3c adds or promotes a pattern, the
-// CLI does NOT auto-detect — `df flow patterns` will still surface the new
-// pattern (it reads recurrence/<pattern-id>.ndjson) but the description will
-// be blank. Tracking issue should refresh this catalog at GA / cycle 333
-// follow-up. Until then the assessor's pattern catalog moves slowly enough
-// (10 seeded patterns; new promotions require a PJ-merged sage3c PR) that
-// stale entries here surface as visible gaps rather than wrong text.
+// Drift risk: this is hand-copied AND it is the only source `runPatterns`
+// iterates — the command does NOT list the `recurrence/` directory, so a
+// `pattern_id` that sage3c promotes after this catalog was last refreshed
+// will not appear in `df flow patterns` output at all (its observations are
+// silently invisible) until this file is refreshed. Tracking refresh at GA
+// / cycle-333 follow-up. The assessor's catalog moves slowly enough (10
+// seeded; promotions require a PJ-merged sage3c PR) that stale entries here
+// surface as missing rows rather than wrong text. A future revision can
+// merge `PATTERN_CATALOG` with a `recurrence/` directory listing to surface
+// "unknown catalog member, N observations" rows for un-mirrored promotions.
 
 export interface PatternCatalogEntry {
   id: string;

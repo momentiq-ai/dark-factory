@@ -76,15 +76,21 @@ export function parseDateRange(flags: {
   to?: unknown;
 }): { range: DateRange; error?: string } {
   const range: DateRange = { from: null, to: null };
-  if (typeof flags.from === "string") {
-    const d = parseYmd(flags.from);
-    if (!d) return { range, error: `--from "${flags.from}" is not a YYYY-MM-DD date` };
-    range.from = d;
-  }
-  if (typeof flags.to === "string") {
-    const d = parseYmd(flags.to);
-    if (!d) return { range, error: `--to "${flags.to}" is not a YYYY-MM-DD date` };
-    range.to = d;
+  for (const which of ["from", "to"] as const) {
+    const value = flags[which];
+    if (value === undefined) continue;
+    // parseFlags surfaces a bare `--from` (no value) as boolean `true`.
+    // Treating that as "no filter" silently swallows operator intent; force
+    // an attributable arg error so the caller sees what's wrong.
+    if (typeof value !== "string") {
+      return {
+        range,
+        error: `--${which} requires a YYYY-MM-DD value (got a bare flag)`,
+      };
+    }
+    const d = parseYmd(value);
+    if (!d) return { range, error: `--${which} "${value}" is not a YYYY-MM-DD date` };
+    range[which] = d;
   }
   if (range.from && range.to && range.from > range.to) {
     return { range, error: "--from must be on or before --to" };

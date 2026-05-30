@@ -30,9 +30,12 @@ interface CostOptions {
 export function parseCostArgs(
   flags: Record<string, string | boolean>,
 ): { opts: CostOptions } | { error: string } {
-  const fromVal = typeof flags["from"] === "string" ? flags["from"] : undefined;
-  const toVal = typeof flags["to"] === "string" ? flags["to"] : undefined;
-  const { range, error } = parseDateRange({ from: fromVal, to: toVal });
+  // Pass the raw flag values through so parseDateRange can attribute a bare
+  // `--from` (boolean true) as an arg error instead of silently dropping it.
+  const { range, error } = parseDateRange({
+    from: flags["from"],
+    to: flags["to"],
+  });
   if (error) return { error: `df flow cost: ${error}` };
   let tenant: string;
   try {

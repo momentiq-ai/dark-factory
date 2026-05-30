@@ -120,4 +120,12 @@ describe("flow/cost — runCost", () => {
     const ctx = makeIo();
     expect(await runCost(["--from", "garbage"], ctx.io)).toBe(EXIT_ARG_ERROR);
   });
+  it("bare --from (no value) exits 1, not a silent open-bound", async () => {
+    const ctx = makeIo();
+    // The fetcher is omitted on purpose — if we silently accepted the bare
+    // flag we'd hit the (undefined) fetcher path and crash; that's worse
+    // than the attributable arg error we now produce.
+    expect(await runCost(["--from"], ctx.io)).toBe(EXIT_ARG_ERROR);
+    expect(ctx.err()).toMatch(/--from requires a YYYY-MM-DD value/);
+  });
 });

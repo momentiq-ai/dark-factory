@@ -82,6 +82,16 @@ describe("flow/common — parseDateRange", () => {
     const r = parseDateRange({ from: "2026-06-01", to: "2026-05-01" });
     expect(r.error).toMatch(/--from must be on or before --to/);
   });
+  it("rejects a bare --from (boolean true, no value)", () => {
+    // parseFlags surfaces a bare `--from` as `true`. Silently dropping
+    // it would mask operator intent; this test pins the attributable error.
+    const r = parseDateRange({ from: true });
+    expect(r.error).toMatch(/--from requires a YYYY-MM-DD value/);
+  });
+  it("rejects a bare --to (boolean true, no value)", () => {
+    const r = parseDateRange({ to: true });
+    expect(r.error).toMatch(/--to requires a YYYY-MM-DD value/);
+  });
 });
 
 describe("flow/common — dateInRange", () => {

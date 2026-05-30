@@ -60,9 +60,10 @@ export function parseTrendsArgs(
       error: `df flow trends: --metric "${metricRaw}" not supported (allowed: ${SUPPORTED_METRICS.join(", ")})`,
     };
   }
-  const fromVal = typeof flags["from"] === "string" ? flags["from"] : undefined;
-  const toVal = typeof flags["to"] === "string" ? flags["to"] : undefined;
-  const { range, error } = parseDateRange({ from: fromVal, to: toVal });
+  const { range, error } = parseDateRange({
+    from: flags["from"],
+    to: flags["to"],
+  });
   if (error) return { error: `df flow trends: ${error}` };
   let tenant: string;
   try {
