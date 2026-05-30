@@ -40,6 +40,12 @@ export {
   TRUSTED_SCRIPT_PATHS,
   type PolicyBaseline,
   type ResolveBaselineOptions,
+  // Issue #57 — public surface of `runReview`/`runCommitGate`'s
+  // `onPolicyNotice` option; re-exported for symmetry with the other
+  // runner-option types above so an embedder can type its callback without
+  // reaching into the `./policy` subpath.
+  type PolicyNotice,
+  type PolicyNoticeLevel,
 } from "./policy/baseline.js";
 export {
   resolveProfile,
