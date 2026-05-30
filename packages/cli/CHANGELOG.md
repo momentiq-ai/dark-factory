@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.4.0-alpha.9...dark-factory-cli-v0.5.0-alpha.9) (2026-05-30)
+
+
+### Features
+
+* **policy:** injectedConfigAuthoritative — honor caller-injected config when commit touches .agent-review/** (closes [#56](https://github.com/momentiq-ai/dark-factory/issues/56), refs [#57](https://github.com/momentiq-ai/dark-factory/issues/57)) ([#61](https://github.com/momentiq-ai/dark-factory/issues/61)) ([445cedb](https://github.com/momentiq-ai/dark-factory/commit/445cedbdb734f395ee3bb51ab8e76bf75d2bf6b0))
+
 ## [0.4.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.3.0-alpha.9...dark-factory-cli-v0.4.0-alpha.9) (2026-05-30)
 
 
