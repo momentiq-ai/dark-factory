@@ -72,20 +72,73 @@ export interface PolicyBaseline {
   triggeredBy: string[];
 }
 
+// Issue #57 — severity for a trusted-surface self-modification notice.
+//   - `info`: the benign, working-as-designed "reviewing against parent
+//     baseline" notice (the guard fired correctly).
+//   - `warn`: a genuine warning — the parent policy was unavailable so the
+//     self-modification check was skipped (or an env-override typo was seen).
+// A consuming runtime maps these onto its own structured logger's severity so
+// the benign `info` notice does not land at `severity:ERROR` (the GKE/Cloud
+// Logging pollution tracked in dark-factory-platform#81).
+export type PolicyNoticeLevel = "info" | "warn";
+
+export interface PolicyNotice {
+  level: PolicyNoticeLevel;
+  message: string;
+}
+
 export interface ResolveBaselineOptions {
   loaded: LoadedConfig;
   sha: string;
   cwd: string;
-  // Optional sink for the human-readable "policy reloaded from parent" warning.
-  // Defaults to process.stderr.
-  warn?: (message: string) => void;
+  // Issue #56 — config provenance. When true, the caller-injected `loaded`
+  // config is AUTHORITATIVE: `resolvePolicyBaseline` returns it verbatim and
+  // SKIPS the parent-ref re-read entirely (no `baselineRef`, empty
+  // `triggeredBy`).
+  //
+  // The self-modification guard exists to stop a commit from weakening the very
+  // gate config that judges it. That threat is specific to *working-tree-
+  // provenance* config: in the local/CI model the gate config IS the working-
+  // tree `.agent-review/config.json`, so a commit editing that file edits its
+  // own gate → re-read parent. An embedding/hosted caller (the Dark Factory W3
+  // worker) supplies the gate config OUT OF BAND; it is never read from the
+  // customer repo. The customer's committed `.agent-review/config.json` is just
+  // a file in the diff under review and has zero authority over the gate, so
+  // the parent-ref re-read — which exists only to recover working-tree config —
+  // is inapplicable. Setting this flag does NOT disable a safety check; it
+  // states the config source. It closes both the crash (parent ref lacks the
+  // injected profile → "unknown profile") AND the fail-open hazard (a customer
+  // who commits their own `profiles.<name>` cannot override the injected gate).
+  //
+  // Default false: the CLI's own `df review` / `gate-push` never set it; only
+  // a library embedder that injects `loaded` out-of-band does.
+  injectedConfigAuthoritative?: boolean;
+  // Issue #57 — structured sink for the trusted-surface self-modification
+  // notices, each carrying an explicit `level` (info vs warn). Defaults to
+  // writing the message to `process.stderr` (CLI back-compat — local `df`
+  // output is unchanged). A library embedder (the W3 worker) passes a sink
+  // that routes by level into its own structured logger (OTel/GCP severity)
+  // and does NOT touch `process.stderr`, so the benign `info` notice stops
+  // polluting severity>=ERROR alerting.
+  notify?: (notice: PolicyNotice) => void;
 }
 
 export async function resolvePolicyBaseline(
   options: ResolveBaselineOptions,
 ): Promise<PolicyBaseline> {
   const { loaded, sha, cwd } = options;
-  const warn = options.warn ?? ((m) => process.stderr.write(m));
+
+  // Issue #56 — an authoritatively-injected config is its own baseline. Return
+  // it verbatim BEFORE touching git: the parent-ref re-read recovers working-
+  // tree-provenance config and is inapplicable when the embedder owns the
+  // config out-of-band. See `injectedConfigAuthoritative` on the options type.
+  if (options.injectedConfigAuthoritative) {
+    return { loaded, triggeredBy: [] };
+  }
+
+  // Issue #57 — default sink writes the message to stderr (back-compat); the
+  // `level` is consumed by an injected sink, not by the default.
+  const notify = options.notify ?? ((n: PolicyNotice) => process.stderr.write(n.message));
 
   let parent: string;
   try {
@@ -132,26 +185,33 @@ export async function resolvePolicyBaseline(
     // `AGENT_REVIEW_AGGREGATION_POLICY` sees the diagnostic regardless of
     // which load path the run took. Without this, the baseline-reload
     // path would silently swallow the warning (Cursor critic MEDIUM on
-    // dce8fd9e).
-    parentLoaded = await loadAgentReviewConfigFromRef(loaded.repoRoot, parent, { warn });
+    // dce8fd9e). #57 — the env-override typo is a genuine `warn`-level notice;
+    // adapt the message-only `warn` callback onto the leveled sink.
+    parentLoaded = await loadAgentReviewConfigFromRef(loaded.repoRoot, parent, {
+      warn: (m) => notify({ level: "warn", message: m }),
+    });
   } catch (err) {
     // Parent has no config (commit introduces it for the first time) —
     // fall back to HEAD policy with a loud warning. Self-modification
     // check is skipped, but the warning makes this visible to operators
     // (and to the artifact, since stderr is captured by the post-commit
     // hook log).
-    warn(
-      `agent-review: WARNING — commit ${sha.slice(0, 12)} modifies trusted policy ` +
+    notify({
+      level: "warn",
+      message:
+        `agent-review: WARNING — commit ${sha.slice(0, 12)} modifies trusted policy ` +
         `surface (${triggeredBy.join(", ")}) but parent policy is unavailable ` +
         `(${(err as Error).message}); falling back to HEAD policy. ` +
         `Self-modification check skipped.\n`,
-    );
+    });
     return { loaded, triggeredBy };
   }
-  warn(
-    `agent-review: commit ${sha.slice(0, 12)} modifies trusted policy surface ` +
+  notify({
+    level: "info",
+    message:
+      `agent-review: commit ${sha.slice(0, 12)} modifies trusted policy surface ` +
       `(${triggeredBy.join(", ")}); reviewing against parent baseline ${parent.slice(0, 12)} ` +
       `to prevent self-modification.\n`,
-  );
+  });
   return { loaded: parentLoaded, baselineRef: parent, triggeredBy };
 }

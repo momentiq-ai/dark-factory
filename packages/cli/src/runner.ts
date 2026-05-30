@@ -10,7 +10,7 @@ import {
 } from "./policy/gate.js";
 import { changedFiles, commitParent, resolveCommit } from "./git.js";
 import { diagnosticsDir, resolveArtifactDir } from "./paths.js";
-import { resolvePolicyBaseline } from "./policy/baseline.js";
+import { resolvePolicyBaseline, type PolicyNotice } from "./policy/baseline.js";
 import {
   applyProfileAuth,
   applyProfileParamOverrides,
@@ -56,6 +56,21 @@ export interface ReviewRunOptions {
   // resolves the name via `resolveProfile()` (precedence flag > env
   // > "local") and passes it here; tests pass it directly.
   profileName?: string;
+  // Issue #56 — when true, the caller-injected `loaded` config is the
+  // authoritative gate config: the self-modification baseline guard does NOT
+  // re-read the parent ref when this commit touches the trusted policy surface
+  // (`.agent-review/**` etc.). This is for embedding/hosted callers (the W3
+  // worker) that inject `loaded` out-of-band; the customer's committed config
+  // has no authority over the injected gate. Default false: the CLI's own
+  // `df review` never sets it. See `ResolveBaselineOptions.injectedConfigAuthoritative`.
+  injectedConfigAuthoritative?: boolean;
+  // Issue #57 — structured sink for the trusted-surface self-modification
+  // notices emitted by the policy-baseline guard. Each notice carries a
+  // `level` (info | warn). When omitted, the guard writes to process.stderr
+  // (CLI back-compat). A hosted embedder passes a sink that maps level → its
+  // own structured logger so the benign info notice doesn't land at
+  // severity:ERROR. See `ResolveBaselineOptions.notify`.
+  onPolicyNotice?: (notice: PolicyNotice) => void;
 }
 
 export interface ReviewRunOutcome {
@@ -73,7 +88,17 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
 
   // Self-modification guard across the whole trusted policy surface
   // (config + guidance files + prompt fragments). See `policy-baseline.ts`.
-  const baseline = await resolvePolicyBaseline({ loaded: options.loaded, sha, cwd });
+  // `injectedConfigAuthoritative` (Issue #56) lets a hosted embedder declare
+  // its injected `loaded` config the baseline, skipping the parent-ref re-read.
+  const baseline = await resolvePolicyBaseline({
+    loaded: options.loaded,
+    sha,
+    cwd,
+    ...(options.injectedConfigAuthoritative !== undefined
+      ? { injectedConfigAuthoritative: options.injectedConfigAuthoritative }
+      : {}),
+    ...(options.onPolicyNotice !== undefined ? { notify: options.onPolicyNotice } : {}),
+  });
   const loaded = baseline.loaded;
 
   const lock = await acquireCommitLock(loaded, sha);
@@ -386,6 +411,14 @@ export interface GateRunOptions {
   // under `--profile local` (2 critics) — surfaced by Codex P2 on
   // PR #1468.
   profileName?: string;
+  // Issue #56 — see `ReviewRunOptions.injectedConfigAuthoritative`. Same
+  // semantics on the pre-push gate path: an authoritatively-injected `loaded`
+  // config is its own baseline; the self-mod guard does not re-read the parent
+  // ref. Default false; only library embedders set it.
+  injectedConfigAuthoritative?: boolean;
+  // Issue #57 — see `ReviewRunOptions.onPolicyNotice`. Structured sink for the
+  // self-modification notices on the pre-push gate path; defaults to stderr.
+  onPolicyNotice?: (notice: PolicyNotice) => void;
 }
 
 export async function runCommitGate(options: GateRunOptions): Promise<GateResult> {
@@ -395,8 +428,18 @@ export async function runCommitGate(options: GateRunOptions): Promise<GateResult
   // not allowed to weaken its OWN gate evaluation. Without this, a commit
   // could set `blockOnMissingReview=false` or empty `requiredQualityGates`
   // and have pre-push respect the weakened HEAD policy.
+  // `injectedConfigAuthoritative` (Issue #56) skips the parent-ref re-read for
+  // hosted embedders that inject `loaded` out-of-band.
   const sha = await resolveCommit(options.commit, cwd);
-  const baseline = await resolvePolicyBaseline({ loaded: options.loaded, sha, cwd });
+  const baseline = await resolvePolicyBaseline({
+    loaded: options.loaded,
+    sha,
+    cwd,
+    ...(options.injectedConfigAuthoritative !== undefined
+      ? { injectedConfigAuthoritative: options.injectedConfigAuthoritative }
+      : {}),
+    ...(options.onPolicyNotice !== undefined ? { notify: options.onPolicyNotice } : {}),
+  });
   const loaded = baseline.loaded;
 
   // Cycle 322.7 Phase C — Emergency revert audit trail (gate path).
