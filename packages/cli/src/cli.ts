@@ -98,6 +98,19 @@ import { summarizeGate } from "./policy/gate.js";
 // stderr-only diagnostics) is structurally distinct from the other
 // subcommands. See docs/roadmap/cycles/cycle5-mcp-server.md.
 import { cmdMcp } from "./mcp/cli.js";
+// Cycle 8 Phase 8.2 — agent handoff protocol. `df handoff`/`df accept`/
+// `df rehydrate`/`df handoffs` carry working context (the reasoning a
+// session can't recover from `gh`) across a session boundary, modeling the
+// baton on native GitHub primitives (handoff label = stack, assignee =
+// ownership, PR timeline = audit). The mechanism is shared with the
+// `df_handoff`/etc. MCP tools via src/handoff/index.ts. See
+// docs/CONSUMER-ADOPTION.md § handoff.
+import {
+  cmdHandoff,
+  cmdAccept,
+  cmdRehydrate,
+  cmdHandoffs,
+} from "./handoff/cli.js";
 
 interface PackageMeta {
   name?: string;
@@ -171,6 +184,19 @@ function printHelp(meta: PackageMeta): void {
       "                              Gemini) as a structured tool + resource +",
       "                              prompt catalog. Run `df mcp --help` for the",
       "                              .mcp.json wiring snippet.",
+      "",
+      "Subcommands (Cycle 8 — agent handoff protocol):",
+      "  df handoff                  Put a work-stream on the handoff stack:",
+      "                              upsert its marker-bounded rehydration note",
+      "                              (read from stdin) on the PR + label it",
+      "                              (auto-creates a draft PR if none). Scrubs",
+      "                              the note for secret-shaped content first.",
+      "  df handoffs                 List the stack of handed-off PRs (open,",
+      "                              labeled `handoff`) so you can pick one.",
+      "  df accept                   Claim a handoff PR (assign you, take it off",
+      "                              the stack), then rehydrate.",
+      "  df rehydrate                Read-only catch-up on a PR's note — derives",
+      "                              LIVE state first, changes no ownership.",
       "",
       "Cost model:",
       "  The local hook path (review/gate-push) consumes Cursor / Codex / Claude",
@@ -301,6 +327,16 @@ const PHASE_F_LOCAL_SUBCOMMANDS = new Set([
 // `mcp --help` to the subcommand's own help printer (which is the only
 // stdout writer in that subtree) rather than the global printHelp().
 const PHASE_G_SUBCOMMANDS = new Set(["mcp"]);
+
+// Cycle 8 — agent handoff protocol verbs. Like the other subcommands they
+// talk to GitHub via `gh`; unlike the gate verbs they mutate PR state
+// (comments, label, assignee). `df handoff` reads the note body on stdin.
+const CYCLE8_SUBCOMMANDS = new Set([
+  "handoff",
+  "handoffs",
+  "accept",
+  "rehydrate",
+]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // PR Status Check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -1266,7 +1302,8 @@ async function main(argv: string[]): Promise<number> {
       !PHASE_D_SUBCOMMANDS.has(sub0) &&
       !PHASE_F_SUBCOMMANDS.has(sub0) &&
       !PHASE_F_LOCAL_SUBCOMMANDS.has(sub0) &&
-      !PHASE_G_SUBCOMMANDS.has(sub0)
+      !PHASE_G_SUBCOMMANDS.has(sub0) &&
+      !CYCLE8_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -1313,6 +1350,19 @@ async function main(argv: string[]): Promise<number> {
   // Phase G — agentic MCP surface (cycle5).
   if (sub === "mcp") {
     return await cmdMcp(rest);
+  }
+  // Cycle 8 — agent handoff protocol verbs.
+  if (sub === "handoff") {
+    return await cmdHandoff(rest);
+  }
+  if (sub === "handoffs") {
+    return await cmdHandoffs(rest);
+  }
+  if (sub === "accept") {
+    return await cmdAccept(rest);
+  }
+  if (sub === "rehydrate") {
+    return await cmdRehydrate(rest);
   }
   return notImplemented(sub);
 }

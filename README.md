@@ -28,12 +28,49 @@ Pre-launch. Active extraction from `momentiq-ai/sage3c` via [cycle 331](https://
 
 The CLI ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Connect any MCP-speaking agent over stdio and you get:
 
-- **15 tools** — `df_doctor`, `df_findings`, `df_show_run`, `df_cycle_list`, `df_cycle_read`, `df_adr_list`, `df_adr_read`, `df_critics_config`, `df_stats`, `df_gate_push`, `df_review` (async) + `df_review_status`, `df_bypass` (with elicitation for missing issue URLs), `df_cycle_doc_generate` + `df_adr_generate` (via MCP sampling — the server asks the **client's** LLM to populate skeletons)
+- **19 tools** — `df_doctor`, `df_findings`, `df_show_run`, `df_cycle_list`, `df_cycle_read`, `df_adr_list`, `df_adr_read`, `df_critics_config`, `df_stats`, `df_gate_push`, `df_review` (async) + `df_review_status`, `df_bypass` (with elicitation for missing issue URLs), `df_cycle_doc_generate` + `df_adr_generate` (via MCP sampling — the server asks the **client's** LLM to populate skeletons), and the **agent handoff** verbs `df_handoff` / `df_handoffs` / `df_accept` / `df_rehydrate` (carry working context across a session boundary; see below)
 - **9 URI-addressable resources** — `df://repo/cycles`, `df://repo/cycle/{id}`, ADRs, findings, runs/recent, audit-log, principles, etc. Templated `list` callbacks auto-enumerate known cycles + ADRs, so `resources/list` at session start gives the agent a complete index of the agentic context
-- **5 prompts** — `df.write_cycle_doc`, `df.draft_adr`, `df.diagnose_critic_failure`, `df.summarize_recent_runs`, `df.onboarding_analysis`. Pure templates (no LLM call server-side); the client's LLM renders them
+- **7 prompts** — `df.write_cycle_doc`, `df.draft_adr`, `df.diagnose_critic_failure`, `df.summarize_recent_runs`, `df.onboarding_analysis`, plus `df.handoff` (note-writing judgment + the security rule) and `df.rehydrate` (the live-state-first ritual). Pure templates (no LLM call server-side); the client's LLM renders them
 - **Logging notifications** — long-running tools emit `notifications/message` so the user sees "[df] running cursor critic..." → "[df] critic finished: APPROVED" inline
 
 Pinned MCP protocol version: `2025-06-18`. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
+
+## Session continuity — the agent handoff protocol
+
+A session restart (reboot, local-model upgrade, dev→dev, dev→cloud-agent)
+destroys an agent's working context. The **state** of a work-stream (branch,
+diff, CI, mergeability) is always recoverable from `gh`/the PR; the **reasoning**
+(why this approach, what was rejected, traps hit, where you were mid-thought) is
+not — it evaporates with the session. The handoff verbs staple that reasoning to
+the PR as a single marker-bounded comment and model the **baton** entirely on
+native GitHub primitives — no new system:
+
+- a **`handoff` label** = the stack,
+- the **assignee** = who holds the baton,
+- the **PR timeline** = the acceptance audit (recorded for free).
+
+Four verbs, available as both CLI subcommands and MCP tools/prompts:
+
+| Verb | CLI | MCP tool | When |
+|---|---|---|---|
+| Hand off | `df handoff [pr] < note.md` | `df_handoff` | Pausing / ending / switching away — leave a note + put the PR on the stack (auto-creates a draft PR if none) |
+| List the stack | `df handoffs` | `df_handoffs` | Fresh start — what's available to pick up? |
+| Accept | `df accept <pr>` | `df_accept` | Take over a handoff — claim it (assign you, take it off the stack), then rehydrate |
+| Rehydrate | `df rehydrate [pr]` | `df_rehydrate` | Resume your *own* in-flight work — read-only catch-up, no ownership change |
+
+The note is a single PR comment bounded by `<!-- agent-context:v1 -->` markers
+(upserted, so re-handing-off edits in place). **Security rule (hard):** a PR
+comment is repo-readable and cached/indexed even after deletion, so the note
+carries *setup steps* (procedural) — **never** secret values, tokens, credential
+paths, or connection strings. `df handoff` scrubs the note for secret-shaped
+content and refuses on a match (reporting line numbers only, never the value).
+`df rehydrate` derives **live state itself** with fixed, script-owned `gh`
+commands and prints it FIRST — it never executes text transcribed from a PR
+comment (a PR comment is an injection vector). The `df.handoff` / `df.rehydrate`
+MCP prompts carry that judgment for the composing/resuming agent.
+
+See [CONSUMER-ADOPTION.md § handoff](docs/CONSUMER-ADOPTION.md#12-session-continuity--the-agent-handoff-protocol)
+for the full data flows.
 
 ## Reusable workflow shapes (Phase E)
 

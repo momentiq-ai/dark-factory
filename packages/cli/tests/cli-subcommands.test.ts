@@ -307,3 +307,51 @@ describe("df CLI — Phase F reusable-workflow gates", () => {
     expect(r.exitCode).toBe(0);
   });
 });
+
+describe("df CLI — Cycle 8 handoff subcommands", () => {
+  // These pin the cli.ts wiring (help routing + subcommand dispatch) for
+  // the four handoff verbs. The behavior matrix lives in
+  // tests/handoff/handoff-core.test.ts; the spawned binary just confirms
+  // the subcommands are registered and route to their own help printers
+  // (the `--help` router gate in main() is the easy thing to forget).
+
+  it("--help lists the Cycle 8 handoff verbs", async () => {
+    const r = await runDfCli(["--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df handoff");
+    expect(r.stdout).toContain("df handoffs");
+    expect(r.stdout).toContain("df accept");
+    expect(r.stdout).toContain("df rehydrate");
+  });
+
+  it("handoff --help routes to the subcommand's own help (not global)", async () => {
+    const r = await runDfCli(["handoff", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df handoff — put a work-stream on the handoff stack");
+    expect(r.stdout).toContain("agent-context:v1");
+  });
+
+  it("handoffs --help routes to the subcommand's own help", async () => {
+    const r = await runDfCli(["handoffs", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df handoffs — list the stack");
+  });
+
+  it("accept --help routes to the subcommand's own help", async () => {
+    const r = await runDfCli(["accept", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df accept — take the baton");
+  });
+
+  it("rehydrate --help routes to the subcommand's own help", async () => {
+    const r = await runDfCli(["rehydrate", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df rehydrate — read-only catch-up");
+  });
+
+  it("accept with no PR arg exits 1 with a stack hint", async () => {
+    const r = await runDfCli(["accept"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("df handoffs");
+  });
+});

@@ -40,6 +40,7 @@ import { registerCycleTools } from "./tools/cycle.js";
 import { registerDoctorTool } from "./tools/doctor.js";
 import { registerFindingsTools } from "./tools/findings.js";
 import { registerGenerateTools } from "./tools/generate.js";
+import { registerHandoffTools } from "./tools/handoff.js";
 import { registerReviewBypassTools } from "./tools/review-bypass.js";
 import { registerStatsGateTools } from "./tools/stats-gate.js";
 
@@ -81,6 +82,14 @@ export interface CreateMcpServerOptions {
   readonly _testRunReview?: (
     options: import("../runner.js").ReviewRunOptions,
   ) => Promise<import("../runner.js").ReviewRunOutcome>;
+  /**
+   * Test-only escape hatch — substitute the `gh`/`git` runners the
+   * cycle8 handoff tools shell out through, so they can be exercised
+   * over the in-memory transport without a PATH stub or the network.
+   * Production code leaves these undefined; the real `gh`/`git` ship.
+   */
+  readonly _testHandoffGh?: import("../handoff/index.js").GhRunner;
+  readonly _testHandoffGit?: import("../handoff/index.js").GitRunner;
 }
 
 export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
@@ -131,6 +140,11 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
       : {}),
   });                                            // step 6 — df_review + df_review_status + df_bypass
   registerGenerateTools(server, toolOpts);      // step 8 — df_cycle_doc_generate + df_adr_generate (sampling)
+  registerHandoffTools(server, {
+    ...toolOpts,
+    ...(opts._testHandoffGh !== undefined ? { _internalGh: opts._testHandoffGh } : {}),
+    ...(opts._testHandoffGit !== undefined ? { _internalGit: opts._testHandoffGit } : {}),
+  });                                            // cycle8 — df_handoff + df_handoffs + df_accept + df_rehydrate
 
   // step 4 — URI-addressable resources (df://repo/...). Single call
   // registers all 9 resources at once; see src/mcp/resources.ts.
