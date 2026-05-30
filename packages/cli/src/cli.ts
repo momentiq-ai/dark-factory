@@ -98,6 +98,10 @@ import { summarizeGate } from "./policy/gate.js";
 // stderr-only diagnostics) is structurally distinct from the other
 // subcommands. See docs/roadmap/cycles/cycle5-mcp-server.md.
 import { cmdMcp } from "./mcp/cli.js";
+// Cycle 11 Phase 11.1 — `df flow` namespace surfacing the PR Flow
+// Assessor's records from momentiq-ai/df-assessments. See
+// docs/roadmap/cycles/cycle11-flow-assessor-surfacing-and-tools.md.
+import { cmdFlow } from "./commands/flow/index.js";
 // Cycle 8 Phase 8.2 — agent handoff protocol. `df handoff`/`df accept`/
 // `df rehydrate`/`df handoffs` carry working context (the reasoning a
 // session can't recover from `gh`) across a session boundary, modeling the
@@ -184,6 +188,14 @@ function printHelp(meta: PackageMeta): void {
       "                              Gemini) as a structured tool + resource +",
       "                              prompt catalog. Run `df mcp --help` for the",
       "                              .mcp.json wiring snippet.",
+      "",
+      "Subcommands (Cycle 11 — PR Flow Assessor surfacing):",
+      "  df flow                     Surface the PR Flow Assessor's records",
+      "                              from momentiq-ai/df-assessments. Six",
+      "                              sub-subcommands: show / agent / patterns /",
+      "                              cost / trends / rollup. Each carries",
+      "                              --json. Run `df flow --help` for the list,",
+      "                              `df flow <sub> --help` for per-sub flags.",
       "",
       "Subcommands (Cycle 8 — agent handoff protocol):",
       "  df handoff                  Put a work-stream on the handoff stack:",
@@ -337,6 +349,12 @@ const CYCLE8_SUBCOMMANDS = new Set([
   "accept",
   "rehydrate",
 ]);
+
+// Cycle 11 Phase 11.1 — `df flow` namespace. Each sub-subcommand
+// (show/agent/patterns/cost/trends/rollup) is dispatched inside cmdFlow,
+// not at the top level, so the surface stays grouped (`df flow --help` is
+// authoritative) and we don't pollute the top-level `df` namespace.
+const CYCLE11_SUBCOMMANDS = new Set(["flow"]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // PR Status Check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -1303,7 +1321,8 @@ async function main(argv: string[]): Promise<number> {
       !PHASE_F_SUBCOMMANDS.has(sub0) &&
       !PHASE_F_LOCAL_SUBCOMMANDS.has(sub0) &&
       !PHASE_G_SUBCOMMANDS.has(sub0) &&
-      !CYCLE8_SUBCOMMANDS.has(sub0)
+      !CYCLE8_SUBCOMMANDS.has(sub0) &&
+      !CYCLE11_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -1363,6 +1382,14 @@ async function main(argv: string[]): Promise<number> {
   }
   if (sub === "rehydrate") {
     return await cmdRehydrate(rest);
+  }
+  // Cycle 11 Phase 11.1 — PR Flow Assessor surfacing.
+  if (sub === "flow") {
+    return await cmdFlow(rest, {
+      stdout: (s) => process.stdout.write(s),
+      stderr: (s) => process.stderr.write(s),
+      parseFlags,
+    });
   }
   return notImplemented(sub);
 }

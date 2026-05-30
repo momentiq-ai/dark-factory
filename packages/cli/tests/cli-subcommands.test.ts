@@ -355,3 +355,49 @@ describe("df CLI — Cycle 8 handoff subcommands", () => {
     expect(r.stderr).toContain("df handoffs");
   });
 });
+
+describe("df CLI — Cycle 11 flow subcommands", () => {
+  // Pins the compiled-binary wiring for `df flow` end-to-end: the import in
+  // cli.ts, the namespace help, and the early-help routing in main() that
+  // forwards `flow --help` to cmdFlow's printer rather than the global one.
+  // The behavior matrix per sub lives in tests/flow/*.test.ts.
+
+  it("--help lists Cycle 11 flow", async () => {
+    const r = await runDfCli(["--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df flow");
+    expect(r.stdout).toContain("PR Flow Assessor");
+  });
+
+  it("flow with no sub prints the namespace help and exits 0", async () => {
+    const r = await runDfCli(["flow"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df flow <subcommand>");
+    expect(r.stdout).toContain("show");
+    expect(r.stdout).toContain("rollup");
+  });
+
+  it("flow --help routes to the namespace help (not global)", async () => {
+    const r = await runDfCli(["flow", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df flow — surface the PR Flow Assessor");
+  });
+
+  it("flow show --help routes to the sub's own help", async () => {
+    const r = await runDfCli(["flow", "show", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("df flow show — render the AssessmentArtifact");
+  });
+
+  it("flow unknown-sub exits 1 (sub-arg error), NOT 2 (top-level not-implemented)", async () => {
+    const r = await runDfCli(["flow", "nope"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('unknown subcommand "nope"');
+  });
+
+  it("flow show without --pr exits 1", async () => {
+    const r = await runDfCli(["flow", "show"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("--pr <N> is required");
+  });
+});
