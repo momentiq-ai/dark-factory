@@ -132,13 +132,12 @@ describe("MCP catalog conformance snapshot (cycle5 Phase 1 step 11)", () => {
   it("pins the full tools + resourceTemplates + prompts catalog", async () => {
     const snapshot = await captureCatalog();
 
-    // Sanity counts — match the cycle5 Phase 1 catalog as of step 10:
-    //   - 15 tools (steps 2 + 3a-d + 5 + 6 + 8)
-    //   - 5 resource templates (3 path-templated + 2 query-templated)
-    //   - 5 prompts (step 7)
-    // Counts pinned BESIDES the full snapshot so a delta is easy to
-    // spot in the failing-test output.
+    // Sanity counts — cycle5 Phase 1 catalog (15 tools / 5 prompts) plus
+    // cycle8's agent handoff protocol (4 tools / 2 prompts) = 19 tools,
+    // 5 resource templates, 7 prompts. Counts pinned BESIDES the full
+    // snapshot so a delta is easy to spot in the failing-test output.
     expect(snapshot.tools.map((t) => t.name)).toEqual([
+      "df_accept",
       "df_adr_generate",
       "df_adr_list",
       "df_adr_read",
@@ -150,6 +149,9 @@ describe("MCP catalog conformance snapshot (cycle5 Phase 1 step 11)", () => {
       "df_doctor",
       "df_findings",
       "df_gate_push",
+      "df_handoff",
+      "df_handoffs",
+      "df_rehydrate",
       "df_review",
       "df_review_status",
       "df_show_run",
@@ -165,7 +167,9 @@ describe("MCP catalog conformance snapshot (cycle5 Phase 1 step 11)", () => {
     expect(snapshot.prompts.map((p) => p.name)).toEqual([
       "df.diagnose_critic_failure",
       "df.draft_adr",
+      "df.handoff",
       "df.onboarding_analysis",
+      "df.rehydrate",
       "df.summarize_recent_runs",
       "df.write_cycle_doc",
     ]);

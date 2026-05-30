@@ -449,7 +449,7 @@ First-time critic runs are advisory (the policy is `aggregation.blockOnReviewErr
 
 ### What you get
 
-15 tools (read-only + write), 9 URI-addressable resources, and 5 prompts. Highlights:
+19 tools (read-only + write), 9 URI-addressable resources, and 7 prompts. Highlights:
 
 - `df_doctor` — env verification (Node, hooks, vendor auth, Doppler) as structured `{ ok, checks }`
 - `df_findings(commit)` — narrowed per-critic findings for a SHA
@@ -461,10 +461,11 @@ First-time critic runs are advisory (the policy is `aggregation.blockOnReviewErr
 - `df_review` (async) / `df_review_status(job_id)` — kick off + poll a critic run
 - `df_bypass({reason, sha, issue_url?})` — record an audit-logged emergency bypass; elicits a missing `issue_url` from the user when the client supports MCP elicitation
 - `df_cycle_doc_generate` / `df_adr_generate` — server asks the **client's** LLM (via MCP sampling) to populate a skeleton, validates, writes the file
+- `df_handoff` / `df_handoffs` / `df_accept` / `df_rehydrate` — the agent handoff protocol (see [§12](#12-session-continuity--the-agent-handoff-protocol))
 
 Resources at `df://repo/cycles`, `df://repo/cycle/{id}`, `df://repo/adrs`, `df://repo/adr/{id}`, `df://repo/findings/{sha}`, `df://repo/runs/recent[?limit]`, `df://repo/config/critics`, `df://repo/audit-log[?since]`, `df://repo/principles`.
 
-Prompts (pure templates the client's LLM consumes): `df.write_cycle_doc`, `df.draft_adr`, `df.diagnose_critic_failure`, `df.summarize_recent_runs`, `df.onboarding_analysis`.
+Prompts (pure templates the client's LLM consumes): `df.write_cycle_doc`, `df.draft_adr`, `df.diagnose_critic_failure`, `df.summarize_recent_runs`, `df.onboarding_analysis`, `df.handoff`, `df.rehydrate`.
 
 ### Configuration — Claude Code (`.mcp.json`)
 
@@ -538,7 +539,106 @@ The agent should connect, list tools, call `df_doctor`, and render the structure
 - **No `resources/subscribe` in this release.** Subscriptions land in cycle 5 Phase 2 (the remote HTTP MCP gateway at `mcp.dark-factory.momentiq.ai`). Phase 1 stdio clients poll if they need freshness.
 - **The protocol version pinned for this release is `2025-06-18`.** Newer clients negotiate to whichever supported version they prefer; older clients negotiate down. The SDK manages this — you do nothing.
 
-## 12. References
+## 12. Session continuity — the agent handoff protocol
+
+`@momentiq/dark-factory-cli@0.3.0-alpha.10+` ships four verbs that carry an
+agent's *working context* across a session boundary (reboot, local-model
+upgrade, dev→dev, dev→cloud-agent). The **state** of a work-stream (branch, diff,
+CI, mergeability) is recoverable from `gh`/the PR; the **reasoning** (why this
+approach, what was rejected, traps hit, where you were mid-thought) is not — it
+evaporates with the session. The verbs staple that reasoning to the PR as a
+single marker-bounded comment and model the **baton** entirely on native GitHub
+primitives — **no new system, no extra service, no state file**:
+
+- a **`handoff` label** = the stack,
+- the **assignee** = who holds the baton,
+- the **PR timeline** = the acceptance audit (recorded for free).
+
+Available identically as CLI subcommands and MCP tools (the [§11](#11-wire-the-mcp-server-into-your-agent)
+server exposes the same logic), plus two MCP prompts that carry the judgment:
+
+| Verb | CLI | MCP tool | When |
+|---|---|---|---|
+| Hand off | `df handoff [pr] < note.md` | `df_handoff` | Pausing / ending / switching away |
+| List the stack | `df handoffs` | `df_handoffs` | Fresh start — what's available? |
+| Accept | `df accept <pr>` | `df_accept` | Take over a handoff (claim + rehydrate) |
+| Rehydrate | `df rehydrate [pr]` | `df_rehydrate` | Resume your *own* in-flight work (read-only) |
+
+### The note
+
+A single PR comment bounded by `<!-- agent-context:v1 -->` … `<!-- /agent-context:v1 -->`
+markers (load-bearing — the upsert finds the note by them). Re-handing-off edits
+the note in place (PATCH; falls back to a fresh POST if the existing note was
+authored by another identity). Compose it from your *actual working memory* — the
+`df.handoff` MCP prompt (or the handoff skill) carries the exact format:
+
+```markdown
+<!-- agent-context:v1 -->
+> 🤖 **Agent rehydration context** — transient working memory, NOT a source of truth.
+> State is whatever `gh`/the PR says now; this is the *reasoning*. Stale by nature.
+> _Updated: <YYYY-MM-DD> by <your model/session>_
+
+**Branch:** `<branch>` · pull it; don't assume a local checkout exists.
+
+**Why this approach (and what I rejected):**
+- <the decision + the alternative you did NOT take, and why>
+
+**Traps I hit:**   ← setup-shaped only; see the Security rule below
+- <the gotcha + the setup step that avoids it>
+
+**Where I was mid-thought:**
+- <the thing you'd tell yourself if you walked back in 10 minutes later>
+
+**Derive current state (don't trust the above as current):**
+    Run df rehydrate on this PR — it derives live state safely.
+<!-- /agent-context:v1 -->
+```
+
+### Security rule (hard)
+
+A PR comment is readable by anyone with repo access and **cached/indexed even
+after deletion**. The note carries **setup steps** (procedural: "switch off the
+prod kube context before applying", "select the review workspace first", "run
+`df onboard`") — **never** secret values, tokens, API keys, credential file
+paths, connection strings, or any description of the existing security context.
+
+- `df handoff` **scrubs** the note for secret-shaped content (key/secret var
+  names, GitHub/Slack/AWS token shapes, OpenAI/Anthropic/Google provider keys,
+  credentialed connection strings, well-known credential file paths, PEM blocks)
+  and **refuses on a match**, reporting line numbers only — never the value. The
+  scrub is a *backstop*; you (guided by the `df.handoff` prompt) are the primary
+  control. If the scrub refuses your note, rephrase the offending line as a setup
+  step — don't work around it.
+- `df rehydrate` derives **live state itself** with fixed, script-owned `gh pr
+  view` / `gh pr checks` commands and prints it FIRST (the truth, not the note).
+  It **never executes text transcribed from a PR comment** — a PR comment is
+  attacker-influenceable, so executing it would be an injection vector. The
+  note's own "derive current state" lines are informational only.
+
+### Other guardrails
+
+- **Note before push (D5).** `df handoff` posts the note *before* pushing, so the
+  reasoning survives even if a pre-push critic gate blocks. It warns loudly if the
+  branch tip isn't on `origin`.
+- **Dirty-worktree refusal.** Uncommitted *tracked* changes are not pushed by
+  `git push origin HEAD`, so `df handoff` refuses (commit/stash first) rather than
+  label a PR "available" whose branch is missing your work. Untracked files warn.
+- **Branch-mismatch guard.** An explicit `df handoff <pr>` whose PR branch ≠ your
+  current branch is refused (the note would land on one PR while the push targets
+  another).
+- **PR-number validation.** A non-integer PR arg is rejected before any `gh`
+  call, so a malicious `df rehydrate '42; …'` can never produce an injectable
+  copy-pastable command.
+
+### Wiring
+
+The verbs need `gh` (authenticated) on PATH — the same dependency the cycle-doc
+and branch-protection subcommands already use. No extra config. As MCP tools they
+are exposed automatically by the [§11](#11-wire-the-mcp-server-into-your-agent)
+server, so an MCP-wired agent discovers `df_handoff` / `df_accept` /
+`df_rehydrate` / `df_handoffs` without any prompting.
+
+## 13. References
 
 - **Onboarding-enforcement gap (this section's rationale):** [`momentiq-ai/dark-factory#17`](https://github.com/momentiq-ai/dark-factory/issues/17) — consumers adopting gates without enforcing them; evidence at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213).
 - **Fork-PR / secret-dependent required check:** [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15) — why fork PRs can't satisfy a required `agent-critic` until the 331.3 fork-handling design ships.
