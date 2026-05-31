@@ -1,30 +1,29 @@
-// Agent handoff protocol — shared core (Cycle 8 Phase 8.2).
+// Agent handoff protocol — shared core (Cycle 12 — Issue-anchored).
 //
 // This module is the single source of mechanism for the four handoff
 // verbs, consumed by BOTH the `df handoff`/`df accept`/`df rehydrate`/
 // `df handoffs` CLI subcommands (src/cli.ts) AND the
 // `df_handoff`/`df_accept`/`df_rehydrate`/`df_handoffs` MCP tools
-// (src/mcp/tools/handoff.ts) — the same split `runDoctor` (src/doctor.ts)
-// uses to back `df doctor` and the `df_doctor` tool.
+// (src/mcp/tools/handoff.ts).
 //
-// It is a faithful TypeScript port of the dogfooded Phase 8.1 bash
-// scripts (.claude/skills/handoff/scripts/*.sh in dark-factory-platform).
-// The judgment layer (when to hand off, what to write, the security rule)
-// lives in the skill / the two MCP prompts; this is the deterministic
-// mechanism: marker-bounded PR-comment upsert, the secret-scrub, native
-// baton (handoff label + assignee + PR timeline), and live-state-first
-// rehydration.
+// It is a faithful TypeScript port of the Phase 12.1 bash scripts in
+// dark-factory-platform (.claude/skills/handoff/scripts/*.sh) — the
+// battle-tested source of truth for behaviour. Cycle 12 supersedes
+// Cycle 8: the anchor object changed from a PR comment to a dedicated
+// GitHub Issue body, the verb shape became
+// `df handoff [issue] [--link <ref>]... [--unlink <ref>]... [--new]`,
+// and the lifecycle is upsert-on-handoff / close-on-accept (Commitment
+// 10). The four verb names are unchanged.
 //
-// GitHub access shells out to `gh` exactly as the bash did (the repo's
-// other GitHub touch points — git.ts, the Python services — talk to
-// git/gh the same way). The `gh` runner is INJECTABLE (default = real
-// `gh`) so the MCP tools, which run in-process over an in-memory
-// transport, can be tested hermetically without a PATH stub or the
-// network — mirroring how review-bypass takes `_internalRunReview`.
+// GitHub access shells out to `gh` exactly as the bash did. The `gh`
+// runner is INJECTABLE (default = real `gh`) so the MCP tools, which
+// run in-process over an in-memory transport, can be tested
+// hermetically without a PATH stub or the network — mirroring how
+// review-bypass takes `_internalRunReview`.
 //
-// Design source of truth:
-//   docs/superpowers/specs/2026-05-29-agent-handoff-protocol-design.md
-//   (in dark-factory-platform — Phase 8.1's spec).
+// Design source of truth (in dark-factory-platform):
+//   docs/roadmap/cycles/cycle12-agent-handoff-v2-issue-anchor.md
+//   docs/superpowers/specs/2026-05-30-agent-handoff-v2-issue-anchor-design.md
 
 import { spawn } from "node:child_process";
 
@@ -34,6 +33,9 @@ export const MARKER_OPEN = "<!-- agent-context:v1 -->";
 export const MARKER_CLOSE = "<!-- /agent-context:v1 -->";
 export const HANDOFF_LABEL = "handoff";
 
+/** Closed-handoff lookback window for no-arg /rehydrate tier 2 (spec §4.4). */
+export const REHYDRATE_CLOSED_WINDOW_DAYS = 7;
+
 // ---------------------------------------------------------------------------
 // Errors + IO shims.
 // ---------------------------------------------------------------------------
@@ -41,8 +43,7 @@ export const HANDOFF_LABEL = "handoff";
 /**
  * Raised by the core for every operator-facing refusal/abort (the bash
  * `die`). Carries an optional `savedNotePath` so the CLI can echo where a
- * composed note was preserved when a push/gate blocked it (Decision D5 —
- * the reasoning is the precious artifact and is never discarded).
+ * composed note was preserved when a push/gate blocked it.
  */
 export class HandoffError extends Error {
   readonly savedNotePath: string | undefined;
@@ -70,12 +71,13 @@ export type GhRunner = (
 export type GitRunner = (args: readonly string[]) => Promise<ExecResult>;
 
 // We use `spawn` (not `execFile`/`promisify`) specifically because the
-// upsert path pipes a JSON body to `gh api … --input -` on the child's
-// STDIN. `promisify(execFile)`'s `input` option is silently dropped (it's a
-// `*Sync` / `child_process.exec`-only option), which would send an EMPTY
-// body to `--input -` (and hang the child waiting on EOF). `spawn` lets us
-// write + end stdin deterministically. Resolves a non-zero `code` instead
-// of rejecting, so callers branch on `code` uniformly (no try/catch noise).
+// upsert path pipes a body to `gh issue edit … --body-file -` on the
+// child's STDIN. `promisify(execFile)`'s `input` option is silently
+// dropped (it's a `*Sync` / `child_process.exec`-only option), which
+// would send an EMPTY body to `--body-file -` (and hang the child
+// waiting on EOF). `spawn` lets us write + end stdin deterministically.
+// Resolves a non-zero `code` instead of rejecting, so callers branch on
+// `code` uniformly (no try/catch noise).
 function defaultExec(
   bin: string,
   args: readonly string[],
@@ -166,20 +168,44 @@ export async function requireTools(deps: HandoffDeps): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// PR-number validation (bash require_pr_number).
+// Issue-number validation (bash require_issue_number).
 //
-// Die if a PR identifier is set but not a positive integer — so the value
-// is always safe to interpolate anywhere (incl. the printed
-// `gh pr checkout <pr>` footer) and a malicious `/rehydrate '42; rm -rf'`
-// can't produce a copy-pastable injectable command. Empty/undefined is
-// allowed (the no-PR /handoff path resolves/creates the PR later).
+// Die if an issue identifier is set but not a positive integer — so the
+// value is always safe to interpolate anywhere and a malicious
+// `/rehydrate '42; rm -rf'` can't produce a copy-pastable injectable
+// command. Empty/undefined is allowed (the no-arg paths resolve later).
 // ---------------------------------------------------------------------------
 
-export function requirePrNumber(pr: string | undefined): void {
-  if (pr === undefined || pr === "") return; // empty allowed
+export function requireIssueNumber(issue: string | undefined): void {
+  if (issue === undefined || issue === "") return; // empty allowed
   // Reject 0, leading zero, and anything non-digit.
-  if (!/^[1-9][0-9]*$/.test(pr)) {
-    throw new HandoffError(`PR must be a positive integer (got: '${pr}').`);
+  if (!/^[1-9][0-9]*$/.test(issue)) {
+    throw new HandoffError(
+      `issue must be a positive integer (got: '${issue}').`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Argv safety (bash require_safe_args).
+//
+// Defense-in-depth: refuse any argv token containing a character outside the
+// allow-list (alphanumeric, /, #, :, ., ,, @, -, _, ?, =, %, +, ~, and
+// whitespace). The .md slash-command entrypoints pass `"$ARGUMENTS"` as ONE
+// quoted token; the CLI splits it itself and the MCP tools receive typed
+// strings — but a payload like `42; rm -rf /` or `$(rm -rf /)` is rejected
+// here regardless of input path.
+// ---------------------------------------------------------------------------
+
+const SAFE_ARG_PATTERN = /^[a-zA-Z0-9_/#:.,@?=%+~ -]*$/;
+
+export function requireSafeArgs(...args: string[]): void {
+  for (const arg of args) {
+    if (!SAFE_ARG_PATTERN.test(arg)) {
+      throw new HandoffError(
+        "argument contains disallowed characters: refusing for safety (allowed: alphanumeric / # : . , @ - _ ? = % + ~ space).",
+      );
+    }
   }
 }
 
@@ -227,13 +253,35 @@ export function scrubSecrets(body: string): ScrubResult {
   return { clean: matched.length === 0, lines: matched };
 }
 
+/**
+ * Scrub a single string (used for linked PR/issue titles fetched live
+ * from `gh pr view --json title`). Mirrors `scrubSecrets`'s refusal
+ * contract: no value echo on match. Returns true = clean, false =
+ * matched (and logs the refusal).
+ */
+export function scrubSecretsInString(
+  s: string,
+  label: string,
+  deps: HandoffDeps,
+): boolean {
+  if (SECRET_PATTERN.test(s)) {
+    deps.log(
+      `aborted: secret-shaped content in ${label} — rephrase the source (e.g. \`gh pr edit <N> --title …\`) so the handoff body stays scrubable. (No value echo — see SKILL.md § Security rule.)`,
+    );
+    return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
-// Marker validation (bash validate_note_markers).
+// Marker validation (bash validate_note_markers + validate_latest_block).
 // ---------------------------------------------------------------------------
 
 /**
  * A well-formed agent-context block has an open marker that precedes a
- * close marker. Guards against posting a malformed/partial note.
+ * close marker. Guards against posting a malformed/partial note. Used by
+ * /handoff against the operator's stdin note (single-block by
+ * construction).
  */
 export function validateNoteMarkers(body: string): boolean {
   const open = body.indexOf(MARKER_OPEN);
@@ -241,12 +289,32 @@ export function validateNoteMarkers(body: string): boolean {
   return open >= 0 && close >= 0 && open < close;
 }
 
+/**
+ * Validate that the LAST agent-context block in a body is well-formed.
+ * Used by /accept against the issue body (which may carry past blocks
+ * from prior /handoff runs). Semantics must match the LATEST-block
+ * extractor (`extractLinkedItems` + the rehydrate reasoning extractor)
+ * so accept never closes a handoff whose reasoning artifact rehydrate
+ * would fail to display.
+ */
+export function validateLatestBlock(body: string): boolean {
+  const lines = body.split("\n");
+  let lastOpen = 0; // 1-based; 0 = not seen
+  let lastClose = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (line.includes(MARKER_OPEN)) lastOpen = i + 1;
+    if (line.includes(MARKER_CLOSE)) lastClose = i + 1;
+  }
+  return lastOpen > 0 && lastClose > lastOpen;
+}
+
 // ---------------------------------------------------------------------------
 // Control-char strip for display (bash `tr -d '\000-\010\013-\037\177'`).
 //
-// The note body is untrusted PR-comment text. Strip control/ESC bytes
-// (keep TAB \t = \x09 and LF \n = \x0a) so a hostile note can't drive the
-// terminal via ANSI escapes when displayed.
+// The issue body is operator-influenceable text. Strip control/ESC bytes
+// (keep TAB \t = \x09 and LF \n = \x0a) so a hostile body can't drive
+// the terminal via ANSI escapes when displayed.
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line no-control-regex
@@ -257,170 +325,20 @@ export function stripControlChars(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// gh JSON helpers.
+// Repo helpers (bash current_branch).
 // ---------------------------------------------------------------------------
 
-interface GhComment {
-  readonly id: number;
-  readonly body: string;
-}
-
-/** `gh api repos/{owner}/{repo}/issues/<pr>/comments --paginate` as JSON. */
-async function listIssueComments(
-  deps: HandoffDeps,
-  pr: string,
-): Promise<readonly GhComment[]> {
-  // --paginate concatenates pages; with `--slurp` gh returns a single
-  // array-of-arrays, so we flatten. Without --slurp, multiple pages emit
-  // multiple JSON arrays which aren't parseable as one document. We use
-  // --slurp for deterministic parsing.
-  const res = await deps.gh([
-    "api",
-    `repos/{owner}/{repo}/issues/${pr}/comments`,
-    "--paginate",
-    "--slurp",
-  ]);
-  if (res.code !== 0) {
-    throw new HandoffError(
-      `gh api (list comments on #${pr}) failed: ${res.stderr.trim() || `exit ${res.code}`}`,
-    );
-  }
-  const raw = res.stdout.trim();
-  if (!raw) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new HandoffError(
-      `could not parse gh comments JSON for #${pr}: ${(err as Error).message}`,
-    );
-  }
-  // --slurp wraps the per-page arrays in an outer array → flatten one level.
-  const flat: GhComment[] = [];
-  const pages = Array.isArray(parsed) ? parsed : [];
-  for (const page of pages) {
-    if (Array.isArray(page)) {
-      for (const c of page) flat.push(c as GhComment);
-    } else if (page && typeof page === "object") {
-      // A non-paginated single page (rare) — gh returned a flat array.
-      flat.push(page as GhComment);
-    }
-  }
-  return flat;
-}
-
-/**
- * Echo the MOST RECENT marked comment id on a PR, or undefined. There
- * should only ever be one (upsert maintains a single note); if more
- * exist, use the newest and warn. The issues/comments API returns
- * ascending by creation, so the last marked one is newest.
- */
-export async function markerCommentId(
-  deps: HandoffDeps,
-  pr: string,
-): Promise<number | undefined> {
-  const comments = await listIssueComments(deps, pr);
-  const marked = comments.filter((c) => c.body.includes(MARKER_OPEN));
-  if (marked.length === 0) return undefined;
-  if (marked.length > 1) {
-    deps.log(
-      "found multiple agent-context comments on this PR (expected 1) — using the most recent.",
-    );
-  }
-  return marked[marked.length - 1]?.id;
-}
-
-/**
- * Body of the MOST RECENT marked comment on a PR (undefined if none).
- * Fetched by id so it stays consistent with upsert's most-recent target.
- */
-export async function markerCommentBody(
-  deps: HandoffDeps,
-  pr: string,
-): Promise<string | undefined> {
-  const id = await markerCommentId(deps, pr);
-  if (id === undefined) return undefined;
-  const res = await deps.gh([
-    "api",
-    `repos/{owner}/{repo}/issues/comments/${id}`,
-    "--jq",
-    ".body",
-  ]);
-  if (res.code !== 0) return undefined; // non-fatal — caller decides
-  return res.stdout.replace(/\n$/, "");
-}
-
-/**
- * Upsert the marked comment from a body. Returns the comment html_url.
- * If PATCH fails (e.g. HTTP 403 — the existing note was authored by
- * another identity), fall back to POSTing a fresh note + warn (spec §9).
- */
-export async function upsertNote(
-  deps: HandoffDeps,
-  pr: string,
-  body: string,
-): Promise<string> {
-  const id = await markerCommentId(deps, pr);
-  const payload = JSON.stringify({ body });
-  if (id !== undefined) {
-    const patch = await deps.gh(
-      [
-        "api",
-        "--method",
-        "PATCH",
-        `repos/{owner}/{repo}/issues/comments/${id}`,
-        "--input",
-        "-",
-        "--jq",
-        ".html_url",
-      ],
-      { input: payload },
-    );
-    if (patch.code === 0) return patch.stdout.trim();
-    deps.log(
-      `couldn't edit the existing note (id ${id}) — PATCH failed (commonly HTTP 403: the note was authored by another identity). Posting a fresh note instead.`,
-    );
-  }
-  const post = await deps.gh(
-    [
-      "api",
-      "--method",
-      "POST",
-      `repos/{owner}/{repo}/issues/${pr}/comments`,
-      "--input",
-      "-",
-      "--jq",
-      ".html_url",
-    ],
-    { input: payload },
-  );
-  if (post.code !== 0) {
-    throw new HandoffError(
-      `gh api (post note on #${pr}) failed: ${post.stderr.trim() || `exit ${post.code}`}`,
-    );
-  }
-  return post.stdout.trim();
-}
-
-/** Ensure the handoff label exists (idempotent; never fatal). */
-async function ensureLabel(deps: HandoffDeps): Promise<void> {
-  await deps.gh([
-    "label",
-    "create",
-    HANDOFF_LABEL,
-    "--description",
-    "Work-stream handed off, awaiting pickup (agent handoff protocol)",
-    "--color",
-    "FBCA04",
-  ]);
-  // Ignore failure (already exists) — bash used `|| true`.
+async function currentBranch(deps: HandoffDeps): Promise<string> {
+  const res = await deps.git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (res.code !== 0) return "HEAD";
+  return res.stdout.trim() || "HEAD";
 }
 
 /** Open PR number for a branch, or undefined. `--state open` only. */
-async function prForBranch(
+async function openPrForBranch(
   deps: HandoffDeps,
   branch: string,
-): Promise<string | undefined> {
+): Promise<{ number: string; title: string } | undefined> {
   const res = await deps.gh([
     "pr",
     "list",
@@ -429,466 +347,1632 @@ async function prForBranch(
     "--state",
     "open",
     "--json",
-    "number",
-    "--jq",
-    ".[0].number // empty",
+    "number,title",
   ]);
   if (res.code !== 0) return undefined;
-  const n = res.stdout.trim();
-  return n === "" ? undefined : n;
+  const raw = res.stdout.trim();
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 1) return undefined;
+  const first = parsed[0] as { number?: number; title?: string };
+  if (typeof first?.number !== "number") return undefined;
+  return {
+    number: String(first.number),
+    title: typeof first.title === "string" ? first.title : "",
+  };
 }
 
-async function currentBranch(deps: HandoffDeps): Promise<string> {
-  const res = await deps.git(["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (res.code !== 0) return "HEAD";
-  return res.stdout.trim() || "HEAD";
+/** Ensure the handoff label exists (idempotent; never fatal). Gray per spec §4.1. */
+async function ensureLabel(deps: HandoffDeps): Promise<void> {
+  await deps.gh([
+    "label",
+    "create",
+    HANDOFF_LABEL,
+    "--description",
+    "Agent handoff (Cycle 12 protocol)",
+    "--color",
+    "cccccc",
+  ]);
+  // Ignore failure (already exists) — bash used `|| true`.
 }
 
 // ---------------------------------------------------------------------------
-// /handoff — put the baton down.
+// @me login cache (bash me_login + ME_LOGIN_CACHE).
+// ---------------------------------------------------------------------------
+
+let MeLoginCache: string | undefined;
+
+/**
+ * The real GitHub login behind `@me`. Cached so repeated callers share
+ * one API hit. Used to evaluate the "assignees == [@me]" predicate.
+ */
+export async function meLogin(deps: HandoffDeps): Promise<string> {
+  if (MeLoginCache !== undefined && MeLoginCache !== "") return MeLoginCache;
+  const res = await deps.gh(["api", "user", "--jq", ".login"]);
+  if (res.code !== 0) {
+    throw new HandoffError(
+      "could not determine @me's login (gh api user failed) — run 'gh auth status'.",
+    );
+  }
+  const login = res.stdout.trim();
+  if (login === "") {
+    throw new HandoffError(
+      "could not determine @me's login (gh api user failed) — run 'gh auth status'.",
+    );
+  }
+  MeLoginCache = login;
+  return login;
+}
+
+/** Test-only: clear the meLogin cache between vitest cases. */
+export function _resetMeLoginCacheForTest(): void {
+  MeLoginCache = undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Assignees predicates (bash assignees_status + assignees_other_csv).
+// ---------------------------------------------------------------------------
+
+export type AssigneesStatus = "empty" | "me" | "other";
+
+/**
+ * Classify an issue's assignees set against @me.
+ *   empty  → no assignees      (available on the stack)
+ *   me     → exactly [@me]     (same-actor update / close-failure retry)
+ *   other  → any non-empty set ≠ [@me] (refuse/abort per §4.1, §4.3 step 4)
+ */
+export function assigneesStatus(
+  assignees: ReadonlyArray<{ login: string }>,
+  meLoginValue: string,
+): AssigneesStatus {
+  if (assignees.length === 0) return "empty";
+  if (assignees.length === 1 && assignees[0]?.login === meLoginValue) {
+    return "me";
+  }
+  return "other";
+}
+
+/** Comma-joined list of non-@me assignees (for refuse messages). */
+export function assigneesOtherCsv(
+  assignees: ReadonlyArray<{ login: string }>,
+  meLoginValue: string,
+): string {
+  return assignees
+    .map((a) => a.login)
+    .filter((l) => l !== meLoginValue)
+    .join(",");
+}
+
+// ---------------------------------------------------------------------------
+// Body splicing (bash splice_agent_context_block).
+// ---------------------------------------------------------------------------
+
+/**
+ * Splice an agent-context block into an existing issue body.
+ * If oldBody contains the markers (one or more blocks), the FIRST open
+ * marker through the LAST close marker is replaced by newBlock in-place
+ * (idempotent for the normal one-block case; fixes operator-error
+ * multi-blocks). If markers absent, newBlock is appended (preserving any
+ * operator-added text). Body text outside the markers is preserved.
+ */
+export function spliceAgentContextBlock(
+  oldBody: string,
+  newBlock: string,
+): string {
+  const lines = oldBody.split("\n");
+  let firstOpen = -1;
+  let lastClose = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (firstOpen < 0 && line.includes(MARKER_OPEN)) firstOpen = i;
+    if (line.includes(MARKER_CLOSE)) lastClose = i;
+  }
+  if (firstOpen < 0 || lastClose < 0 || lastClose < firstOpen) {
+    // No well-formed marker pair — append (preserves operator-added text).
+    if (oldBody.length === 0) return newBlock;
+    const sep = oldBody.endsWith("\n") ? "\n" : "\n\n";
+    return `${oldBody}${sep}${newBlock}`;
+  }
+  const pre = lines.slice(0, firstOpen);
+  const post = lines.slice(lastClose + 1);
+  const newBlockLines = newBlock.split("\n");
+  return [...pre, ...newBlockLines, ...post].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Link-ref canonicalization + resolution
+// (bash canonicalize_link_ref + resolve_link_ref).
+// ---------------------------------------------------------------------------
+
+export interface CanonicalLinkRef {
+  /** "" = no type hint (bare number); "pr" or "issue" otherwise. */
+  readonly kind: "" | "pr" | "issue";
+  readonly display: string;
+}
+
+/**
+ * Canonicalize a link ref to (kind, display) WITHOUT any gh fetch.
+ * Used by --unlink (which doesn't need to fetch a title — it just needs
+ * to match an existing entry's canonical display ref).
+ */
+export function canonicalizeLinkRef(ref: string): CanonicalLinkRef {
+  let kind: "" | "pr" | "issue" = "";
+  let working = ref;
+  if (working.startsWith("pr:")) {
+    kind = "pr";
+    working = working.slice("pr:".length);
+  } else if (working.startsWith("issue:")) {
+    kind = "issue";
+    working = working.slice("issue:".length);
+  }
+
+  // URL forms
+  const pullM = working.match(
+    /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/(\d+)/,
+  );
+  if (pullM) {
+    return { kind: "pr", display: `${pullM[1]}#${pullM[2]}` };
+  }
+  const issueM = working.match(
+    /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/issues\/(\d+)/,
+  );
+  if (issueM) {
+    return { kind: "issue", display: `${issueM[1]}#${issueM[2]}` };
+  }
+
+  // owner/repo#N
+  if (working.includes("#")) {
+    const hashIdx = working.indexOf("#");
+    const ownerRepo = working.slice(0, hashIdx);
+    const number = working.slice(hashIdx + 1);
+    return { kind, display: `${ownerRepo}#${number}` };
+  }
+
+  // bare number
+  return { kind, display: `#${working}` };
+}
+
+export interface ResolvedLinkRef {
+  readonly kind: "pr" | "issue";
+  readonly display: string;
+  readonly title: string;
+}
+
+interface ResolvedRefParts {
+  kind: "" | "pr" | "issue";
+  ownerRepo: string;
+  number: string;
+  display: string;
+}
+
+function parseRefForResolve(ref: string): ResolvedRefParts {
+  let kind: "" | "pr" | "issue" = "";
+  let working = ref;
+  if (working.startsWith("pr:")) {
+    kind = "pr";
+    working = working.slice("pr:".length);
+  } else if (working.startsWith("issue:")) {
+    kind = "issue";
+    working = working.slice("issue:".length);
+  }
+
+  const pullM = working.match(
+    /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/(\d+)/,
+  );
+  if (pullM) {
+    return {
+      kind: "pr",
+      ownerRepo: pullM[1] ?? "",
+      number: pullM[2] ?? "",
+      display: `${pullM[1]}#${pullM[2]}`,
+    };
+  }
+  const issueM = working.match(
+    /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/issues\/(\d+)/,
+  );
+  if (issueM) {
+    return {
+      kind: "issue",
+      ownerRepo: issueM[1] ?? "",
+      number: issueM[2] ?? "",
+      display: `${issueM[1]}#${issueM[2]}`,
+    };
+  }
+  if (working.includes("#")) {
+    const hashIdx = working.indexOf("#");
+    const ownerRepo = working.slice(0, hashIdx);
+    const number = working.slice(hashIdx + 1);
+    return { kind, ownerRepo, number, display: `${ownerRepo}#${number}` };
+  }
+  return { kind, ownerRepo: "", number: working, display: `#${working}` };
+}
+
+/**
+ * Resolve a link ref to (kind, display, title). PR-first resolution per
+ * spec §3 (a bare 42 is a PR if it resolves; else tried as an issue).
+ * Cross-repo `owner/repo#N` supported. A `pr:N` / `issue:N` prefix
+ * short-circuits auto-detection. Refuses handoff-labeled issue targets
+ * (no link-cycles between handoff issues).
+ */
+export async function resolveLinkRef(
+  ref: string,
+  deps: HandoffDeps,
+): Promise<ResolvedLinkRef> {
+  // Project URLs: explicitly refused per spec §3 (deferred to Phase 12.2).
+  const projectsM = ref.match(/^https?:\/\/[^/]+\/.*\/projects\//);
+  if (projectsM) {
+    throw new HandoffError(
+      `link ref '${ref}': GitHub project-item linkage is DEFERRED to Phase 12.2 (spec §3 / OQ-12.7). For Phase 12.1, link PRs and issues only.`,
+    );
+  }
+
+  const parts = parseRefForResolve(ref);
+
+  if (parts.number === "" || !/^[0-9]+$/.test(parts.number)) {
+    throw new HandoffError(
+      `link ref '${ref}' is not a number, owner/repo#N, or supported URL (pull/issues).`,
+    );
+  }
+  if (!/^[1-9][0-9]*$/.test(parts.number)) {
+    throw new HandoffError(
+      `link ref '${ref}' must reference a positive integer (got '${parts.number}').`,
+    );
+  }
+
+  const viewArgs: string[] = [];
+  if (parts.ownerRepo) viewArgs.push("--repo", parts.ownerRepo);
+
+  let title = "";
+  let kind: "pr" | "issue" | undefined;
+
+  // PR-first (bash order is load-bearing — case 33).
+  if (parts.kind === "" || parts.kind === "pr") {
+    const prRes = await deps.gh([
+      "pr",
+      "view",
+      parts.number,
+      ...viewArgs,
+      "--json",
+      "title",
+      "--jq",
+      ".title",
+    ]);
+    if (prRes.code === 0) {
+      const t = prRes.stdout.trim();
+      if (t !== "") {
+        title = t;
+        kind = "pr";
+      }
+    }
+  }
+
+  if (title === "" && (parts.kind === "" || parts.kind === "issue")) {
+    const issueRes = await deps.gh([
+      "issue",
+      "view",
+      parts.number,
+      ...viewArgs,
+      "--json",
+      "title,labels",
+    ]);
+    if (issueRes.code === 0) {
+      let parsed: { title?: string; labels?: Array<{ name?: string }> };
+      try {
+        parsed = JSON.parse(issueRes.stdout);
+      } catch {
+        parsed = {};
+      }
+      const labels = (parsed.labels ?? []).map((l) => l.name);
+      if (labels.includes(HANDOFF_LABEL)) {
+        throw new HandoffError(
+          `refusing to link handoff issue ${parts.display} (no link-cycles between handoff issues).`,
+        );
+      }
+      kind = "issue";
+      title = typeof parsed.title === "string" ? parsed.title : "";
+    }
+  }
+
+  if (title === "" || kind === undefined) {
+    const where = parts.ownerRepo || "this repo";
+    throw new HandoffError(
+      `ref '${ref}' not found as PR or Issue in ${where}.`,
+    );
+  }
+
+  return { kind, display: parts.display, title };
+}
+
+// ---------------------------------------------------------------------------
+// Linked-items extraction (bash extract_linked_items).
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the `- (pr|issue) <ref> — <title>` entries from the LATEST
+ * agent-context block's `**Linked work items:**` section. Returns one
+ * entry per element (no trailing newline). Outputs nothing when there's
+ * no well-formed marker block or no linked-items section within it.
+ */
+export function extractLinkedItems(body: string): readonly string[] {
+  const lines = body.split("\n");
+  let lastOpen = -1;
+  let lastClose = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (line.includes(MARKER_OPEN)) lastOpen = i;
+    if (line.includes(MARKER_CLOSE)) lastClose = i;
+  }
+  if (lastOpen < 0 || lastClose <= lastOpen) return [];
+  const out: string[] = [];
+  let inBlk = false;
+  for (let i = lastOpen; i <= lastClose; i++) {
+    const line = lines[i] ?? "";
+    if (line.startsWith("**Linked work items:**")) {
+      inBlk = true;
+      continue;
+    }
+    if (!inBlk) continue;
+    if (/^- (pr|issue) /.test(line)) {
+      out.push(line);
+      continue;
+    }
+    if (/^_None linked\._/.test(line)) continue;
+    if (/^\s*$/.test(line)) continue;
+    // Anything else ends the section.
+    inBlk = false;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Age + ISO helpers (bash format_age + normalize_iso + iso_to_epoch).
+// ---------------------------------------------------------------------------
+
+/** Coarse relative age string: "just now" / "Nm ago" / "Nh ago" / "Nd ago". */
+export function formatAge(epochSec: number): string {
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - epochSec;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+/**
+ * Normalize an ISO-8601 timestamp to the canonical `YYYY-MM-DDTHH:MM:SSZ`
+ * form. Strip fractional seconds; treat any numeric offset as already UTC.
+ */
+export function normalizeIso(s: string): string {
+  return s
+    .replace(/\.[0-9]+(Z|[+-][0-9]{2}:?[0-9]{2})?$/, (_, suffix) => suffix ?? "")
+    .replace(/[+-][0-9]{2}:?[0-9]{2}$/, "Z");
+}
+
+/**
+ * Convert an ISO-8601 timestamp to epoch seconds. Returns undefined on
+ * parse failure — callers must distinguish "before cutoff" from
+ * "unparseable" (the rehydrate tier-2 path treats unparseable as
+ * "skip with a warn", NEVER as "pre-cutoff", which would silently
+ * default to "don't fall back").
+ */
+export function isoToEpoch(s: string): number | undefined {
+  const norm = normalizeIso(s);
+  if (norm === "") return undefined;
+  const ms = Date.parse(norm);
+  if (Number.isNaN(ms)) return undefined;
+  return Math.floor(ms / 1000);
+}
+
+// ---------------------------------------------------------------------------
+// Shared do_rehydrate (bash do_rehydrate).
+//
+// Used by runRehydrate (strict=false; per-item annotated, exit 0 on
+// partial unreachability) AND by runAccept step 3 (strict=true; any
+// unreachable aborts the chain so the issue stays on the stack).
+// ---------------------------------------------------------------------------
+
+interface IssueViewForRehydrate {
+  number: number;
+  title: string;
+  state: string;
+  assignees: Array<{ login: string }>;
+  labels: Array<{ name: string }>;
+  closedAt: string | null;
+  updatedAt: string;
+  body: string;
+}
+
+/**
+ * Result of doRehydrate. `text` is the pre-rendered stdout block (live
+ * state header + linked items + reasoning); `hasUnreachable` is true iff
+ * at least one linked work item was unreachable (informational for
+ * strict=false; promoted to a hard error in strict=true).
+ */
+export interface RehydrateResult {
+  readonly issue: string;
+  readonly text: string;
+  readonly hasUnreachable: boolean;
+}
+
+export async function doRehydrate(
+  issue: string,
+  strict: boolean,
+  deps: HandoffDeps,
+): Promise<RehydrateResult> {
+  const viewRes = await deps.gh([
+    "issue",
+    "view",
+    issue,
+    "--json",
+    "number,title,state,assignees,labels,closedAt,updatedAt,body",
+  ]);
+  if (viewRes.code !== 0) {
+    throw new HandoffError(
+      `could not derive live state for #${issue} (gh issue view failed) — fix gh/network and retry; do not proceed on the note alone.`,
+    );
+  }
+  let view: IssueViewForRehydrate;
+  try {
+    view = JSON.parse(viewRes.stdout);
+  } catch (err) {
+    throw new HandoffError(
+      `could not parse issue view JSON for #${issue}: ${(err as Error).message}`,
+    );
+  }
+
+  const out: string[] = [];
+  out.push(
+    `=== handoff #${issue} — LIVE STATE (script-derived; this is the truth, not the note) ===`,
+  );
+  // Title is operator-editable; strip control bytes before printing.
+  out.push(`  ${stripControlChars(view.title ?? "")}`);
+
+  if (view.state === "CLOSED") {
+    const closedAt = view.closedAt ?? "";
+    if (closedAt !== "") {
+      const day = closedAt.slice(0, 10);
+      out.push(`  state: closed (accepted ${day})`);
+    } else {
+      out.push(`  state: closed`);
+    }
+  } else {
+    const assignees = (view.assignees ?? []).map((a) => a.login).join(",");
+    if (assignees !== "") {
+      out.push(`  state: open (assigned ${assignees})`);
+    } else {
+      out.push(`  state: open (unassigned — on the stack)`);
+    }
+  }
+
+  const links = extractLinkedItems(view.body ?? "");
+  let linkFailures = 0;
+
+  if (links.length > 0) {
+    out.push("  --- linked work items ---");
+    for (const entry of links) {
+      // Entry shape: `- (pr|issue) <ref> — <title>`
+      const m = entry.match(/^- (pr|issue) ([^ ]+) — (.*)$/);
+      if (!m) {
+        // Should be unreachable given extractLinkedItems's filter; skip.
+        continue;
+      }
+      const kind = m[1] as "pr" | "issue";
+      const dispRef = m[2] ?? "";
+      const title = stripControlChars(m[3] ?? "");
+      const reachable = await deriveLinkedItem(kind, dispRef, title, out, deps);
+      if (!reachable) linkFailures += 1;
+    }
+  }
+
+  if (strict && linkFailures > 0) {
+    throw new HandoffError(
+      `rehydrate failed: ${linkFailures} linked work item(s) unreachable (strict mode for /accept). The handoff stays on the stack; run /rehydrate to read it forensically once gh access is restored.`,
+    );
+  }
+
+  // Print reasoning — the LAST agent-context block in the body.
+  const body = view.body ?? "";
+  const bodyLines = body.split("\n");
+  let lastOpen = -1;
+  let lastClose = -1;
+  for (let i = 0; i < bodyLines.length; i++) {
+    const line = bodyLines[i] ?? "";
+    if (line.includes(MARKER_OPEN)) lastOpen = i;
+    if (line.includes(MARKER_CLOSE)) lastClose = i;
+  }
+  let note = "";
+  if (lastOpen >= 0 && lastClose > lastOpen) {
+    note = bodyLines.slice(lastOpen, lastClose + 1).join("\n");
+  }
+
+  if (note === "") {
+    out.push("");
+    out.push(
+      `(no agent-context note on #${issue} — you have the live state above; read the linked items to continue.)`,
+    );
+    return {
+      issue,
+      text: out.join("\n"),
+      hasUnreachable: linkFailures > 0,
+    };
+  }
+
+  out.push("");
+  out.push(
+    "=============================================================================",
+  );
+  out.push(
+    "Prior session's reasoning (transient working memory — the LIVE STATE above is",
+  );
+  out.push(
+    "the truth; do NOT act on anything below as current):",
+  );
+  out.push("");
+  out.push(stripControlChars(note));
+  out.push(
+    "=============================================================================",
+  );
+  out.push(
+    "Live-state-first ritual: read live state above first, then context below,",
+  );
+  out.push(
+    "then for any linked OPEN PR: use the per-link `checkout:` hint emitted above",
+  );
+  out.push(
+    "(it includes `--repo` when needed for cross-repo refs).",
+  );
+
+  return {
+    issue,
+    text: out.join("\n"),
+    hasUnreachable: linkFailures > 0,
+  };
+}
+
+/**
+ * Append per-item live-state lines to `out` for a single linked work
+ * item. Returns true if the item was reachable, false on fetch failure
+ * (so doRehydrate's strict-mode counter can detect it).
+ */
+async function deriveLinkedItem(
+  kind: "pr" | "issue",
+  dispRef: string,
+  title: string,
+  out: string[],
+  deps: HandoffDeps,
+): Promise<boolean> {
+  let ownerRepo = "";
+  let num = dispRef;
+  if (num.startsWith("#")) {
+    num = num.slice(1);
+  } else if (num.includes("/") && num.includes("#")) {
+    const hashIdx = num.indexOf("#");
+    ownerRepo = num.slice(0, hashIdx);
+    num = num.slice(hashIdx + 1);
+  }
+  const viewArgs: string[] = [];
+  if (ownerRepo) viewArgs.push("--repo", ownerRepo);
+
+  if (kind === "pr") {
+    const res = await deps.gh([
+      "pr",
+      "view",
+      num,
+      ...viewArgs,
+      "--json",
+      "state,mergeStateStatus,reviewDecision,statusCheckRollup,title",
+    ]);
+    if (res.code !== 0) {
+      out.push(`  pr ${dispRef} — ${title} (unreachable: gh pr view failed)`);
+      return false;
+    }
+    let parsed: {
+      state?: string;
+      mergeStateStatus?: string;
+      reviewDecision?: string;
+      statusCheckRollup?: Array<{
+        state?: string;
+        conclusion?: string;
+        status?: string;
+      }>;
+    };
+    try {
+      parsed = JSON.parse(res.stdout);
+    } catch {
+      out.push(`  pr ${dispRef} — ${title} (unreachable: parse failed)`);
+      return false;
+    }
+    const pstate = parsed.state ?? "";
+    if (pstate === "MERGED") {
+      out.push(`  pr ${dispRef} — ${title} (merged)`);
+      return true;
+    }
+    if (pstate === "CLOSED") {
+      out.push(`  pr ${dispRef} — ${title} (closed)`);
+      return true;
+    }
+    const pmerge = parsed.mergeStateStatus ?? "";
+    const preview = parsed.reviewDecision ?? "";
+    const rollup = parsed.statusCheckRollup ?? [];
+    let checksSummary: string;
+    if (rollup.length === 0) {
+      checksSummary = "no checks";
+    } else {
+      const buckets = new Map<string, number>();
+      for (const r of rollup) {
+        const bucket = (r.conclusion ?? r.state ?? "UNKNOWN").toLowerCase();
+        buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
+      }
+      checksSummary = [...buckets.entries()]
+        .map(([k, v]) => `${v} ${k}`)
+        .join(", ");
+    }
+    out.push(
+      `  pr ${dispRef} — ${title} [mergeable: ${pmerge}, review: ${preview}, checks: ${checksSummary}]`,
+    );
+    if (ownerRepo) {
+      out.push(`              checkout: gh pr checkout ${num} --repo ${ownerRepo}`);
+    } else {
+      out.push(`              checkout: gh pr checkout ${num}`);
+    }
+    return true;
+  }
+
+  // issue
+  const res = await deps.gh([
+    "issue",
+    "view",
+    num,
+    ...viewArgs,
+    "--json",
+    "state,assignees,title",
+  ]);
+  if (res.code !== 0) {
+    out.push(`  issue ${dispRef} — ${title} (unreachable: gh issue view failed)`);
+    return false;
+  }
+  let parsed: { state?: string; assignees?: Array<{ login: string }> };
+  try {
+    parsed = JSON.parse(res.stdout);
+  } catch {
+    out.push(`  issue ${dispRef} — ${title} (unreachable: parse failed)`);
+    return false;
+  }
+  const istate = parsed.state ?? "";
+  if (istate === "CLOSED") {
+    out.push(`  issue ${dispRef} — ${title} (closed)`);
+    return true;
+  }
+  const ass = (parsed.assignees ?? []).map((a) => a.login).join(",");
+  if (ass !== "") {
+    out.push(`  issue ${dispRef} — ${title} [open, assigned ${ass}]`);
+  } else {
+    out.push(`  issue ${dispRef} — ${title} [open]`);
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// /handoff — put the baton down (spec §4.1).
 // ---------------------------------------------------------------------------
 
 export interface HandoffInput {
   /** Composed rehydration note body (with the v1 markers). */
   readonly note: string;
-  /** Explicit PR number (optional). Empty/undefined → resolve from branch. */
-  readonly pr?: string;
+  /** Optional Issue# (positive-integer string). Omit to auto-resolve. */
+  readonly issue?: string;
+  /** Zero or more --link refs (PR/issue refs: N, owner/repo#N, URL). */
+  readonly link?: readonly string[];
+  /** Zero or more --unlink refs. */
+  readonly unlink?: readonly string[];
+  /** --new: force-create a new issue even if @me has an open handoff. */
+  readonly new?: boolean;
 }
 
 export interface HandoffResult {
-  readonly pr: string;
-  /** html_url of the upserted note comment. */
+  /** The issue the note landed on. */
+  readonly issue: string;
+  /** html_url of the upserted handoff issue. */
   readonly noteUrl: string;
-  /** True iff `git push origin HEAD` succeeded (false when gate-blocked). */
-  readonly pushed: boolean;
-  /** True iff a fresh draft PR was opened (NO-PR path). */
-  readonly createdDraftPr: boolean;
+  /** True iff this call created the issue. */
+  readonly created: boolean;
   /** Operator-facing warnings accumulated along the way. */
   readonly warnings: readonly string[];
+}
+
+interface IssueViewForHandoff {
+  state: string;
+  labels: Array<{ name: string }>;
+  assignees: Array<{ login: string }>;
+  body: string;
+  updatedAt: string;
+}
+
+interface NoArgListEntry {
+  number: number;
+  title: string;
+  assignees: Array<{ login: string }>;
+  body: string;
 }
 
 export async function runHandoff(
   input: HandoffInput,
   deps: HandoffDeps,
 ): Promise<HandoffResult> {
+  requireIssueNumber(input.issue);
   await requireTools(deps);
+
   const warnings: string[] = [];
-  const explicitPr = input.pr !== undefined && input.pr !== "";
-
-  const branch = await currentBranch(deps);
-  if (branch === "HEAD" && !explicitPr) {
-    throw new HandoffError(
-      "detached HEAD — pass a PR number: df handoff <pr>",
-    );
-  }
-
-  let pr = explicitPr ? (input.pr as string) : "";
-  if (!pr) {
-    pr = (await prForBranch(deps, branch)) ?? "";
-  }
-  // Validate BEFORE any gh use of the (possibly user-supplied) PR arg.
-  requirePrNumber(pr || undefined);
-
-  // Branch-mismatch guard: if a PR was supplied EXPLICITLY and we're not
-  // detached, the note would land on that PR while `git push origin HEAD`
-  // pushes the CURRENT branch. A failed lookup must NOT silently pass.
-  if (explicitPr && branch !== "HEAD") {
-    const view = await deps.gh([
-      "pr",
-      "view",
-      pr,
-      "--json",
-      "headRefName",
-      "--jq",
-      ".headRefName",
-    ]);
-    if (view.code !== 0) {
-      throw new HandoffError(
-        `can't verify PR #${pr} (gh pr view failed — does it exist?); not posting blind.`,
-      );
-    }
-    const prBranch = view.stdout.trim();
-    if (prBranch !== branch) {
-      throw new HandoffError(
-        `PR #${pr} is for branch '${prBranch}' but you're on '${branch}' — refusing: the note would land on #${pr} while 'git push' pushes '${branch}'. Switch to '${prBranch}' or pass the matching PR.`,
-      );
-    }
-  }
-
   const body = input.note;
   if (!body.trim()) {
-    throw new HandoffError("empty note body — nothing to post.");
+    throw new HandoffError("empty note body on stdin — nothing to post.");
   }
 
-  // Validate markers BEFORE any network call.
-  if (!validateNoteMarkers(body)) {
+  // Validate LATEST block markers (same semantics as accept + rehydrate).
+  if (!validateLatestBlock(body)) {
     throw new HandoffError(
-      `note is missing/malformed agent-context markers (need ${MARKER_OPEN} … ${MARKER_CLOSE}) — compose it per the df.handoff prompt / handoff skill.`,
+      `note is missing/malformed agent-context markers (need ${MARKER_OPEN} … ${MARKER_CLOSE}) — compose per SKILL.md (single block, well-formed).`,
     );
   }
 
-  // Secret-scrub BEFORE any network call (the backstop control).
+  // Secret-scrub BEFORE any network call.
   const scrub = scrubSecrets(body);
   if (!scrub.clean) {
     deps.log(
-      `the note appears to contain secret-shaped content at line(s): ${scrub.lines.join(",")} — refusing to post.`,
-    );
-    deps.log(
-      "rephrase as a SETUP STEP (e.g. 'switch off the prod kube context'), never a secret value/path. See the df.handoff prompt § Security rule.",
+      `aborted: secret-shaped content in note:${scrub.lines.join(",")}; rephrase as setup steps (no value echo — see SKILL.md § Security rule).`,
     );
     throw new HandoffError(
       "aborted: secret-shaped content in the note (see above).",
     );
   }
 
-  // Dirty-worktree preflight — uncommitted TRACKED changes are NOT pushed
-  // by `git push origin HEAD`, so a handoff would label the PR "available"
-  // while the next session rehydrates a branch MISSING that work. Refuse.
-  // (Untracked files are warned about, not fatal — often scratch.)
+  // Dirty-worktree warning (D4: no push step).
   const unstaged = await deps.git(["diff", "--quiet"]);
   const staged = await deps.git(["diff", "--cached", "--quiet"]);
   if (unstaged.code !== 0 || staged.code !== 0) {
-    throw new HandoffError(
-      "uncommitted changes in the worktree — commit or stash them first, else this handoff drops them (the note points at a branch that won't have your work).",
-    );
-  }
-  const porcelain = await deps.git([
-    "status",
-    "--porcelain",
-    "--untracked-files=normal",
-  ]);
-  if (
-    porcelain.code === 0 &&
-    porcelain.stdout.split("\n").some((l) => l.startsWith("??"))
-  ) {
-    warnings.push(
-      "untracked files present — they won't be pushed; commit them too if they're part of this work.",
-    );
-    deps.log(warnings[warnings.length - 1] as string);
-  }
-
-  let noteUrl: string;
-  let pushed = false;
-  let createdDraftPr = false;
-
-  if (pr) {
-    // HAS-PR: post first (the note attaches regardless of the branch tip),
-    // then best-effort push.
-    noteUrl = await upsertNote(deps, pr, body);
-    deps.log(`note posted: ${noteUrl}`);
-    if (branch === "HEAD") {
-      // Detached HEAD (the explicit-PR escape hatch): can't push a branch.
-      const w =
-        `detached HEAD — not pushing. Ensure PR #${pr}'s branch already has your commits; the note is posted on #${pr}.`;
-      warnings.push(w);
-      deps.log(w);
-    } else {
-      const push = await deps.git(["push", "origin", "HEAD"]);
-      if (push.code === 0) {
-        pushed = true;
-      } else {
-        const w =
-          "branch tip is NOT on origin (push failed/blocked). Resolve the gate (make df-show COMMIT=HEAD) and push; the note is already saved on the PR.";
-        warnings.push(w);
-        deps.log(w);
-      }
-    }
-  } else {
-    // NO-PR: a PR is required to comment on, so the push is a hard prereq.
-    const push = await deps.git(["push", "origin", "HEAD"]);
-    if (push.code !== 0) {
-      throw new HandoffError(
-        "can't open a PR without pushing, and the push failed/was gate-blocked. Resolve the gate (make df-show COMMIT=HEAD) or open a PR manually, then re-run.",
-      );
-    }
-    pushed = true;
-    const create = await deps.gh([
-      "pr",
-      "create",
-      "--draft",
-      "--fill",
-      "--head",
-      branch,
-    ]);
-    if (create.code !== 0) {
-      throw new HandoffError(
-        `gh pr create failed: ${create.stderr.trim() || `exit ${create.code}`}`,
-      );
-    }
-    const createUrl = create.stdout.trim();
-    // Re-query the PR number ROBUSTLY — never parse the bare create output.
-    const num = await deps.gh([
-      "pr",
-      "view",
-      createUrl,
-      "--json",
-      "number",
-      "--jq",
-      ".number",
-    ]);
-    if (num.code !== 0) {
-      throw new HandoffError(
-        `opened a draft PR but couldn't read its number (${num.stderr.trim() || `exit ${num.code}`}).`,
-      );
-    }
-    pr = num.stdout.trim();
-    createdDraftPr = true;
-    deps.log(`opened draft PR #${pr}`);
-    noteUrl = await upsertNote(deps, pr, body);
-    deps.log(`note posted: ${noteUrl}`);
-  }
-
-  // Put it on the stack: label + leave open (remove self as assignee).
-  await ensureLabel(deps);
-  const addLabel = await deps.gh([
-    "pr",
-    "edit",
-    pr,
-    "--add-label",
-    HANDOFF_LABEL,
-  ]);
-  if (addLabel.code !== 0) {
-    const w = `couldn't add the '${HANDOFF_LABEL}' label to #${pr} — the note is posted; add it manually so /handoffs lists it.`;
+    const w =
+      "uncommitted tracked changes in the worktree — they won't be on a linked PR's diff. Commit/push them yourself if part of this work-stream.";
     warnings.push(w);
     deps.log(w);
   }
-  // Putting it DOWN → open on the stack (best-effort; bash used `|| true`).
-  await deps.gh(["pr", "edit", pr, "--remove-assignee", "@me"]);
 
-  deps.log(`#${pr} is on the handoff stack (open).`);
-  return { pr, noteUrl, pushed, createdDraftPr, warnings };
-}
+  // Resolve target issue.
+  let issue = input.issue ?? "";
+  let createNew = false;
+  let existingBody = "";
+  let initialUpdatedAt = "";
 
-// ---------------------------------------------------------------------------
-// /handoffs — list the stack.
-// ---------------------------------------------------------------------------
+  if (issue !== "") {
+    // Explicit issue path.
+    const viewRes = await deps.gh([
+      "issue",
+      "view",
+      issue,
+      "--json",
+      "state,labels,assignees,body,updatedAt",
+    ]);
+    if (viewRes.code !== 0) {
+      throw new HandoffError(
+        `can't verify issue #${issue} (gh issue view failed — does it exist in this repo?).`,
+      );
+    }
+    let view: IssueViewForHandoff;
+    try {
+      view = JSON.parse(viewRes.stdout);
+    } catch (err) {
+      throw new HandoffError(
+        `could not parse issue view JSON for #${issue}: ${(err as Error).message}`,
+      );
+    }
+    if (view.state === "CLOSED") {
+      throw new HandoffError(
+        `issue #${issue} is closed — the handoff was already accepted; start a fresh one (run \`/handoff\` with no argument).`,
+      );
+    }
+    const labelNames = (view.labels ?? []).map((l) => l.name);
+    const hasHandoffLabel = labelNames.includes(HANDOFF_LABEL);
+    existingBody = view.body ?? "";
+    if (!hasHandoffLabel) {
+      if (existingBody !== "") {
+        throw new HandoffError(
+          `issue #${issue} is not a handoff issue (no \`${HANDOFF_LABEL}\` label, non-empty body) — start a fresh handoff (\`/handoff\` with no argument), or pre-create an empty issue and apply the \`${HANDOFF_LABEL}\` label first.`,
+        );
+      }
+      // Empty shell — accept; label added later.
+    }
+    const me = await meLogin(deps);
+    const status = assigneesStatus(view.assignees ?? [], me);
+    if (status === "other") {
+      const others = assigneesOtherCsv(view.assignees ?? [], me);
+      throw new HandoffError(
+        `issue #${issue} is currently assigned to @${others} — coordinate with them or ask them to re-handoff (which un-assigns).`,
+      );
+    }
+    initialUpdatedAt = view.updatedAt ?? "";
+  } else {
+    // No-arg path.
+    const listRes = await deps.gh([
+      "issue",
+      "list",
+      "--label",
+      HANDOFF_LABEL,
+      "--state",
+      "open",
+      "--search",
+      "author:@me",
+      "--json",
+      "number,title,assignees,body",
+    ]);
+    if (listRes.code !== 0) {
+      throw new HandoffError(
+        "could not query existing handoffs (`gh issue list` failed) — not creating/updating; re-run when gh recovers.",
+      );
+    }
+    let entries: NoArgListEntry[];
+    try {
+      entries = JSON.parse(listRes.stdout);
+    } catch (err) {
+      throw new HandoffError(
+        `could not parse handoff list JSON: ${(err as Error).message}`,
+      );
+    }
+    const me = await meLogin(deps);
+    const eligible: NoArgListEntry[] = [];
+    const others: NoArgListEntry[] = [];
+    for (const e of entries) {
+      const status = assigneesStatus(e.assignees ?? [], me);
+      if (status === "empty" || status === "me") {
+        eligible.push(e);
+      } else {
+        others.push(e);
+      }
+    }
 
-export interface HandoffStackEntry {
-  readonly number: number;
-  readonly title: string;
-  readonly branch: string;
-  /** GitHub login of the current owner, or undefined when OPEN. */
-  readonly owner: string | undefined;
-  readonly updatedAt: string;
-}
+    const emitOthersAdvisory = (): void => {
+      for (const o of others) {
+        const otherLogins = (o.assignees ?? [])
+          .map((a) => a.login)
+          .join(",");
+        deps.log(
+          `the handoff you created at #${o.number} is now claimed by @${otherLogins} — creating a new handoff. To update #${o.number}'s body coordinate with @${otherLogins}.`,
+        );
+      }
+    };
 
-export interface HandoffsResult {
-  readonly entries: readonly HandoffStackEntry[];
-}
+    if (input.new === true || eligible.length === 0) {
+      createNew = true;
+      emitOthersAdvisory();
+    } else if (eligible.length === 1) {
+      const picked = eligible[0]!;
+      issue = String(picked.number);
+      // Re-fetch via view (list body may lag; need updatedAt for drift check).
+      const viewRes2 = await deps.gh([
+        "issue",
+        "view",
+        issue,
+        "--json",
+        "state,assignees,body,updatedAt",
+      ]);
+      if (viewRes2.code !== 0) {
+        throw new HandoffError(
+          `could not fetch state for #${issue} (gh issue view failed) — not PATCHing.`,
+        );
+      }
+      let view2: IssueViewForHandoff;
+      try {
+        view2 = JSON.parse(viewRes2.stdout);
+      } catch (err) {
+        throw new HandoffError(
+          `could not parse issue view JSON for #${issue}: ${(err as Error).message}`,
+        );
+      }
+      existingBody = view2.body ?? "";
+      initialUpdatedAt = view2.updatedAt ?? "";
+      deps.log(
+        `updated #${issue} instead of creating new — pass \`--new\` to force a new issue.`,
+      );
+    } else {
+      const nums = eligible
+        .map((e) => `#${e.number}`)
+        .join(",");
+      throw new HandoffError(
+        `multiple open handoffs owned by you: ${nums} — pick one (\`/handoff <issue>\`) or pass \`--new\` to force a new issue.`,
+      );
+    }
+  }
 
-export async function runHandoffs(deps: HandoffDeps): Promise<HandoffsResult> {
-  await requireTools(deps);
-  const res = await deps.gh([
-    "pr",
-    "list",
-    "--label",
-    HANDOFF_LABEL,
-    "--state",
-    "open",
-    "--json",
-    "number,title,headRefName,assignees,updatedAt",
-  ]);
-  if (res.code !== 0) {
-    throw new HandoffError(
-      `gh pr list (handoff stack) failed: ${res.stderr.trim() || `exit ${res.code}`}`,
+  // Compute linked-work-items entries via shared extractor.
+  const entries: string[] = [];
+  if (existingBody !== "") {
+    for (const ln of extractLinkedItems(existingBody)) {
+      entries.push(ln);
+    }
+  }
+
+  // Apply --link
+  const links = input.link ?? [];
+  for (const ref of links) {
+    const resolved = await resolveLinkRef(ref, deps);
+    if (!scrubSecretsInString(resolved.title, `linked work-item title for ${resolved.display}`, deps)) {
+      throw new HandoffError(
+        "aborted: linked-item title scrub refused (see above).",
+      );
+    }
+    const newEntry = `- ${resolved.kind} ${resolved.display} — ${resolved.title}`;
+    // Dedup by "- <kind> <display> —" prefix.
+    const prefix = `- ${resolved.kind} ${resolved.display} —`;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i]?.startsWith(prefix)) {
+        entries.splice(i, 1);
+      }
+    }
+    entries.push(newEntry);
+  }
+
+  // Apply --unlink
+  const unlinks = input.unlink ?? [];
+  for (const uref of unlinks) {
+    const canon = canonicalizeLinkRef(uref);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i] ?? "";
+      const m = e.match(/^- (pr|issue) (\S+) /);
+      if (!m) continue;
+      const eKind = m[1];
+      const eDisp = m[2];
+      if (
+        eDisp === canon.display &&
+        (canon.kind === "" || canon.kind === eKind)
+      ) {
+        entries.splice(i, 1);
+      }
+    }
+  }
+
+  // Auto-link single matching open PR (only when creating new + no explicit --link).
+  if (createNew && links.length === 0) {
+    const branch = await currentBranch(deps);
+    if (
+      branch !== "" &&
+      branch !== "HEAD" &&
+      branch !== "main" &&
+      branch !== "master"
+    ) {
+      const pr = await openPrForBranch(deps, branch);
+      if (pr !== undefined) {
+        if (!scrubSecretsInString(pr.title, `auto-linked PR #${pr.number} title`, deps)) {
+          throw new HandoffError(
+            "aborted: auto-linked PR title scrub refused (see above).",
+          );
+        }
+        entries.push(`- pr #${pr.number} — ${pr.title}`);
+      }
+    }
+  }
+
+  // Compose Linked work items section.
+  const linksSectionLines: string[] = ["**Linked work items:**"];
+  if (entries.length === 0) {
+    linksSectionLines.push("_None linked._");
+  } else {
+    for (const e of entries) linksSectionLines.push(e);
+  }
+  const linksSection = linksSectionLines.join("\n");
+
+  // Strip any pre-existing Linked work items section from the operator's
+  // note (defensive — the SKILL.md template tells operators not to include
+  // one), then insert the script-maintained section right before
+  // MARKER_CLOSE.
+  const noteStrippedLines: string[] = [];
+  const noteLines = body.split("\n");
+  {
+    let skip = false;
+    for (const line of noteLines) {
+      if (line.startsWith("**Linked work items:**")) {
+        skip = true;
+        continue;
+      }
+      if (skip && /^- (pr|issue) /.test(line)) continue;
+      if (skip && /^_None linked\._/.test(line)) continue;
+      if (skip && /^\s*$/.test(line)) {
+        skip = false;
+        continue;
+      }
+      if (skip) skip = false;
+      noteStrippedLines.push(line);
+    }
+  }
+
+  // Inject the section right before the MARKER_CLOSE line.
+  const newBlockLines: string[] = [];
+  for (const line of noteStrippedLines) {
+    if (line.includes(MARKER_CLOSE)) {
+      newBlockLines.push("");
+      for (const sl of linksSection.split("\n")) newBlockLines.push(sl);
+      newBlockLines.push("");
+      newBlockLines.push(line);
+    } else {
+      newBlockLines.push(line);
+    }
+  }
+  const newBlock = newBlockLines.join("\n");
+
+  // PATCH or CREATE
+  let noteUrl = "";
+  let created = false;
+
+  if (createNew) {
+    const branch = await currentBranch(deps);
+    let title: string;
+    if (
+      branch !== "" &&
+      branch !== "HEAD" &&
+      branch !== "main" &&
+      branch !== "master"
+    ) {
+      title = `Handoff: ${branch}`;
+    } else {
+      title = `Handoff: closeout @ ${todayIsoDate()}`;
+    }
+    // Scrub the generated title — fall back to date-only neutral title on match.
+    if (SECRET_PATTERN.test(title)) {
+      title = `Handoff: ${todayIsoDate()} (branch name redacted by scrub)`;
+      const w =
+        "branch name matched the secret-shaped pattern set — using a date-based title instead. Rename the branch if a descriptive title is needed.";
+      warnings.push(w);
+      deps.log(w);
+    }
+    await ensureLabel(deps);
+    const createRes = await deps.gh(
+      [
+        "issue",
+        "create",
+        "--title",
+        title,
+        "--body-file",
+        "-",
+        "--label",
+        HANDOFF_LABEL,
+      ],
+      { input: newBlock },
     );
-  }
-  const raw = res.stdout.trim();
-  if (!raw) return { entries: [] };
-  let parsed: Array<{
-    number: number;
-    title: string;
-    headRefName: string;
-    assignees: Array<{ login: string }>;
-    updatedAt: string;
-  }>;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new HandoffError(
-      `could not parse gh pr list JSON: ${(err as Error).message}`,
+    if (createRes.code !== 0) {
+      throw new HandoffError(
+        `gh issue create failed: ${createRes.stderr.trim() || `exit ${createRes.code}`}`,
+      );
+    }
+    // gh issue create prints the URL on stdout.
+    const createOut = createRes.stdout;
+    const urlM = createOut.match(/https?:\/\/\S+/);
+    const url = urlM ? urlM[0] : "";
+    const numM = createOut.match(/\/issues\/(\d+)/);
+    const num = numM?.[1];
+    if (num === undefined || num === "") {
+      throw new HandoffError(
+        `could not parse issue number from \`gh issue create\` output: ${createOut}`,
+      );
+    }
+    issue = num;
+    created = true;
+    noteUrl = url || `#${issue}`;
+    // Remove @me (newly-created issues are unassigned by default —
+    // belt-and-braces; ignore "not assigned" errors).
+    const rm = await deps.gh([
+      "issue",
+      "edit",
+      issue,
+      "--remove-assignee",
+      "@me",
+    ]);
+    if (rm.code !== 0 && !isBenignAssigneeRemovalError(rm.stderr)) {
+      const w = `couldn't remove @me from #${issue} (gh error): ${rm.stderr.trim()}.`;
+      warnings.push(w);
+      deps.log(w);
+    }
+    deps.log(`created handoff issue #${issue}: ${noteUrl}`);
+  } else {
+    // PATCH path — race-safety re-fetch.
+    const prePatchRes = await deps.gh([
+      "issue",
+      "view",
+      issue,
+      "--json",
+      "state,assignees,body,updatedAt",
+    ]);
+    if (prePatchRes.code !== 0) {
+      throw new HandoffError(
+        "could not re-fetch state for race check (gh error) — not PATCHing.",
+      );
+    }
+    let prePatch: IssueViewForHandoff;
+    try {
+      prePatch = JSON.parse(prePatchRes.stdout);
+    } catch (err) {
+      throw new HandoffError(
+        `could not parse pre-PATCH view JSON for #${issue}: ${(err as Error).message}`,
+      );
+    }
+    if (prePatch.state !== "OPEN") {
+      const msg = `issue #${issue} changed between fetch and intended PATCH — state is now ${prePatch.state} (concurrent \`/accept\` may have closed it). Your note was NOT posted; re-run \`/handoff\` with a fresh target if appropriate.`;
+      deps.log(msg);
+      throw new HandoffError(msg);
+    }
+    const me = await meLogin(deps);
+    const ppStatus = assigneesStatus(prePatch.assignees ?? [], me);
+    if (ppStatus === "other") {
+      const others = assigneesOtherCsv(prePatch.assignees ?? [], me);
+      const msg = `issue #${issue} changed between fetch and intended PATCH — now assigned to @${others} (concurrent \`/accept\` claimed it). Your note was NOT posted.`;
+      deps.log(msg);
+      throw new HandoffError(msg);
+    }
+    if (existingBody !== (prePatch.body ?? "")) {
+      const msg = `issue body changed between fetch and intended PATCH — your note was NOT posted. Re-run \`/handoff\` to splice against the new body.`;
+      deps.log(msg);
+      throw new HandoffError(msg);
+    }
+    if (
+      initialUpdatedAt !== "" &&
+      prePatch.updatedAt !== initialUpdatedAt
+    ) {
+      const w = `note: issue #${issue}.updatedAt changed since initial fetch (state/assignees/body unchanged — likely labels/metadata only). Proceeding.`;
+      warnings.push(w);
+      deps.log(w);
+    }
+
+    const newBody = spliceAgentContextBlock(existingBody, newBlock);
+    const editRes = await deps.gh(
+      ["issue", "edit", issue, "--body-file", "-"],
+      { input: newBody },
     );
+    if (editRes.code !== 0) {
+      throw new HandoffError(
+        "gh issue edit failed — body was NOT patched.",
+      );
+    }
+    await ensureLabel(deps);
+    // Label add: hard error on failure (the body PATCH landed, but the
+    // issue won't show on /handoffs without the label).
+    const addLabelRes = await deps.gh([
+      "issue",
+      "edit",
+      issue,
+      "--add-label",
+      HANDOFF_LABEL,
+    ]);
+    if (addLabelRes.code !== 0) {
+      throw new HandoffError(
+        `body patched but \`${HANDOFF_LABEL}\` label was NOT added (gh error) — issue #${issue} won't show up on /handoffs. Re-run \`/handoff ${issue}\` (idempotent) or add the label manually.`,
+      );
+    }
+    // Remove @me — ignore "not assigned" errors.
+    const rm = await deps.gh([
+      "issue",
+      "edit",
+      issue,
+      "--remove-assignee",
+      "@me",
+    ]);
+    if (rm.code !== 0 && !isBenignAssigneeRemovalError(rm.stderr)) {
+      const w = `couldn't remove @me from #${issue} (gh error): ${rm.stderr.trim()}. Verify the issue is unassigned with \`gh issue view ${issue}\`.`;
+      warnings.push(w);
+      deps.log(w);
+    }
+    deps.log(`updated handoff issue #${issue}`);
+    // Construct a noteUrl from gh's view (best-effort — use a synthesized
+    // form so callers always have something; html_url is not in the JSON
+    // we already fetched, but the issue ref is sufficient).
+    noteUrl = `#${issue}`;
   }
-  const entries = parsed
-    .slice()
-    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
-    .map((p) => ({
-      number: p.number,
-      title: p.title,
-      branch: p.headRefName,
-      owner: p.assignees.length > 0 ? p.assignees[0]?.login : undefined,
-      updatedAt: p.updatedAt,
-    }));
-  return { entries };
+
+  return { issue, noteUrl, created, warnings };
+}
+
+function todayIsoDate(): string {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(now.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function isBenignAssigneeRemovalError(stderr: string): boolean {
+  const s = stderr.toLowerCase();
+  return (
+    s.includes("not assigned") ||
+    s.includes("could not assign") ||
+    s.includes("cannot remove")
+  );
 }
 
 // ---------------------------------------------------------------------------
-// /rehydrate — read-only catch-up. NO ownership change.
-// ---------------------------------------------------------------------------
-
-export interface RehydrateInput {
-  /** Explicit PR (optional). Empty/undefined → resolve from branch. */
-  readonly pr?: string;
-}
-
-export interface RehydrateResult {
-  readonly pr: string;
-  /** Script-derived live state line(s) — the AUTHORITATIVE truth. */
-  readonly liveState: string;
-  /** `gh pr checks` output (informational; non-zero == checks failing). */
-  readonly checks: string;
-  /** Most-recent note body, control-chars stripped. undefined if none. */
-  readonly note: string | undefined;
-  /** The `gh pr checkout <pr>` footer (script-resolved PR number). */
-  readonly checkoutHint: string;
-}
-
-export async function runRehydrate(
-  input: RehydrateInput,
-  deps: HandoffDeps,
-): Promise<RehydrateResult> {
-  await requireTools(deps);
-  let pr = input.pr ?? "";
-  if (!pr) {
-    pr = (await prForBranch(deps, await currentBranch(deps))) ?? "";
-  }
-  if (!pr) {
-    throw new HandoffError(
-      "no PR for this branch — pass one: df rehydrate <pr>.",
-    );
-  }
-  requirePrNumber(pr);
-
-  // STEP ZERO — derive LIVE state FIRST (Commitment 5), with
-  // SCRIPT-CONTROLLED, fixed commands keyed off the resolved PR. This runs
-  // BEFORE the note fetch so a transient comments-API failure can never
-  // stop the operator from seeing the authoritative PR state. We never
-  // execute commands transcribed from a PR comment (injection vector).
-  const view = await deps.gh([
-    "pr",
-    "view",
-    pr,
-    "--json",
-    "title,headRefName,mergeStateStatus,reviewDecision,statusCheckRollup",
-    "--jq",
-    '"  \\(.title)\\n  branch:    \\(.headRefName)\\n  mergeable: \\(.mergeStateStatus)   review: \\(.reviewDecision)"',
-  ]);
-  // The live-state query is AUTHORITATIVE — do NOT suppress its failure (a
-  // silent blank would let the operator proceed on the note alone).
-  if (view.code !== 0) {
-    throw new HandoffError(
-      `could not derive live state for #${pr} (gh error) — fix gh/network and retry; do not proceed on the note alone.`,
-    );
-  }
-  const liveState = view.stdout.replace(/\n$/, "");
-
-  const checksRes = await deps.gh(["pr", "checks", pr]);
-  // Non-zero == checks failing (informational), not a script error.
-  const checks = checksRes.stdout.replace(/\n$/, "");
-
-  // Now fetch the MOST RECENT marked comment (consistent with upsert).
-  // Non-fatal: live state is already derived above.
-  let note: string | undefined;
-  try {
-    const raw = await markerCommentBody(deps, pr);
-    note = raw !== undefined ? stripControlChars(raw) : undefined;
-  } catch {
-    note = undefined; // note-fetch failure is context loss, not a hard error
-  }
-
-  return {
-    pr,
-    liveState,
-    checks,
-    ...(note !== undefined ? { note } : {}),
-    checkoutHint: `gh pr checkout ${pr}`,
-  } as RehydrateResult;
-}
-
-// ---------------------------------------------------------------------------
-// /accept — take the baton: claim ownership natively, then rehydrate.
+// /accept — take the baton (spec §4.3 atomic chain).
 // ---------------------------------------------------------------------------
 
 export interface AcceptInput {
-  readonly pr: string;
+  readonly issue: string;
 }
 
 export interface AcceptResult {
-  readonly pr: string;
-  /** True iff the handoff label was present and removed. */
-  readonly removedLabel: boolean;
-  readonly warnings: readonly string[];
-  /** The contained rehydrate (accept CONTAINS rehydrate). */
+  readonly issue: string;
   readonly rehydrate: RehydrateResult;
+}
+
+interface IssueViewForAccept {
+  state: string;
+  labels: Array<{ name: string }>;
+  assignees: Array<{ login: string }>;
+  body: string;
+  updatedAt: string;
 }
 
 export async function runAccept(
   input: AcceptInput,
   deps: HandoffDeps,
 ): Promise<AcceptResult> {
+  const issue = input.issue;
+  if (!issue) {
+    throw new HandoffError(
+      "which one? run /handoffs to see the stack, then /accept <issue>",
+    );
+  }
+  requireIssueNumber(issue);
   await requireTools(deps);
-  const pr = input.pr;
-  if (!pr) {
-    throw new HandoffError(
-      "which one? run df handoffs to see the stack, then df accept <pr>.",
-    );
-  }
-  requirePrNumber(pr);
 
-  const warnings: string[] = [];
-
-  const assign = await deps.gh(["pr", "edit", pr, "--add-assignee", "@me"]);
-  if (assign.code !== 0) {
-    throw new HandoffError(
-      `could not assign yourself to #${pr}: ${assign.stderr.trim() || `exit ${assign.code}`}`,
-    );
-  }
-
-  // Three distinct cases: (a) label-query gh error → say so; (b) label
-  // present → remove it; (c) label absent → "wasn't on the stack".
-  let removedLabel = false;
-  const labelsRes = await deps.gh([
-    "pr",
+  // ---- step 1: validate (read-only) -------------------------------------
+  const viewRes = await deps.gh([
+    "issue",
     "view",
-    pr,
+    issue,
     "--json",
-    "labels",
-    "--jq",
-    ".labels[].name",
+    "state,labels,assignees,body,updatedAt",
   ]);
-  if (labelsRes.code === 0) {
-    const labels = labelsRes.stdout
-      .split("\n")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    if (labels.includes(HANDOFF_LABEL)) {
-      const rm = await deps.gh([
-        "pr",
-        "edit",
-        pr,
-        "--remove-label",
-        HANDOFF_LABEL,
-      ]);
-      if (rm.code === 0) {
-        removedLabel = true;
-      } else {
-        const w = `couldn't remove the '${HANDOFF_LABEL}' label from #${pr} (gh error) — you're assigned; verify with df handoffs.`;
-        warnings.push(w);
-        deps.log(w);
-      }
-    } else {
-      const w = `#${pr} wasn't on the handoff stack (no '${HANDOFF_LABEL}' label) — assigning you anyway.`;
-      warnings.push(w);
-      deps.log(w);
-    }
-  } else {
-    const w = `couldn't check #${pr}'s labels (gh error) — you're assigned; verify the stack with df handoffs.`;
-    warnings.push(w);
-    deps.log(w);
+  if (viewRes.code !== 0) {
+    throw new HandoffError(
+      `could not fetch issue #${issue} (gh error) — not mutating.`,
+    );
   }
-  deps.log(`accepted #${pr} — assigned to you. Rehydrating…`);
+  let view: IssueViewForAccept;
+  try {
+    view = JSON.parse(viewRes.stdout);
+  } catch (err) {
+    throw new HandoffError(
+      `could not parse issue view JSON for #${issue}: ${(err as Error).message}`,
+    );
+  }
+  if (view.state === "CLOSED") {
+    throw new HandoffError(
+      `issue #${issue} is closed — the handoff was already accepted.`,
+    );
+  }
+  if (view.state !== "OPEN") {
+    throw new HandoffError(
+      `issue #${issue} in unexpected state: ${view.state}`,
+    );
+  }
+  const hasHandoffLabel = (view.labels ?? [])
+    .map((l) => l.name)
+    .includes(HANDOFF_LABEL);
+  if (!hasHandoffLabel) {
+    throw new HandoffError(
+      `issue #${issue} is not a handoff issue (no \`${HANDOFF_LABEL}\` label).`,
+    );
+  }
+  if (!validateLatestBlock(view.body ?? "")) {
+    throw new HandoffError(
+      `issue #${issue} has no parseable agent-context block in the body (missing, malformed, or reversed markers — or the latest block is malformed) — refusing to accept (and close) a handoff with no reasoning artifact. Use \`/handoff ${issue}\` to add a well-formed note first.`,
+    );
+  }
+  const me = await meLogin(deps);
+  const initialAssignees = view.assignees ?? [];
+  const initialStatus = assigneesStatus(initialAssignees, me);
+  const initialUpdatedAt = view.updatedAt ?? "";
 
-  // accept CONTAINS rehydrate.
-  const rehydrate = await runRehydrate({ pr }, deps);
-  return { pr, removedLabel, warnings, rehydrate };
+  // ---- step 2: refuse if assigned to @other -----------------------------
+  if (initialStatus === "other") {
+    const others = assigneesOtherCsv(initialAssignees, me);
+    throw new HandoffError(
+      `issue #${issue} is currently assigned to @${others} — coordinate with them or ask them to re-handoff (which un-assigns).`,
+    );
+  }
+
+  // ---- step 3: rehydrate (strict=true; any failure aborts the chain) ---
+  let rehydrate: RehydrateResult;
+  try {
+    rehydrate = await doRehydrate(issue, true, deps);
+  } catch (err) {
+    if (err instanceof HandoffError) {
+      throw new HandoffError(
+        `rehydrate failed for #${issue} — leaving on the stack; no mutation.`,
+      );
+    }
+    throw err;
+  }
+
+  // ---- step 4: pre-assign drift check -----------------------------------
+  const driftRes = await deps.gh([
+    "issue",
+    "view",
+    issue,
+    "--json",
+    "state,assignees,updatedAt",
+  ]);
+  if (driftRes.code !== 0) {
+    throw new HandoffError(
+      `could not re-fetch issue #${issue} for drift check — not mutating.`,
+    );
+  }
+  let drift: { state: string; assignees: Array<{ login: string }>; updatedAt: string };
+  try {
+    drift = JSON.parse(driftRes.stdout);
+  } catch (err) {
+    throw new HandoffError(
+      `could not parse drift view JSON for #${issue}: ${(err as Error).message}`,
+    );
+  }
+  if (drift.state !== "OPEN") {
+    const msg = `issue #${issue} changed between validation and assign — state is now ${drift.state}. Another receiver may have claimed it; re-run \`/accept\` to retry against the new state, or check \`/handoffs\` for the current stack.`;
+    deps.log(msg);
+    throw new HandoffError(msg);
+  }
+  const driftStatus = assigneesStatus(drift.assignees ?? [], me);
+  if (driftStatus === "other") {
+    const msg = `issue #${issue} changed between validation and assign — another receiver may have claimed it; re-run \`/accept\` to retry against the new state, or check \`/handoffs\` for the current stack.`;
+    deps.log(msg);
+    throw new HandoffError(msg);
+  }
+  if (drift.updatedAt !== initialUpdatedAt) {
+    // Allowed only for the close-failure retry path (initial was @me + drift is @me).
+    if (!(initialStatus === "me" && driftStatus === "me")) {
+      const msg = `issue #${issue} was edited between validation and assign (initial=${initialStatus}, drift=${driftStatus}) — re-run \`/accept\` to retry against the new state.`;
+      deps.log(msg);
+      throw new HandoffError(msg);
+    }
+  }
+
+  // ---- step 5: assign @me ----------------------------------------------
+  const assignRes = await deps.gh([
+    "issue",
+    "edit",
+    issue,
+    "--add-assignee",
+    "@me",
+  ]);
+  if (assignRes.code !== 0) {
+    const msg = `couldn't assign @me on #${issue} (gh error) — leaving on the stack.`;
+    deps.log(msg);
+    throw new HandoffError(msg);
+  }
+  deps.log(`accepted #${issue} — assigned to you.`);
+
+  // ---- step 6: post-assign verify --------------------------------------
+  const postRes = await deps.gh([
+    "issue",
+    "view",
+    issue,
+    "--json",
+    "assignees",
+  ]);
+  if (postRes.code !== 0) {
+    const msg = `couldn't verify post-assign state on #${issue} — leaving open + assigned; don't close.`;
+    deps.log(msg);
+    throw new HandoffError(msg);
+  }
+  let post: { assignees: Array<{ login: string }> };
+  try {
+    post = JSON.parse(postRes.stdout);
+  } catch (err) {
+    throw new HandoffError(
+      `could not parse post-assign view JSON for #${issue}: ${(err as Error).message}`,
+    );
+  }
+  const postStatus = assigneesStatus(post.assignees ?? [], me);
+  if (postStatus !== "me") {
+    const others = assigneesOtherCsv(post.assignees ?? [], me);
+    const msg = `collision detected after assign — issue #${issue} now has assignees [${others}]. Do not close. Coordinate with the other receiver(s); the operator may \`gh issue edit ${issue} --remove-assignee <other>\` or hand the baton off explicitly.`;
+    deps.log(msg);
+    throw new HandoffError(msg);
+  }
+
+  // ---- step 7: close (Commitment 10) -----------------------------------
+  const closeRes = await deps.gh(["issue", "close", issue]);
+  if (closeRes.code !== 0) {
+    const msg = `assigned but not closed — re-run \`/accept ${issue}\` to complete the close, or close manually as an operator-acknowledged exception.`;
+    deps.log(msg);
+    // Recoverable — return without throwing so callers see assigned-not-closed.
+    return { issue, rehydrate };
+  }
+  deps.log(`closed #${issue} — handoff event complete.`);
+  return { issue, rehydrate };
+}
+
+// ---------------------------------------------------------------------------
+// /rehydrate — read-only catch-up (spec §4.4).
+// ---------------------------------------------------------------------------
+
+export interface RehydrateInput {
+  /** Issue# (optional). Omit for two-tier auto-resolution. */
+  readonly issue?: string;
+}
+
+export async function runRehydrate(
+  input: RehydrateInput,
+  deps: HandoffDeps,
+): Promise<RehydrateResult> {
+  requireIssueNumber(input.issue);
+  await requireTools(deps);
+
+  let issue = input.issue ?? "";
+  if (issue === "") {
+    // Tier 1: most recent open handoff-labeled issue assigned to @me.
+    const tier1Res = await deps.gh([
+      "issue",
+      "list",
+      "--label",
+      HANDOFF_LABEL,
+      "--state",
+      "open",
+      "--assignee",
+      "@me",
+      "--json",
+      "number,updatedAt",
+      "--jq",
+      "sort_by(.updatedAt) | reverse | .[0].number // empty",
+    ]);
+    if (tier1Res.code !== 0) {
+      throw new HandoffError(
+        "could not query in-flight handoffs (`gh issue list` failed) — re-run when gh recovers.",
+      );
+    }
+    const tier1 = tier1Res.stdout.trim();
+    if (tier1 !== "") {
+      issue = tier1;
+    } else {
+      // Tier 2: most recent CLOSED handoff-labeled issue assigned to @me within 7d.
+      const tier2Res = await deps.gh([
+        "issue",
+        "list",
+        "--label",
+        HANDOFF_LABEL,
+        "--state",
+        "closed",
+        "--assignee",
+        "@me",
+        "--json",
+        "number,closedAt",
+        "--jq",
+        "sort_by(.closedAt) | reverse | .[0]",
+      ]);
+      if (tier2Res.code !== 0) {
+        throw new HandoffError(
+          "could not query closed handoffs (`gh issue list` failed) — re-run when gh recovers.",
+        );
+      }
+      const tier2Raw = tier2Res.stdout.trim();
+      if (tier2Raw !== "" && tier2Raw !== "null") {
+        let parsed: { number?: number; closedAt?: string | null };
+        try {
+          parsed = JSON.parse(tier2Raw);
+        } catch {
+          parsed = {};
+        }
+        const candNumber = parsed?.number !== undefined ? String(parsed.number) : "";
+        const candClosedAt = parsed?.closedAt ?? "";
+        if (candNumber !== "" && candClosedAt !== "" && candClosedAt !== null) {
+          // UNPARSEABLE timestamp must skip with warn — NEVER pre-cutoff.
+          const candEpoch = isoToEpoch(candClosedAt);
+          if (candEpoch === undefined) {
+            deps.log(
+              `could not parse closedAt timestamp '${candClosedAt}' — skipping tier-2 closed-handoff fallback for #${candNumber}.`,
+            );
+          } else {
+            const nowEpoch = Math.floor(Date.now() / 1000);
+            const cutoff = nowEpoch - REHYDRATE_CLOSED_WINDOW_DAYS * 86400;
+            if (candEpoch >= cutoff) {
+              issue = candNumber;
+            }
+          }
+        }
+      }
+    }
+    if (issue === "") {
+      throw new HandoffError(
+        `no in-flight handoff (open + assigned-to-@me) and no recent closed handoff (within ${REHYDRATE_CLOSED_WINDOW_DAYS}d) — see \`/handoffs\` for the unassigned stack, or \`/handoff\` to start a new one.`,
+      );
+    }
+  }
+
+  return doRehydrate(issue, false, deps);
+}
+
+// ---------------------------------------------------------------------------
+// /handoffs — list the stack (spec §4.2).
+// ---------------------------------------------------------------------------
+
+export interface HandoffsRow {
+  readonly number: number;
+  readonly title: string;
+  readonly ageStr: string;
+  readonly linkedCount: number;
+}
+
+export interface HandoffsResult {
+  readonly rows: readonly HandoffsRow[];
+  /** Pre-rendered table text for CLI stdout. */
+  readonly text: string;
+}
+
+interface IssueRowJson {
+  number: number;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  body: string;
+}
+
+export async function runHandoffs(deps: HandoffDeps): Promise<HandoffsResult> {
+  await requireTools(deps);
+  const res = await deps.gh([
+    "issue",
+    "list",
+    "--label",
+    HANDOFF_LABEL,
+    "--state",
+    "open",
+    "--search",
+    "no:assignee",
+    "--json",
+    "number,title,createdAt,updatedAt,body",
+    "--jq",
+    "sort_by(.updatedAt)",
+  ]);
+  if (res.code !== 0) {
+    throw new HandoffError(
+      "gh issue list failed — cannot render the handoff stack.",
+    );
+  }
+  const raw = res.stdout.trim();
+  if (raw === "" || raw === "[]") {
+    return {
+      rows: [],
+      text: `handoff stack is empty (no open, unassigned issues labeled '${HANDOFF_LABEL}').`,
+    };
+  }
+  let entries: IssueRowJson[];
+  try {
+    entries = JSON.parse(raw);
+  } catch (err) {
+    throw new HandoffError(
+      `could not parse handoff stack JSON: ${(err as Error).message}`,
+    );
+  }
+  if (entries.length === 0) {
+    return {
+      rows: [],
+      text: `handoff stack is empty (no open, unassigned issues labeled '${HANDOFF_LABEL}').`,
+    };
+  }
+
+  const rows: HandoffsRow[] = [];
+  const textLines: string[] = ["Handoff stack (oldest → newest):"];
+  for (const e of entries) {
+    const title = stripControlChars(e.title ?? "");
+    const linkedCount = extractLinkedItems(e.body ?? "").length;
+    const epoch = isoToEpoch(e.updatedAt ?? "");
+    const ageStr = epoch !== undefined ? formatAge(epoch) : "?";
+    const linked = linkedCount === 0 ? "none" : `${linkedCount} items`;
+    rows.push({
+      number: e.number,
+      title,
+      ageStr,
+      linkedCount,
+    });
+    textLines.push(`#${e.number} · ${title} · ${ageStr} · linked: ${linked}`);
+  }
+  textLines.push("");
+  textLines.push("Pick one:  /accept <issue>");
+  return { rows, text: textLines.join("\n") };
 }

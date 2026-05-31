@@ -1,4 +1,4 @@
-// Integration tests for the cycle8 handoff MCP tools.
+// Integration tests for the Cycle 12 (Issue-anchored) handoff MCP tools.
 //
 // Drive df_handoff / df_handoffs / df_rehydrate / df_accept over the SDK's
 // in-memory transport with injected `gh`/`git` runners (via
@@ -8,16 +8,17 @@
 // network. The exhaustive behavior matrix lives in
 // tests/handoff/handoff-core.test.ts; here we pin the MCP surface.
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createMcpServer } from "../../../src/mcp/server.js";
-import type {
-  ExecResult,
-  GhRunner,
-  GitRunner,
+import {
+  _resetMeLoginCacheForTest,
+  type ExecResult,
+  type GhRunner,
+  type GitRunner,
 } from "../../../src/handoff/index.js";
 
 const MARK_O = "<!-- agent-context:v1 -->";
@@ -26,49 +27,96 @@ const MARK_C = "<!-- /agent-context:v1 -->";
 const OK: ExecResult = { code: 0, stdout: "", stderr: "" };
 const out = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: "" });
 
+const ME = "alice";
+
 interface FakeGhOpts {
-  branch?: string;
-  prForBranch?: string;
-  markerIds?: number[];
-  commentBody?: string;
-  prLabels?: string[];
+  /** When true, `issue view <issue> --json state,labels,assignees,body,updatedAt`
+   * returns an OPEN handoff with the supplied body. */
+  issueBody?: string;
+  /** Override for the issue's state (default: OPEN). */
+  state?: string;
+  /** Override for the issue's labels (default: ['handoff']). */
+  labels?: string[];
+  /** Override for the issue's assignees (default: []). */
+  assignees?: Array<{ login: string }>;
+  /** Stack JSON for `issue list --label handoff --state open --search no:assignee`. */
   stackJson?: string;
 }
 
 function fakeGh(opts: FakeGhOpts, calls: string[]): GhRunner {
-  const branch = opts.branch ?? "feature/x";
+  const labels = opts.labels ?? ["handoff"];
+  const assignees = opts.assignees ?? [];
+  const state = opts.state ?? "OPEN";
+  const body = opts.issueBody ?? `${MARK_O}\nreasoning\n${MARK_C}\n`;
+  const updatedAt = "2026-05-30T00:00:00Z";
   return async (args) => {
     const a = args.join(" ");
     calls.push(a);
     if (a === "--version") return out("gh 2.0\n");
     if (a === "auth status") return OK;
-    if (a.startsWith("pr list --head"))
-      return out(opts.prForBranch ? `${opts.prForBranch}\n` : "");
-    if (a.startsWith("pr list --label handoff")) return out(opts.stackJson ?? "[]");
-    if (a.includes("--json title,headRefName,mergeStateStatus"))
-      return out(`  PR\n  branch:    ${branch}\n  mergeable: CLEAN   review: APPROVED\n`);
-    if (a.includes("--json headRefName")) return out(`${branch}\n`);
-    if (a.includes("--json labels")) return out((opts.prLabels ?? ["handoff"]).join("\n") + "\n");
-    if (a.includes("--json number")) return out("77\n");
-    if (a.startsWith("pr checks")) return out("all green\n");
-    if (a.includes("/comments --paginate --slurp")) {
-      const ids = opts.markerIds ?? [];
-      return out(JSON.stringify([ids.map((id) => ({ id, body: `${MARK_O} marked` }))]));
+    if (a === "api user --jq .login") return out(`${ME}\n`);
+    if (a.startsWith("issue list --label handoff --state open --search no:assignee")) {
+      return out(opts.stackJson ?? "[]");
     }
-    if (a.includes("issues/comments/") && a.includes("--jq .body"))
-      return out((opts.commentBody ?? `${MARK_O}\n${MARK_C}`) + "\n");
-    if (a.includes("--method PATCH")) return out("https://gh/pull/1#c-patched\n");
-    if (a.includes("--method POST")) return out("https://gh/pull/1#c-posted\n");
-    return OK; // label create, pr edit, …
+    if (a.startsWith("issue list --label handoff --state open --assignee @me")) {
+      return out("");
+    }
+    if (a.startsWith("issue list --label handoff --state closed --assignee @me")) {
+      return out("");
+    }
+    // Issue view variants (different --json field lists).
+    if (a.startsWith("issue view ") && a.includes("--json state,labels,assignees,body,updatedAt")) {
+      return out(
+        JSON.stringify({
+          state,
+          labels: labels.map((n) => ({ name: n })),
+          assignees,
+          body,
+          updatedAt,
+        }),
+      );
+    }
+    if (a.startsWith("issue view ") && a.includes("--json state,assignees,body,updatedAt")) {
+      return out(JSON.stringify({ state, assignees, body, updatedAt }));
+    }
+    if (a.startsWith("issue view ") && a.includes("--json state,assignees,updatedAt")) {
+      return out(JSON.stringify({ state, assignees, updatedAt }));
+    }
+    if (a.startsWith("issue view ") && a.includes("--json assignees")) {
+      // Post-assign verify: assume the assign succeeded.
+      return out(JSON.stringify({ assignees: [{ login: ME }] }));
+    }
+    if (a.startsWith("issue view ") && a.includes("--json number,title,state,assignees,labels,closedAt,updatedAt,body")) {
+      return out(
+        JSON.stringify({
+          number: 42,
+          title: "test handoff",
+          state,
+          assignees,
+          labels: labels.map((n) => ({ name: n })),
+          closedAt: null,
+          updatedAt,
+          body,
+        }),
+      );
+    }
+    if (a.startsWith("issue edit")) return OK;
+    if (a.startsWith("issue close")) return OK;
+    if (a.startsWith("issue create")) return out("https://github.com/o/r/issues/100\n");
+    if (a.startsWith("label create")) return OK;
+    if (a.startsWith("pr list --head")) return out("[]");
+    return OK;
   };
 }
 
-function fakeGit(opts: { branch?: string } = {}, calls: string[]): GitRunner {
+function fakeGit(calls: string[]): GitRunner {
   return async (args) => {
     const a = args.join(" ");
     calls.push(`git ${a}`);
-    if (a === "rev-parse --abbrev-ref HEAD") return out(`${opts.branch ?? "feature/x"}\n`);
-    return OK; // diff --quiet, push, status, …
+    if (a === "rev-parse --abbrev-ref HEAD") return out("feature/x\n");
+    if (a === "diff --quiet") return OK;
+    if (a === "diff --cached --quiet") return OK;
+    return OK;
   };
 }
 
@@ -87,33 +135,36 @@ async function openClient(serverOpts: Parameters<typeof createMcpServer>[0]) {
   };
 }
 
-describe("cycle8 handoff MCP tools", () => {
-  it("df_handoff posts the note, labels the PR, returns structured result", async () => {
+beforeEach(() => {
+  _resetMeLoginCacheForTest();
+});
+
+describe("cycle12 handoff MCP tools", () => {
+  it("df_handoff updates an explicit handoff issue, returns structured result", async () => {
     const calls: string[] = [];
     const { client, close } = await openClient({
-      _testHandoffGh: fakeGh({ prForBranch: "42", markerIds: [] }, calls),
-      _testHandoffGit: fakeGit({}, calls),
+      _testHandoffGh: fakeGh({}, calls),
+      _testHandoffGit: fakeGit(calls),
     });
     try {
       const result = await client.callTool({
         name: "df_handoff",
         arguments: {
           note: `${MARK_O}\n\n**Branch:** feature/x\n\nwhy: chose path 1\n${MARK_C}\n`,
+          issue: "42",
         },
       });
       expect(result.isError).toBeFalsy();
       const s = result.structuredContent as {
-        pr: string;
+        issue: string;
         note_url: string;
-        pushed: boolean;
-        created_draft_pr: boolean;
+        created: boolean;
         warnings: string[];
       };
-      expect(s.pr).toBe("42");
-      expect(s.note_url).toMatch(/c-posted/);
-      expect(s.pushed).toBe(true);
-      expect(calls.some((c) => c.includes("--method POST repos/{owner}/{repo}/issues/42/comments"))).toBe(true);
-      expect(calls.some((c) => c.includes("pr edit 42 --add-label handoff"))).toBe(true);
+      expect(s.issue).toBe("42");
+      expect(s.created).toBe(false);
+      expect(calls.some((c) => c.startsWith("issue edit 42 --body-file"))).toBe(true);
+      expect(calls.some((c) => c === "issue edit 42 --add-label handoff")).toBe(true);
     } finally {
       await close();
     }
@@ -122,24 +173,25 @@ describe("cycle8 handoff MCP tools", () => {
   it("df_handoff refuses a secret-shaped note (isError, nothing posted)", async () => {
     const calls: string[] = [];
     const { client, close } = await openClient({
-      _testHandoffGh: fakeGh({ prForBranch: "42" }, calls),
-      _testHandoffGit: fakeGit({}, calls),
+      _testHandoffGh: fakeGh({}, calls),
+      _testHandoffGit: fakeGit(calls),
     });
     try {
       const result = await client.callTool({
         name: "df_handoff",
         arguments: {
           note: `${MARK_O}\nleftover: AKIAIOSFODNN7EXAMPLE\n${MARK_C}\n`,
+          issue: "42",
         },
       });
       expect(result.isError).toBe(true);
-      expect(calls.some((c) => c.includes("--method POST"))).toBe(false);
-      expect(calls.some((c) => c.includes("--method PATCH"))).toBe(false);
+      expect(calls.some((c) => c.startsWith("issue edit"))).toBe(false);
+      expect(calls.some((c) => c.startsWith("issue create"))).toBe(false);
       // The matched value is never echoed back — only line numbers.
       const text = (result.content as Array<{ type: string; text?: string }>).find(
         (c) => c.type === "text",
       )?.text;
-      expect(text).not.toContain("AKIA");
+      expect(text).not.toContain("AKIAIOSFODNN7EXAMPLE");
     } finally {
       await close();
     }
@@ -148,140 +200,128 @@ describe("cycle8 handoff MCP tools", () => {
   it("df_handoff refuses a note missing the v1 markers (isError)", async () => {
     const calls: string[] = [];
     const { client, close } = await openClient({
-      _testHandoffGh: fakeGh({ prForBranch: "42" }, calls),
-      _testHandoffGit: fakeGit({}, calls),
+      _testHandoffGh: fakeGh({}, calls),
+      _testHandoffGit: fakeGit(calls),
     });
     try {
       const result = await client.callTool({
         name: "df_handoff",
-        arguments: { note: "no markers here" },
+        arguments: { note: "no markers here", issue: "42" },
       });
       expect(result.isError).toBe(true);
-      expect(calls.some((c) => c.includes("--method"))).toBe(false);
+      expect(calls.some((c) => c.startsWith("issue edit"))).toBe(false);
     } finally {
       await close();
     }
   });
 
-  it("df_rehydrate returns live_state FIRST + the newest note, read-only", async () => {
-    const calls: string[] = [];
-    const { client, close } = await openClient({
-      _testHandoffGh: fakeGh(
-        { markerIds: [900], commentBody: `${MARK_O}\nwhy: chose path 1\n${MARK_C}` },
-        calls,
-      ),
-      _testHandoffGit: fakeGit({}, calls),
-    });
-    try {
-      const result = await client.callTool({
-        name: "df_rehydrate",
-        arguments: { pr: "42" },
-      });
-      expect(result.isError).toBeFalsy();
-      const s = result.structuredContent as {
-        pr: string;
-        live_state: string;
-        checks: string;
-        note?: string;
-        checkout_hint: string;
-      };
-      expect(s.pr).toBe("42");
-      expect(s.live_state).toMatch(/mergeable: CLEAN/);
-      expect(s.note).toContain("why: chose path 1");
-      expect(s.checkout_hint).toBe("gh pr checkout 42");
-      // The rendered text leads with LIVE STATE (the truth, not the note).
-      const text = (result.content as Array<{ type: string; text?: string }>).find(
-        (c) => c.type === "text",
-      )?.text;
-      expect(text?.split("\n")[0]).toMatch(/LIVE STATE/);
-      // Read-only: no assignee/label mutation.
-      expect(calls.some((c) => c.includes("--add-assignee"))).toBe(false);
-      expect(calls.some((c) => c.includes("--remove-label"))).toBe(false);
-    } finally {
-      await close();
-    }
-  });
-
-  it("df_rehydrate rejects a non-numeric PR before any gh call (isError)", async () => {
+  it("df_rehydrate returns the live-state text + reasoning, read-only", async () => {
     const calls: string[] = [];
     const { client, close } = await openClient({
       _testHandoffGh: fakeGh({}, calls),
-      _testHandoffGit: fakeGit({}, calls),
+      _testHandoffGit: fakeGit(calls),
     });
     try {
       const result = await client.callTool({
         name: "df_rehydrate",
-        arguments: { pr: "42; echo PWNED" },
+        arguments: { issue: "42" },
       });
-      expect(result.isError).toBe(true);
-      expect(calls.some((c) => c.startsWith("pr view"))).toBe(false);
+      expect(result.isError).toBeFalsy();
+      const s = result.structuredContent as {
+        issue: string;
+        text: string;
+        has_unreachable: boolean;
+      };
+      expect(s.issue).toBe("42");
+      expect(s.text).toMatch(/LIVE STATE/);
+      expect(s.text).toContain("reasoning");
+      // Read-only: no mutating calls.
+      expect(calls.some((c) => c.startsWith("issue edit"))).toBe(false);
+      expect(calls.some((c) => c.startsWith("issue close"))).toBe(false);
     } finally {
       await close();
     }
   });
 
-  it("df_accept assigns @me, removes the label, and rehydrates", async () => {
+  it("df_rehydrate rejects a non-numeric issue before any gh call (isError)", async () => {
     const calls: string[] = [];
     const { client, close } = await openClient({
-      _testHandoffGh: fakeGh(
-        { markerIds: [900], prLabels: ["handoff"], commentBody: `${MARK_O}\nwhy\n${MARK_C}` },
-        calls,
-      ),
-      _testHandoffGit: fakeGit({}, calls),
+      _testHandoffGh: fakeGh({}, calls),
+      _testHandoffGit: fakeGit(calls),
+    });
+    try {
+      const result = await client.callTool({
+        name: "df_rehydrate",
+        arguments: { issue: "42; echo PWNED" },
+      });
+      expect(result.isError).toBe(true);
+      expect(calls.some((c) => c.startsWith("issue view"))).toBe(false);
+    } finally {
+      await close();
+    }
+  });
+
+  it("df_accept runs the atomic chain (assign + close)", async () => {
+    const calls: string[] = [];
+    const { client, close } = await openClient({
+      _testHandoffGh: fakeGh({}, calls),
+      _testHandoffGit: fakeGit(calls),
     });
     try {
       const result = await client.callTool({
         name: "df_accept",
-        arguments: { pr: "42" },
+        arguments: { issue: "42" },
       });
       expect(result.isError).toBeFalsy();
       const s = result.structuredContent as {
-        pr: string;
-        removed_label: boolean;
-        rehydrate: { live_state: string };
+        issue: string;
+        rehydrate: { issue: string; text: string; has_unreachable: boolean };
       };
-      expect(s.pr).toBe("42");
-      expect(s.removed_label).toBe(true);
-      expect(s.rehydrate.live_state).toMatch(/mergeable/);
-      expect(calls.some((c) => c.includes("pr edit 42 --add-assignee @me"))).toBe(true);
-      expect(calls.some((c) => c.includes("pr edit 42 --remove-label handoff"))).toBe(true);
+      expect(s.issue).toBe("42");
+      expect(s.rehydrate.text).toMatch(/LIVE STATE/);
+      expect(calls.some((c) => c === "issue edit 42 --add-assignee @me")).toBe(true);
+      expect(calls.some((c) => c === "issue close 42")).toBe(true);
     } finally {
       await close();
     }
   });
 
-  it("df_handoffs lists the open stack, sorted oldest → newest", async () => {
+  it("df_handoffs lists the open unassigned stack (issue-list, with linked count)", async () => {
     const calls: string[] = [];
     const stack = JSON.stringify([
       {
-        number: 42,
-        title: "fix",
-        headRefName: "feature/x",
-        assignees: [],
-        updatedAt: "2026-05-29T00:00:00Z",
-      },
-      {
         number: 7,
         title: "old",
-        headRefName: "feature/y",
-        assignees: [{ login: "alice" }],
+        createdAt: "2026-05-28T00:00:00Z",
         updatedAt: "2026-05-28T00:00:00Z",
+        body: "",
+      },
+      {
+        number: 42,
+        title: "fix",
+        createdAt: "2026-05-29T00:00:00Z",
+        updatedAt: "2026-05-29T00:00:00Z",
+        body: `${MARK_O}\n**Linked work items:**\n- pr #100 — a\n- issue #200 — b\n${MARK_C}\n`,
       },
     ]);
     const { client, close } = await openClient({
       _testHandoffGh: fakeGh({ stackJson: stack }, calls),
-      _testHandoffGit: fakeGit({}, calls),
+      _testHandoffGit: fakeGit(calls),
     });
     try {
       const result = await client.callTool({ name: "df_handoffs", arguments: {} });
       expect(result.isError).toBeFalsy();
       const s = result.structuredContent as {
-        entries: Array<{ number: number; owner?: string }>;
+        rows: Array<{ number: number; title: string; age: string; linked_count: number }>;
       };
-      expect(s.entries.map((e) => e.number)).toEqual([7, 42]);
-      expect(s.entries[0]?.owner).toBe("alice");
-      expect(s.entries[1]?.owner).toBeUndefined();
-      expect(calls.some((c) => c.includes("pr list --label handoff --state open"))).toBe(true);
+      expect(s.rows.map((r) => r.number)).toEqual([7, 42]);
+      expect(s.rows[0]?.linked_count).toBe(0);
+      expect(s.rows[1]?.linked_count).toBe(2);
+      expect(
+        calls.some((c) =>
+          c.startsWith("issue list --label handoff --state open --search no:assignee"),
+        ),
+      ).toBe(true);
     } finally {
       await close();
     }

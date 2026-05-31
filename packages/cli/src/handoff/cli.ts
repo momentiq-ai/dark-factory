@@ -1,21 +1,22 @@
 // CLI surface for the four handoff verbs — `df handoff` / `df accept` /
-// `df rehydrate` / `df handoffs` (Cycle 8 Phase 8.2).
+// `df rehydrate` / `df handoffs` (Cycle 12 — Issue-anchored).
 //
 // Thin renderers over src/handoff/index.ts (the shared core). They own
 // only the CLI ergonomics the bash scripts had: stdin for the note body
-// (mirroring `handoff.sh < note.md`), the live-state-FIRST print order of
-// `df rehydrate`, the formatted stack table, and the operator-facing
+// (mirroring `handoff.sh < note.md`), the live-state-first print order
+// of `df rehydrate`, the formatted stack table, and the operator-facing
 // exit codes. All judgment + mechanism lives in the core + the prompts.
 
 import {
   HandoffError,
   defaultDeps,
+  requireSafeArgs,
   runAccept,
   runHandoff,
   runHandoffs,
   runRehydrate,
   type HandoffDeps,
-  type RehydrateResult,
+  type HandoffInput,
 } from "./index.js";
 
 function err(line: string): void {
@@ -40,6 +41,61 @@ async function readStdinUtf8(): Promise<string> {
   });
 }
 
+/**
+ * Parse the `df handoff` arg list into (issue, links, unlinks, new). Mirrors
+ * the bash handoff.sh while-loop. Throws on unknown flags or missing values.
+ */
+function parseHandoffArgs(rest: string[]): {
+  issue?: string;
+  link: string[];
+  unlink: string[];
+  forceNew: boolean;
+} {
+  const args = [...rest];
+  let issue: string | undefined;
+  const link: string[] = [];
+  const unlink: string[] = [];
+  let forceNew = false;
+  while (args.length > 0) {
+    const a = args.shift()!;
+    if (a === "--link") {
+      const v = args.shift();
+      if (v === undefined) {
+        throw new HandoffError(
+          "--link requires a value (e.g. --link 103 or --link owner/repo#42).",
+        );
+      }
+      link.push(v);
+    } else if (a === "--unlink") {
+      const v = args.shift();
+      if (v === undefined) {
+        throw new HandoffError("--unlink requires a value.");
+      }
+      unlink.push(v);
+    } else if (a === "--new") {
+      forceNew = true;
+    } else if (a === "--") {
+      break;
+    } else if (a.startsWith("-")) {
+      throw new HandoffError(`unknown flag: ${a}`);
+    } else {
+      if (issue === undefined) {
+        issue = a;
+      } else {
+        throw new HandoffError(
+          `unexpected positional argument: ${a} (only one [issue] allowed).`,
+        );
+      }
+    }
+  }
+  return {
+    ...(issue !== undefined ? { issue } : {}),
+    link,
+    unlink,
+    forceNew,
+  };
+}
+
 // ----- df handoff -----
 export async function cmdHandoff(rest: string[]): Promise<number> {
   if (rest.includes("--help") || rest.includes("-h")) {
@@ -48,7 +104,7 @@ export async function cmdHandoff(rest: string[]): Promise<number> {
         "df handoff — put a work-stream on the handoff stack.",
         "",
         "Usage:",
-        "  df handoff [pr] < note.md",
+        "  df handoff [issue] [--link <ref>]... [--unlink <ref>]... [--new] < note.md",
         "",
         "Reads the composed rehydration note on stdin (compose it from your",
         "ACTUAL working memory per the `df.handoff` prompt / handoff skill —",
@@ -58,14 +114,12 @@ export async function cmdHandoff(rest: string[]): Promise<number> {
         "",
         "Mechanism: scrubs the body for secret-shaped content (refuses on a",
         "match — line numbers only, never the value), upserts the marker-bounded",
-        "note on the PR (auto-creating a DRAFT PR if the branch has none), adds",
-        "the `handoff` label, and leaves the PR unassigned (open on the stack).",
-        "Posts the note BEFORE pushing so your reasoning survives even if the",
-        "pre-push critic gate blocks (Decision D5).",
+        "note as the body of a dedicated handoff GitHub Issue (auto-creating one",
+        "if none is supplied), maintains the **Linked work items:** section, adds",
+        "the `handoff` label, and leaves the issue unassigned (open on the stack).",
         "",
-        "Refuses on: detached HEAD without an explicit [pr], an explicit [pr]",
-        "whose branch ≠ your current branch, uncommitted tracked changes, a note",
-        "missing the markers, or secret-shaped content.",
+        "Refuses on: a note missing the markers, secret-shaped content, an",
+        "explicit issue that is closed / not a handoff / claimed by @other.",
         "",
         "Requires: gh (authenticated).",
         "",
@@ -73,8 +127,17 @@ export async function cmdHandoff(rest: string[]): Promise<number> {
     );
     return 0;
   }
-  const positional = rest.filter((a) => !a.startsWith("-"));
-  const pr = positional[0];
+  let parsed: ReturnType<typeof parseHandoffArgs>;
+  try {
+    requireSafeArgs(...rest);
+    parsed = parseHandoffArgs(rest);
+  } catch (e) {
+    if (e instanceof HandoffError) {
+      err(e.message);
+      return 1;
+    }
+    throw e;
+  }
   let note: string;
   try {
     note = await readStdinUtf8();
@@ -83,16 +146,24 @@ export async function cmdHandoff(rest: string[]): Promise<number> {
     return 1;
   }
   if (!note.trim()) {
-    err("empty note body on stdin — pipe the composed note in: df handoff [pr] < note.md");
+    err(
+      "empty note body on stdin — pipe the composed note in: df handoff [issue] < note.md",
+    );
     return 1;
   }
   try {
-    const result = await runHandoff(
-      { note, ...(pr !== undefined ? { pr } : {}) },
-      cliDeps(),
+    const input: HandoffInput = {
+      note,
+      ...(parsed.issue !== undefined ? { issue: parsed.issue } : {}),
+      link: parsed.link,
+      unlink: parsed.unlink,
+      ...(parsed.forceNew ? { new: true } : {}),
+    };
+    const result = await runHandoff(input, cliDeps());
+    process.stdout.write(`${result.noteUrl}\n`);
+    process.stdout.write(
+      `#${result.issue} ${result.created ? "created" : "updated"} on the handoff stack (open, unassigned).\n`,
     );
-    process.stdout.write(`note: ${result.noteUrl}\n`);
-    process.stdout.write(`#${result.pr} is on the handoff stack (open).\n`);
     return 0;
   } catch (e) {
     if (e instanceof HandoffError) {
@@ -109,35 +180,23 @@ export async function cmdHandoffs(rest: string[]): Promise<number> {
   if (rest.includes("--help") || rest.includes("-h")) {
     process.stdout.write(
       [
-        "df handoffs — list the stack of handed-off PRs.",
+        "df handoffs — list the stack of handed-off issues.",
         "",
         "Usage:",
         "  df handoffs",
         "",
-        "Lists open PRs labeled `handoff` (oldest → newest) with number, title,",
-        "branch, OPEN-or-owner:<login>, and age. Per-repo (run it in each repo",
-        "you work across). Pick an OPEN one and `df accept <pr>` it.",
+        "Lists open issues labeled `handoff` with no assignee (oldest → newest)",
+        "with number, title, age, and linked-work-items count. Per-repo (run it",
+        "in each repo you work across). Pick one and `df accept <issue>` it.",
         "",
       ].join("\n"),
     );
     return 0;
   }
   try {
-    const { entries } = await runHandoffs(cliDeps());
-    if (entries.length === 0) {
-      process.stdout.write(
-        `handoff stack is empty (no open PRs labeled '${"handoff"}').\n`,
-      );
-      return 0;
-    }
-    process.stdout.write("Handoff stack (oldest → newest):\n");
-    for (const e of entries) {
-      const owner = e.owner ? `owner:${e.owner}` : "OPEN";
-      process.stdout.write(
-        `#${e.number}  ${e.title}  [${e.branch}]  ${owner}  (updated ${e.updatedAt})\n`,
-      );
-    }
-    process.stdout.write("\nPick one:  df accept <pr>\n");
+    requireSafeArgs(...rest);
+    const r = await runHandoffs(cliDeps());
+    process.stdout.write(`${r.text}\n`);
     return 0;
   } catch (e) {
     if (e instanceof HandoffError) {
@@ -148,70 +207,48 @@ export async function cmdHandoffs(rest: string[]): Promise<number> {
   }
 }
 
-function printRehydrate(r: RehydrateResult): void {
-  // Live state FIRST — the truth, not the note.
-  process.stdout.write(
-    `=== #${r.pr} — LIVE STATE (script-derived; this is the truth, not the note) ====\n`,
-  );
-  process.stdout.write(`${r.liveState}\n`);
-  process.stdout.write("  --- checks ---\n");
-  if (r.checks) process.stdout.write(`${r.checks}\n`);
-
-  if (r.note === undefined) {
-    process.stdout.write(
-      `\n(no agent-context note on #${r.pr} — you have the live state above; read the diff to continue.)\n`,
-    );
-    return;
-  }
-  process.stdout.write("\n");
-  process.stdout.write(
-    "=============================================================================\n",
-  );
-  process.stdout.write(
-    "Prior session's reasoning (transient working memory — the LIVE STATE above is\n",
-  );
-  process.stdout.write("the truth; do NOT act on anything below as current):\n\n");
-  process.stdout.write(`${r.note}\n`);
-  process.stdout.write(
-    "=============================================================================\n",
-  );
-  process.stdout.write(
-    `Check out the PR's branch (script-resolved, NOT the note's text):  ${r.checkoutHint}\n`,
-  );
-}
-
 // ----- df rehydrate -----
 export async function cmdRehydrate(rest: string[]): Promise<number> {
   if (rest.includes("--help") || rest.includes("-h")) {
     process.stdout.write(
       [
-        "df rehydrate — read-only catch-up on a PR's rehydration note.",
+        "df rehydrate — read-only catch-up on a handoff issue.",
         "",
         "Usage:",
-        "  df rehydrate [pr]",
+        "  df rehydrate [issue]",
         "",
         "NO ownership change — for resuming your OWN in-flight work (reboot,",
-        "model upgrade). Resolves the PR (argument, else the current branch's",
-        "open PR), derives LIVE state ITSELF (script-controlled gh pr view /",
-        "gh pr checks) and prints it FIRST, then the most-recent note's reasoning.",
+        "model upgrade). With no argument, resolves to the most recent open",
+        "handoff issue assigned to @me, falling back to the most recent closed",
+        `handoff issue accepted by @me within ${"7d"}.`,
         "",
-        "The note is untrusted PR-comment text: it is printed with control/ESC",
-        "bytes stripped, and NOTHING transcribed from it is ever executed. To",
-        "take over someone else's handoff, use `df accept` (which claims",
-        "ownership, then rehydrates).",
+        "Derives LIVE state itself for the issue and each linked work item",
+        "(script-controlled gh ... --json calls), then prints the reasoning. The",
+        "body is untrusted operator-editable text: it is printed with control/ESC",
+        "bytes stripped, and NOTHING transcribed from it is executed. To take",
+        "over someone else's handoff, use `df accept`.",
         "",
       ].join("\n"),
     );
     return 0;
   }
+  try {
+    requireSafeArgs(...rest);
+  } catch (e) {
+    if (e instanceof HandoffError) {
+      err(e.message);
+      return 1;
+    }
+    throw e;
+  }
   const positional = rest.filter((a) => !a.startsWith("-"));
-  const pr = positional[0];
+  const issue = positional[0];
   try {
     const r = await runRehydrate(
-      pr !== undefined ? { pr } : {},
+      issue !== undefined ? { issue } : {},
       cliDeps(),
     );
-    printRehydrate(r);
+    process.stdout.write(`${r.text}\n`);
     return 0;
   } catch (e) {
     if (e instanceof HandoffError) {
@@ -227,17 +264,16 @@ export async function cmdAccept(rest: string[]): Promise<number> {
   if (rest.includes("--help") || rest.includes("-h")) {
     process.stdout.write(
       [
-        "df accept — take the baton: claim a handoff, then rehydrate.",
+        "df accept — take the baton on a handoff issue.",
         "",
         "Usage:",
-        "  df accept <pr>",
+        "  df accept <issue>",
         "",
-        "Assigns you (the assignee = who holds the baton), removes the `handoff`",
-        "label (GitHub's PR timeline records the acceptance — who + when), then",
-        "rehydrates: derives LIVE state itself and prints it FIRST, then the",
-        "note's reasoning. Then follow the live-state-first ritual: read the live",
-        "state as the truth, check out the branch with `gh pr checkout <pr>`,",
-        "run project setup, continue. Never run commands transcribed from the note.",
+        "Atomic chain: validate (read-only) → refuse on other-assignee →",
+        "rehydrate STRICT (live state for issue + every linked work item) →",
+        "pre-assign drift check → assign @me → post-assign verify → close",
+        "(Commitment 10 — handoff event complete; the closed issue with the",
+        "handoff label is the audit).",
         "",
         "Use `df rehydrate` instead when no transfer is happening (you already",
         "own the work).",
@@ -246,16 +282,24 @@ export async function cmdAccept(rest: string[]): Promise<number> {
     );
     return 0;
   }
+  try {
+    requireSafeArgs(...rest);
+  } catch (e) {
+    if (e instanceof HandoffError) {
+      err(e.message);
+      return 1;
+    }
+    throw e;
+  }
   const positional = rest.filter((a) => !a.startsWith("-"));
-  const pr = positional[0];
-  if (pr === undefined) {
-    err("which one? run df handoffs to see the stack, then df accept <pr>.");
+  const issue = positional[0];
+  if (issue === undefined) {
+    err("which one? run df handoffs to see the stack, then df accept <issue>.");
     return 1;
   }
   try {
-    const result = await runAccept({ pr }, cliDeps());
-    process.stdout.write(`accepted #${result.pr} — assigned to you.\n\n`);
-    printRehydrate(result.rehydrate);
+    const result = await runAccept({ issue }, cliDeps());
+    process.stdout.write(`${result.rehydrate.text}\n`);
     return 0;
   } catch (e) {
     if (e instanceof HandoffError) {

@@ -8,6 +8,7 @@
   "prerelease": true,
   "prerelease-type": "alpha",
   "versioning-strategy": "prerelease",
+  "bump-minor-pre-major": true,
   "packages": {
     "packages/cli": {
       "package-name": "@momentiq/dark-factory-cli",
