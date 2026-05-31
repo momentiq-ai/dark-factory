@@ -109,16 +109,19 @@ function makeTurn(opts: {
   finalResponse?: string;
   inputTokens?: number;
   outputTokens?: number;
+  cachedInputTokens?: number;
   items?: unknown[];
 } = {}): CodexTurnResult {
   return {
     finalResponse: opts.finalResponse ?? APPROVED_RESPONSE_JSON,
     items: opts.items ?? [],
     usage:
-      opts.inputTokens !== undefined || opts.outputTokens !== undefined
+      opts.inputTokens !== undefined ||
+      opts.outputTokens !== undefined ||
+      opts.cachedInputTokens !== undefined
         ? {
             input_tokens: opts.inputTokens ?? 0,
-            cached_input_tokens: 0,
+            cached_input_tokens: opts.cachedInputTokens ?? 0,
             output_tokens: opts.outputTokens ?? 0,
             reasoning_output_tokens: 0,
           }
@@ -1188,4 +1191,86 @@ test("review: model emits `gate` instead of `command` in qualityGateResults — 
   // The validation block gets overwritten with packet evidence (empty in
   // this test packet) — ends up empty AND schema-valid.
   expect_eq(result.validation.qualityGateResults.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Cycle 6.3 — per-critic telemetry on the returned CriticResult
+// (the EMIT-event payload was previously the only place tokens
+// surfaced — this lifts them onto the artifact-shaped result too,
+// so the hosted runtime persists + prices them).
+
+test("review: CriticResult carries tokensInput/Output/Cached + retries from turn.usage (success path)", async () => {
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: APPROVED_RESPONSE_JSON,
+        inputTokens: 1500,
+        outputTokens: 280,
+        cachedInputTokens: 4200,
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "test-key",
+    createCodex: () => ({ startThread: mockClient.startThread }),
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.tokensInput, 1500);
+  expect_eq(result.tokensOutput, 280);
+  expect_eq(result.tokensCached, 4200);
+  expect_eq(result.retries, 0);
+});
+
+test("review: CriticResult omits token fields when turn.usage is null (vendor didn't report)", async () => {
+  const mockClient = makeMockClient({
+    run: async () => makeTurn({ finalResponse: APPROVED_RESPONSE_JSON }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "test-key",
+    createCodex: () => ({ startThread: mockClient.startThread }),
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.tokensInput, undefined);
+  expect_eq(result.tokensOutput, undefined);
+  expect_eq(result.tokensCached, undefined);
+  // retries is still stamped on the success path (zero retries = first
+  // attempt succeeded). It's the canonical "this critic ran cleanly"
+  // counter, independent of vendor usage reporting.
+  expect_eq(result.retries, 0);
+});
+
+test("review: CriticResult populates tokensInput/Output but not tokensCached when vendor omits cached_input_tokens", async () => {
+  // Vendors that report input/output but no separate cached count
+  // (e.g., gemini's usageMetadata, grok-direct's response.usage).
+  // The codex SDK always reports a `cached_input_tokens` number, so
+  // this test exercises the field-presence guard semantics: only
+  // numbers populate; absence stays absent.
+  const mockClient = makeMockClient({
+    run: async () => ({
+      finalResponse: APPROVED_RESPONSE_JSON,
+      items: [],
+      usage: {
+        input_tokens: 800,
+        // cached_input_tokens intentionally omitted to simulate
+        // vendor that doesn't break it out
+        output_tokens: 120,
+        reasoning_output_tokens: 0,
+      } as unknown as CodexTurnResult["usage"],
+    }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "test-key",
+    createCodex: () => ({ startThread: mockClient.startThread }),
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.tokensInput, 800);
+  expect_eq(result.tokensOutput, 120);
+  expect_eq(result.tokensCached, undefined);
 });

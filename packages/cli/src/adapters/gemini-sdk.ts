@@ -515,6 +515,18 @@ export class GeminiSdkAdapter implements CriticAdapter {
     const enriched: CriticResult = {
       ...result,
       durationMs,
+      // Cycle 6.3 — surface per-critic telemetry on the artifact-
+      // shaped result. Gemini reports tokens via usageMetadata on
+      // streamed chunks (latest non-null chunk wins). The Google AI
+      // SDK does not currently expose a cached-prefix token count on
+      // usageMetadata; tokensCached stays undefined.
+      retries: attemptIdx,
+      ...(typeof lastUsage?.promptTokenCount === "number"
+        ? { tokensInput: lastUsage.promptTokenCount }
+        : {}),
+      ...(typeof lastUsage?.candidatesTokenCount === "number"
+        ? { tokensOutput: lastUsage.candidatesTokenCount }
+        : {}),
       validation: {
         qualityGateResults: packet.validation.evidence,
         qualityGatesMissing: packet.validation.missing,

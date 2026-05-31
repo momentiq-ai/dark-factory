@@ -814,3 +814,44 @@ test("doctor: model not in cursor-agent models output → fail with config-edit 
 test("CURSOR_CLI_AUTH_CHATGPT === 'chatgpt'", () => {
   expect_eq(CURSOR_CLI_AUTH_CHATGPT, "chatgpt");
 });
+
+// ---------------------------------------------------------------------------
+// Cycle 6.3 — per-critic telemetry on the returned CriticResult.
+// cursor-agent's stream-json result event carries usage.inputTokens /
+// usage.outputTokens; surface them on the artifact-shaped result so
+// the hosted runtime persists + prices them.
+
+test("review: CriticResult carries tokensInput/Output + retries from usage event (success path)", async () => {
+  const { runner } = makeRunner({
+    outcome: { events: buildSuccessEvents({ inputTokens: 1100, outputTokens: 220 }) },
+  });
+  const adapter = new CursorCliAdapter({ runCursorAgentCli: runner });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.tokensInput, 1100);
+  expect_eq(result.tokensOutput, 220);
+  // cursor-agent does not report a cached-prefix token count today.
+  expect_eq(result.tokensCached, undefined);
+  expect_eq(result.retries, 0);
+});
+
+test("review: CriticResult omits token fields when usage is null", async () => {
+  // Build success events that omit the usage block entirely.
+  const events = buildSuccessEvents();
+  // Strip usage from the result event (last in the array).
+  const lastIdx = events.length - 1;
+  const last = events[lastIdx] as { usage?: unknown };
+  delete last.usage;
+  const { runner } = makeRunner({ outcome: { events } });
+  const adapter = new CursorCliAdapter({ runCursorAgentCli: runner });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.tokensInput, undefined);
+  expect_eq(result.tokensOutput, undefined);
+  // retries: 0 still stamped on the success path.
+  expect_eq(result.retries, 0);
+});

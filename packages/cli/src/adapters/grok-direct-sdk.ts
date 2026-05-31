@@ -697,6 +697,18 @@ export class GrokDirectSdkAdapter implements CriticAdapter {
     const enriched: CriticResult = {
       ...result,
       durationMs,
+      // Cycle 6.3 — surface per-critic telemetry on the artifact-
+      // shaped result. Grok reports input/output via response.usage
+      // on the response.completed event (latest non-null wins,
+      // captured in `lastUsage`). GrokUsage today does not expose a
+      // cached-prefix token count; tokensCached stays undefined.
+      retries: attemptIdx,
+      ...(typeof lastUsage?.input_tokens === "number"
+        ? { tokensInput: lastUsage.input_tokens }
+        : {}),
+      ...(typeof lastUsage?.output_tokens === "number"
+        ? { tokensOutput: lastUsage.output_tokens }
+        : {}),
       validation: {
         qualityGateResults: packet.validation.evidence,
         qualityGatesMissing: packet.validation.missing,

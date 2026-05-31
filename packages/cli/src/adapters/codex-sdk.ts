@@ -906,6 +906,22 @@ export class CodexSdkAdapter implements CriticAdapter {
     const enriched: CriticResult = {
       ...result,
       durationMs,
+      // Cycle 6.3 — surface per-critic telemetry on the artifact-
+      // shaped result so the hosted runtime can persist + price it.
+      // Field-presence guards: only numbers populate; absence stays
+      // absent (a vendor that omits cached_input_tokens, for example,
+      // does NOT get tokensCached: 0 — that would falsely report a
+      // populated cached-prefix telemetry signal).
+      retries: attemptIdx,
+      ...(typeof turn.usage?.input_tokens === "number"
+        ? { tokensInput: turn.usage.input_tokens }
+        : {}),
+      ...(typeof turn.usage?.output_tokens === "number"
+        ? { tokensOutput: turn.usage.output_tokens }
+        : {}),
+      ...(typeof turn.usage?.cached_input_tokens === "number"
+        ? { tokensCached: turn.usage.cached_input_tokens }
+        : {}),
       validation: {
         qualityGateResults: packet.validation.evidence,
         qualityGatesMissing: packet.validation.missing,

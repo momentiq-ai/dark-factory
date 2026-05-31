@@ -573,3 +573,56 @@ test("review: model emits `gate` instead of `command` in qualityGateResults — 
     expect_truthy((entry as { command?: unknown }).command, "must use command, never gate");
   }
 });
+
+// ---------------------------------------------------------------------------
+// Cycle 6.3 — per-critic telemetry on the returned CriticResult
+// (mirrors the codex-adapter coverage; gemini reports tokens via
+// usageMetadata on the streamed chunks rather than a single response
+// envelope, and does not expose a cached-prefix count today).
+
+test("review: CriticResult carries tokensInput/Output + retries from usageMetadata (success path)", async () => {
+  const mockClient: GeminiClient = {
+    models: {
+      generateContentStream: async () =>
+        makeStream([
+          { text: APPROVED_RESPONSE_JSON.slice(0, 30), usageMetadata: { promptTokenCount: 800 } },
+          {
+            text: APPROVED_RESPONSE_JSON.slice(30),
+            usageMetadata: { promptTokenCount: 800, candidatesTokenCount: 120 },
+          },
+        ]),
+    },
+  };
+  const adapter = new GeminiSdkAdapter({ apiKey: "test-key", createClient: () => mockClient });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.tokensInput, 800);
+  expect_eq(result.tokensOutput, 120);
+  // Gemini's usageMetadata does not currently expose a cached-prefix
+  // count; absence is preserved by the field-presence guard.
+  expect_eq(result.tokensCached, undefined);
+  expect_eq(result.retries, 0);
+});
+
+test("review: CriticResult omits token fields when usageMetadata never arrives", async () => {
+  const mockClient: GeminiClient = {
+    models: {
+      generateContentStream: async () =>
+        makeStream([
+          { text: APPROVED_RESPONSE_JSON.slice(0, 30) },
+          { text: APPROVED_RESPONSE_JSON.slice(30) },
+        ]),
+    },
+  };
+  const adapter = new GeminiSdkAdapter({ apiKey: "test-key", createClient: () => mockClient });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.tokensInput, undefined);
+  expect_eq(result.tokensOutput, undefined);
+  // retries is still stamped on the success path.
+  expect_eq(result.retries, 0);
+});
