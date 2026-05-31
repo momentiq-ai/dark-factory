@@ -5,9 +5,7 @@
   "include-component-in-tag": true,
   "separate-pull-requests": false,
   "draft": false,
-  "prerelease": true,
-  "prerelease-type": "alpha",
-  "versioning-strategy": "prerelease",
+  "versioning-strategy": "default",
   "packages": {
     "packages/cli": {
       "package-name": "@momentiq/dark-factory-cli",
