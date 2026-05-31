@@ -74,6 +74,11 @@ export class FakeGhClient implements GhClient {
     | { title: string; bodyMd: string; label: string }
     | undefined;
 
+  // Optional throw-on-close hook for the /accept close-failure recovery test.
+  // The bash stub honors STUB_ISSUE_CLOSE_RC=1; this is the TS analog. Log
+  // happens BEFORE the throw so call-sequence assertions still see the close.
+  private _issueCloseThrows: Error | undefined;
+
   // ----- configurators (tests use these) -----
   setMeLogin(login: string) {
     this._meLogin = login;
@@ -118,6 +123,10 @@ export class FakeGhClient implements GhClient {
     list: ReadonlyArray<{ number: number; title: string }>,
   ) {
     this._prListByHead.setDefault(list);
+  }
+  /** Force `issueClose` to throw (parity with bash STUB_ISSUE_CLOSE_RC=1). */
+  setIssueCloseThrows(err: Error = new Error("gh issue close failed (stubbed)")) {
+    this._issueCloseThrows = err;
   }
 
   // ----- inspection -----
@@ -228,7 +237,10 @@ export class FakeGhClient implements GhClient {
     this.log(`gh issue edit ${num} --remove-assignee @me`);
   }
   async issueClose(num: number): Promise<void> {
+    // Log BEFORE throwing so call-sequence assertions (used by the
+    // close-failure recovery test) still see this call.
     this.log(`gh issue close ${num}`);
+    if (this._issueCloseThrows) throw this._issueCloseThrows;
   }
 
   async prView(num: number, opts: { repo?: string } = {}): Promise<PrView> {
