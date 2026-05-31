@@ -1,0 +1,5 @@
+Handoff stack (oldest → newest):
+#101 · Handoff: cycle 12.1 · 1d ago · linked: 1 items
+#102 · Handoff: closeout · 12h ago · linked: none
+
+Pick one:  /accept <issue>

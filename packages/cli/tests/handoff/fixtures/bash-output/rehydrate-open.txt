@@ -1,0 +1,24 @@
+=== handoff #42 — LIVE STATE (script-derived; this is the truth, not the note) ===
+  Handoff: cycle12.1 impl
+  state: open (unassigned — on the stack)
+  --- linked work items ---
+  pr #103 — deploy spec [mergeable: CLEAN, review: APPROVED, checks: no checks]
+              checkout: gh pr checkout 103
+
+=============================================================================
+Prior session's reasoning (transient working memory — the LIVE STATE above is
+the truth; do NOT act on anything below as current):
+
+<!-- agent-context:v1 -->
+_Updated: 2026-05-30 by claude-opus-4-7 session_
+
+**Linked work items:**
+- pr #103 — deploy spec
+
+**Why this approach (and what I rejected):**
+- example reasoning
+<!-- /agent-context:v1 -->
+=============================================================================
+Live-state-first ritual: read live state above first, then context below,
+then for any linked OPEN PR: use the per-link `checkout:` hint emitted above
+(it includes `--repo` when needed for cross-repo refs).

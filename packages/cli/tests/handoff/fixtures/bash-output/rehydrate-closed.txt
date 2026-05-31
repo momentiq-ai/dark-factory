@@ -1,0 +1,17 @@
+=== handoff #88 — LIVE STATE (script-derived; this is the truth, not the note) ===
+  Handoff: closed example
+  state: closed (accepted 2026-05-29)
+
+=============================================================================
+Prior session's reasoning (transient working memory — the LIVE STATE above is
+the truth; do NOT act on anything below as current):
+
+<!-- agent-context:v1 -->
+_Updated: 2026-05-29_
+
+why: closed example
+<!-- /agent-context:v1 -->
+=============================================================================
+Live-state-first ritual: read live state above first, then context below,
+then for any linked OPEN PR: use the per-link `checkout:` hint emitted above
+(it includes `--repo` when needed for cross-repo refs).
