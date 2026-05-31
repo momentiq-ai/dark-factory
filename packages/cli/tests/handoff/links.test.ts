@@ -118,10 +118,18 @@ describe("links — resolveLinkRef (with GhClient stub)", () => {
     expect(r.title).toBe("explicit PR");
   });
 
-  it("issue:N short-circuits PR lookup (kind='issue')", async () => {
-    const gh = ghStub({ issueTitle: "explicit issue" });
+  it("issue:N short-circuits PR lookup (kind='issue', prView not called)", async () => {
+    const prViewCalls: number[] = [];
+    const gh: GhClient = {
+      ...ghStub({ issueTitle: "explicit issue" }),
+      prView: async (num) => {
+        prViewCalls.push(num);
+        throw new Error("prView should not be called for issue: prefix");
+      },
+    };
     const r = await resolveLinkRef("issue:42", gh);
     expect(r.kind).toBe("issue");
+    expect(prViewCalls).toHaveLength(0);
   });
 
   it("refuses to link a handoff-labeled issue (no link-cycles)", async () => {
@@ -193,6 +201,17 @@ describe("links — resolveLinkRef (with GhClient stub)", () => {
     await expect(resolveLinkRef("42", gh)).rejects.toThrow(
       /not found as PR or Issue in this repo/,
     );
+  });
+
+  it("bare-ref PR-fail → issue-with-handoff-label → refused (full chain)", async () => {
+    // PR lookup fails (e.g., gh treats N as not a PR), falls through to issue lookup,
+    // which returns a handoff-labeled issue → link-cycle refusal raises.
+    const gh = ghStub({
+      prThrows: true,
+      issueLabels: ["handoff"],
+      issueTitle: "another handoff",
+    });
+    await expect(resolveLinkRef("999", gh)).rejects.toThrow(/no link-cycles/);
   });
 });
 

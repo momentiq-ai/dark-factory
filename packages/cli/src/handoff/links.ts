@@ -224,7 +224,7 @@ export function extractLinkedItems(body: string): readonly string[] {
       out.push(line);
       continue;
     }
-    if (line === "_None linked._") continue;
+    if (/^_None linked\._/.test(line)) continue;
     if (/^\s*$/.test(line)) continue;
     inSection = false;
   }
