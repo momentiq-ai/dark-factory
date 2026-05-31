@@ -699,7 +699,54 @@ without any prompting. The MCP tools return both `structuredContent` (typed
 shape for clients that consume it) and `content[0].text` (bash-compatible
 rendered text for clients that don't).
 
-## 13. References
+## 13. Cloud environments — running Claude Code from a sandbox or Codespace
+
+The Dark Factory pre-push gate's local critic profile uses **subscription-backed** auth (Cursor + Codex via Keychain-backed OAuth) — by design, no API keys live on the workstation. That works on a laptop with a browser. It does **not** work in a cloud sandbox (`claude.ai/code`, GitHub Codespaces, browser-driven environments) where OAuth has nowhere to redirect.
+
+Two surfaces are scaffolded to make running Claude Code against your repo from a cloud environment a one-step bootstrap, while still routing through the **W3 hosted critic** as the merge gate:
+
+| Surface | Use it when | Mechanism |
+|---|---|---|
+| **Web cloud env** (`claude.ai/code`) | Browser-only, fastest spin-up, ephemeral per session | Paste a setup script into the env-config dialog. |
+| **Devcontainer** (`.devcontainer/`) | Versioned in repo, encrypted per-user secrets, browser-based (Codespaces) or local-host integration (VS Code Reopen-in-Container) | Reproducible Docker dev env; OS tooling baked into the image; per-developer config in `post-create.sh`. |
+
+Both skip the local subscription critics (cloud OAuth can't reach a browser). Pushes from either cite the canonical reason string so they audit cleanly:
+
+```bash
+AGENT_REVIEW_BYPASS="cloud env — local quorum unavailable; W3 critic is the gate" git push
+```
+
+The bypass is **loud + audited** — `.git/agent-reviews/_runs.ndjson` records the reason verbatim and `make df-stats` surfaces it. The merge gate is the **hosted W3 critic** (`dark-factory/critic`), enforced by your repo's branch ruleset (§8). Cloud-env pushes are a *cooperation pattern* with the hosted gate, not a defeat of it.
+
+### 13.1 Sage-blueprint consumers (recommended path)
+
+Repos scaffolded from [`momentiq-ai/sage-blueprint`](https://github.com/momentiq-ai/sage-blueprint) with `enable_agent_review=true` get the cloud-env scaffold automatically, gated on the same `enable_agent_review` flag as the rest of the consumer shape. Five files land in `template/{{ '{{' }} product_slug {{ '}}' }}/`:
+
+- `.devcontainer/{devcontainer.json,Dockerfile,post-create.sh}` — Codespaces + local VS Code surface. Templated on `product_slug`, `doppler_project`, `doppler_config`, `github_org`. Includes the `ghcr.io/devcontainers/features/sshd:1` feature so `gh codespace ssh` works from a laptop CLI (needed for automated verification — without it `gh codespace ssh` errors with `failed to start SSH server`).
+- `scripts/cloud-bootstrap-web.sh` — paste-into-`claude.ai/code` setup script. Same idempotent npm/git/Doppler/df-doctor flow as the devcontainer post-create. Lives in-repo so it's reviewable, diffable, and the runbook can link to a specific revision.
+- `docs/runbooks/RUNBOOK-claude-code-cloud-envs.md` — consumer-facing runbook covering which surface to pick, step-by-step for both, the secret-handling rules (no secrets in shared env-config; Doppler tokens are paste-into-session; Codespaces secrets are the only safe persistent slot), GCP auth (Workload Identity first, per-session SA-key escape hatch with `mktemp` + `CLOUDSDK_CONFIG` isolation), the canonical `AGENT_REVIEW_BYPASS` push pattern, and troubleshooting.
+
+Tracked at [`momentiq-ai/sage-blueprint#169`](https://github.com/momentiq-ai/sage-blueprint/pull/169).
+
+### 13.2 Non-blueprint consumers (retrofit path)
+
+For repos that didn't scaffold from sage-blueprint, the same 5 files can be copy-pasted from the sage-blueprint template at `template/{{ '{{' }} product_slug {{ '}}' }}/`, with the four template variables substituted by hand (`product_slug` → your repo name, `doppler_project`/`doppler_config` → your Doppler scope, `github_org` → the GH org). The runbook also references the originating cycle for design rationale.
+
+### 13.3 Design rationale + as-shipped evidence
+
+The originating cycle is [`momentiq-ai/dark-factory-platform` → Cycle 13](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle13-claude-code-cloud-envs.md). It documents:
+
+- **Decisions locked at design** — why the canonical paste-in script lives in repo (not only in the env-config UI); why the Anthropic devcontainer feature is preferred over a hand-rolled Claude Code install; why `committer.email` is per-commit (not in git-config); why cloud-env pushes use the existing `AGENT_REVIEW_BYPASS` primitive (no new `CLOUD_ENV=1` shortcut); why `npm ci --include=dev` is non-negotiable.
+- **Exit-criteria evidence** — a real Codespaces session reaching the prompt with `make df-doctor` clean, then a canonical-bypass push captured in the audit log verbatim. The closeout PR comment thread on DFP #166 has the full post-create stdout + audit-log line as it landed.
+- **Gotchas + workarounds** — Codespaces secrets do NOT flow through `${localEnv:…}` (auto-inject by name into `containerEnv`); local VS Code Dev Containers has no user-level overlay merge mechanism, so per-user env injection is either a personal-branch overlay or manual per-session export + `bash .devcontainer/post-create.sh` re-run.
+
+### 13.4 What's NOT in scope
+
+- **Provisioning local subscription critics in any cloud surface.** Their OAuth requires a browser the sandbox cannot reach; Anthropic's docs explicitly disallow this on the web surface and the devcontainer docs explicitly discourage mounting Keychain state. The hosted W3 critic remains the merge gate via branch protection.
+- **A "cloud-env" bypass class.** Cloud pushes use the *existing* `AGENT_REVIEW_BYPASS` primitive with a canonical reason string — same audit posture as every other bypass. No new `CLOUD_ENV=1` short-circuit was introduced (or wanted).
+- **Multi-tenant fan-out / shared cloud-env config.** The scaffold is for one repo's onboarding. Org-wide cloud-env infrastructure is a separate concern.
+
+## 14. References
 
 - **Onboarding-enforcement gap (this section's rationale):** [`momentiq-ai/dark-factory#17`](https://github.com/momentiq-ai/dark-factory/issues/17) — consumers adopting gates without enforcing them; evidence at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213).
 - **Fork-PR / secret-dependent required check:** [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15) — why fork PRs can't satisfy a required `agent-critic` until the 331.3 fork-handling design ships.
