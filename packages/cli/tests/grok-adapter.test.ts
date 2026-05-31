@@ -780,3 +780,55 @@ test("review: model emits `gate` instead of `command` in qualityGateResults — 
   // this test packet) — ends up empty AND schema-valid.
   expect_eq(result.validation.qualityGateResults.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Cycle 6.3 — per-critic telemetry on the returned CriticResult.
+// Grok exposes input/output via response.usage on the completed event
+// (latest non-null wins, captured in lastUsage). Cached-prefix tokens
+// are not exposed on the current GrokUsage interface.
+
+test("review: CriticResult carries tokensInput/Output + retries from response.usage (success path)", async () => {
+  const mockClient: GrokClient = {
+    responses: {
+      create: async () =>
+        makeStream([
+          deltaEvent(APPROVED_RESPONSE_JSON.slice(0, 30)),
+          deltaEvent(APPROVED_RESPONSE_JSON.slice(30)),
+          completedEvent({ inputTokens: 1200, outputTokens: 240 }),
+        ]),
+    },
+    models: { list: async () => makeStream([]) as unknown as AsyncIterable<{ id?: string }> },
+  };
+  const adapter = new GrokDirectSdkAdapter({ apiKey: "test-key", createClient: () => mockClient });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.tokensInput, 1200);
+  expect_eq(result.tokensOutput, 240);
+  // GrokUsage today does not break out cached input tokens.
+  expect_eq(result.tokensCached, undefined);
+  expect_eq(result.retries, 0);
+});
+
+test("review: CriticResult omits token fields when response.usage absent", async () => {
+  const mockClient: GrokClient = {
+    responses: {
+      create: async () =>
+        makeStream([
+          deltaEvent(APPROVED_RESPONSE_JSON.slice(0, 30)),
+          deltaEvent(APPROVED_RESPONSE_JSON.slice(30)),
+          completedEvent(), // no inputTokens / outputTokens
+        ]),
+    },
+    models: { list: async () => makeStream([]) as unknown as AsyncIterable<{ id?: string }> },
+  };
+  const adapter = new GrokDirectSdkAdapter({ apiKey: "test-key", createClient: () => mockClient });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.tokensInput, undefined);
+  expect_eq(result.tokensOutput, undefined);
+  expect_eq(result.retries, 0);
+});
