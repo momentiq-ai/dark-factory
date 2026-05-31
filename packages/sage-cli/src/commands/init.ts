@@ -7,7 +7,7 @@ import { ensureCopierInstalled, runCopierCopy } from "../copier.js";
 import { isValidSlug, slugify } from "../slug.js";
 import { getBundledTemplatePath } from "../template-resolver.js";
 
-export interface CreateOptions {
+export interface InitOptions {
   /** Positional: the directory + product slug the customer typed. */
   slug: string | undefined;
   /** Customer-facing product name (e.g. "HireFlow"). */
@@ -44,7 +44,7 @@ interface ResolvedData {
 const DEFAULT_GITHUB_ORG = "momentiq-ai";
 const DEFAULT_CEREBE_BASE_URL = "https://api.cerebe.ai";
 
-export async function runCreate(opts: CreateOptions): Promise<number> {
+export async function runInit(opts: InitOptions): Promise<number> {
   // 1. Verify copier is installed before doing anything else.
   const copier = ensureCopierInstalled();
   if (!copier.installed) {
@@ -105,12 +105,29 @@ export async function runCreate(opts: CreateOptions): Promise<number> {
   return 0;
 }
 
-async function resolveData(opts: CreateOptions): Promise<ResolvedData | null> {
-  // product_name + slug
-  let productName = opts.productName;
-  let slug = opts.slug;
+function titleize(slug: string): string {
+  return slug
+    .split("-")
+    .filter((part) => part.length > 0)
+    .map((part) => part[0]!.toUpperCase() + part.slice(1))
+    .join("");
+}
 
-  if (!productName) {
+async function resolveData(opts: InitOptions): Promise<ResolvedData | null> {
+  // product_name + slug — three input shapes:
+  //   sage init                       -> prompt for name; derive slug
+  //   sage init my-slug               -> use positional as slug; titleize for name
+  //   sage init --product-name "X"    -> name from flag; derive slug; positional optional override
+  let productName: string;
+  let slug: string;
+
+  if (opts.productName) {
+    productName = opts.productName;
+    slug = opts.slug ?? slugify(productName);
+  } else if (opts.slug) {
+    slug = opts.slug;
+    productName = titleize(slug);
+  } else {
     const answer = await prompts({
       type: "text",
       name: "value",
@@ -119,14 +136,8 @@ async function resolveData(opts: CreateOptions): Promise<ResolvedData | null> {
     });
     if (answer.value === undefined) return null;
     productName = String(answer.value).trim();
+    slug = slugify(productName);
   }
-
-  // If the customer passed `sage create my-slug` but no --product-name,
-  // they probably meant the positional to also be the product name.
-  // Treat the positional as the slug, and fall back to a Titleized
-  // version for the product name if still missing.
-  if (!slug) slug = slugify(productName);
-  if (!productName) productName = slug;
 
   if (!isValidSlug(slug)) {
     process.stderr.write(
@@ -212,7 +223,7 @@ function buildCopierData(data: ResolvedData): Record<string, string | boolean> {
   return out;
 }
 
-function printNextSteps(data: ResolvedData, opts: CreateOptions): void {
+function printNextSteps(data: ResolvedData, opts: InitOptions): void {
   const lines: string[] = [];
   lines.push(`Next steps:`);
   lines.push(``);

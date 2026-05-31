@@ -5,8 +5,8 @@
  * automation cases.
  */
 
-export { runCreate } from "./commands/create.js";
-export type { CreateOptions } from "./commands/create.js";
+export { runInit } from "./commands/init.js";
+export type { InitOptions } from "./commands/init.js";
 export { runUpdate } from "./commands/update.js";
 export type { UpdateOptions } from "./commands/update.js";
 export { getBundledTemplatePath, getBundleInfo } from "./template-resolver.js";

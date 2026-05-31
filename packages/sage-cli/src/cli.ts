@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 
-import { runCreate } from "./commands/create.js";
+import { runInit } from "./commands/init.js";
 import { runUpdate } from "./commands/update.js";
 import { renderVersionBanner } from "./version.js";
 
@@ -14,8 +14,8 @@ program
   )
   .version(renderVersionBanner(), "-v, --version", "show the CLI version + the bundled sage-blueprint commit");
 
-program
-  .command("create")
+const initCommand = program
+  .command("init")
   .description("scaffold a new product from the bundled Sage template")
   .argument("[slug]", "product slug (also the directory name). Derived from --product-name if omitted.")
   .option("-n, --product-name <name>", "product display name (e.g. HireFlow)")
@@ -38,7 +38,7 @@ program
     true,
   )
   .action(async (slug: string | undefined, options) => {
-    const exitCode = await runCreate({
+    const exitCode = await runInit({
       slug,
       productName: options.productName,
       primaryPersona: options.primaryPersona,
@@ -51,6 +51,25 @@ program
       acceptDefaults: Boolean(options.acceptDefaults),
     });
     process.exit(exitCode);
+  });
+
+// `sage create` is a hidden alias for `sage init`. The marketing site
+// shipped `sage init` first; keep `create` so users who type the more
+// common scaffolding verb still succeed.
+program
+  .command("create [slug]", { hidden: true })
+  .description("alias for `sage init`")
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .action(() => {
+    // Replace argv to make commander re-parse as `init`.
+    const idx = process.argv.indexOf("create");
+    if (idx >= 0) process.argv[idx] = "init";
+    initCommand.parseAsync(process.argv).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`error: ${message}\n`);
+      process.exit(1);
+    });
   });
 
 program

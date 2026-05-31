@@ -8,7 +8,7 @@ Sage CLI — scaffold a production-ready agentic AI product in one command. Pre-
 
 ```bash
 npm install -g @momentiq/sage-cli
-sage create hireflow --primary-persona employer --domain hireflow.ai
+sage init hireflow --primary-persona employer --domain hireflow.ai
 cd hireflow
 make k8s-up
 make k8s-build-deploy-smart
@@ -51,12 +51,12 @@ A scaffolded product with, on commit one:
 
 ## Commands
 
-### `sage create [slug]`
+### `sage init [slug]` (alias: `sage create`)
 
 Scaffold a new product from the bundled Sage template.
 
 ```bash
-sage create hireflow \
+sage init hireflow \
   --product-name HireFlow \
   --primary-persona employer \
   --secondary-persona candidate \
