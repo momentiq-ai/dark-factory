@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.6.0-alpha.9...dark-factory-cli-v0.7.0-alpha.9) (2026-05-31)
+
+
+### Features
+
+* **schemas+adapters:** per-critic token + retries telemetry — Cycle 6.3 Stage 1 ([#65](https://github.com/momentiq-ai/dark-factory/issues/65)) ([4e99467](https://github.com/momentiq-ai/dark-factory/commit/4e99467ea8d944e37fc96ec28d3b799c454b9630))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.1.1-alpha.8 to 0.2.0-alpha.8
+
 ## [0.6.0-alpha.9](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.5.0-alpha.9...dark-factory-cli-v0.6.0-alpha.9) (2026-05-30)
 
 
