@@ -219,16 +219,26 @@ jobs:
           # SAGE_BLUEPRINT_REF: "v1.2.3"
         run: npm run build --workspace=@momentiq/sage-cli
 
-      - name: Validate sage-cli package (ESM smoke + bin loads + bundle complete)
+      - name: Validate sage-cli package (ESM smoke + bin runs + bundle complete)
         working-directory: packages/sage-cli
         run: |
           set -euo pipefail
-          # ESM import smoke -- module-init side effects must not throw.
+          # ESM library import smoke -- module-init side effects must not throw.
           node --input-type=module -e "import * as cli from './dist/index.js'; console.log('ESM import ok, exports:', Object.keys(cli).length, 'symbols')"
-          # Bin entry exists + loads as ESM.
+          # Bin entry exists.
           test -f dist/cli.js || (echo "::error::dist/cli.js missing" && exit 1)
-          node --input-type=module -e "import('./dist/cli.js').catch(e => { console.error('bin import failed:', e.message); process.exit(1); })" \
-            || (echo "::error::dist/cli.js failed to load as a module" && exit 1)
+          # Bin runs cleanly as a CLI (this is what `npx @momentiq/sage-cli ...`
+          # actually does). --version exits 0 and prints the banner; this
+          # exercises the version-banner read of template/.bundle-info.json
+          # too, so a missing bundle would also fail here.
+          # Note: do NOT smoke-test by `import('./dist/cli.js')` -- the bin
+          # parses argv at load time, sees no command, and commander exits
+          # 1 by design. That is correct behavior for a bin and is gated
+          # behind an is-main-module check in src/cli.ts.
+          VERSION_OUTPUT=$(node ./dist/cli.js --version)
+          echo "$VERSION_OUTPUT"
+          echo "$VERSION_OUTPUT" | grep -q '@momentiq/sage-cli' || (echo "::error::sage --version output missing package name" && exit 1)
+          echo "$VERSION_OUTPUT" | grep -q 'bundled momentiq-ai/sage-blueprint@' || (echo "::error::sage --version output missing bundled sage-blueprint commit" && exit 1)
           # Bundled template is complete.
           test -f template/copier.yaml || (echo "::error::bundled template missing copier.yaml" && exit 1)
           test -d template/template     || (echo "::error::bundled template missing template/ dir" && exit 1)
