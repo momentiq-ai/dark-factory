@@ -1,6 +1,6 @@
 {
   "name": "@momentiq/sage-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Sage OSS CLI — Copier-template wrapper that scaffolds a production-ready agentic AI product (FastAPI + Next.js + LangGraph + Helm) pre-wired to Cerebe and the Dark Factory gate on commit one. Bundles the Sage template inside the npm package; no GitHub access required.",
   "license": "Apache-2.0",
   "type": "module",
