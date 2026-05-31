@@ -454,9 +454,12 @@ describe("df_rehydrate (MCP tool)", () => {
       expect(result.isError).toBe(true);
       const text = firstText(result);
       expect(text).toBeDefined();
-      // The thrown HandoffError message surfaces in the wrapped content.
-      // Loose match — exact phrasing lives in rehydrate-core.ts.
-      expect(text!.length).toBeGreaterThan(0);
+      // The thrown HandoffError surfaces in the wrapped content. The
+      // rehydrate-verb explicit-issue path is a thin wrapper around
+      // deriveRehydrateData, which raises with the issue ref on the
+      // wholesale issueView failure path — match on `#42` so we know
+      // the failure is the one we stubbed, not an unrelated throw.
+      expect(text).toContain("#42");
     });
   });
 });
