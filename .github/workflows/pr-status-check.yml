@@ -97,10 +97,10 @@ jobs:
       # ish input into the shell command line.
       REQUESTED_VERSION: ${{ inputs.cli-version || 'local' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 

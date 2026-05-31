@@ -1,6 +1,6 @@
 # @momentiq/sage-cli
 
-Sage CLI — scaffold a production-ready agentic AI product in one command. Pre-wired to [Cerebe](https://github.com/momentiq-ai/cerebe-platform) (the cognitive engine) and the [Dark Factory](https://github.com/momentiq-ai/dark-factory) gate (the autonomous SDLC) on commit one.
+Sage CLI — scaffold a production-ready agentic AI product in one command. Pre-wired to [Cerebe](https://cerebe.ai) (the cognitive engine) and the [Dark Factory](https://github.com/momentiq-ai/dark-factory) gate (the autonomous SDLC) on commit one.
 
 > Sage is Pillar #2 of the Momentiq platform: **Scaffold with Sage → implement on Cerebe → ship through Dark Factory.**
 
@@ -96,15 +96,15 @@ Reports both the CLI version and the bundled sage-blueprint commit hash. Include
 
 ```bash
 $ sage --version
-@momentiq/sage-cli 0.1.0 (bundled momentiq-ai/sage-blueprint@9a3f4c2b7e1d via ref main)
+@momentiq/sage-cli 0.1.0 (bundled sage-blueprint@9a3f4c2b7e1d via ref main)
 ```
 
 ## How it works
 
-This CLI is a thin wrapper around [Copier](https://copier.readthedocs.io/). The Sage template ([`momentiq-ai/sage-blueprint`](https://github.com/momentiq-ai/sage-blueprint)) is bundled inside the npm package at build time, so:
+This CLI is a thin wrapper around [Copier](https://copier.readthedocs.io/). The Sage template (Apache-2.0) is bundled inside the npm package at build time, so:
 
 - You install **one npm package**; no GitHub authentication needed
-- You don't run `copier copy gh:momentiq-ai/sage-blueprint` directly; the wrapper resolves the bundled template path
+- The wrapper resolves the bundled template path; no separate template fetch
 - Pre-filled defaults collapse the template's ~19 prompts down to 4 (product name, personas, domain); pass `--accept-defaults` (the default) to skip advanced prompts
 - `sage update` runs `copier update` against the bundled template hash, so you can stay current as the template advances
 
@@ -114,5 +114,4 @@ Apache-2.0. The bundled Sage template is also Apache-2.0; see `template/LICENSE`
 
 ## Issues + roadmap
 
-- [Tracking issue (`momentiq-ai/dark-factory#80`)](https://github.com/momentiq-ai/dark-factory/issues/80)
-- The Sage product PRD lives in `momentiq-ai/dark-factory-platform` under `docs/roadmap/products/sage.md`
+- File issues at [`momentiq-ai/dark-factory`](https://github.com/momentiq-ai/dark-factory/issues)

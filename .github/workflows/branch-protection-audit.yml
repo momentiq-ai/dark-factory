@@ -51,7 +51,7 @@
 # and the deferred-hardening note re: full integrity-baked `npm pack`.
 # The audit-branch-protection subcommand wraps a Python script bundled
 # in the CLI's `dist/branch-protection/`, so the consumer path still
-# requires `actions/setup-python@v5`.
+# requires `actions/setup-python@v6`.
 #
 # Consumer token naming: BRANCH_PROTECTION_AUDIT_TOKEN is kept as the
 # `workflow_call.secrets` name for forward-compat with consumers that
@@ -141,12 +141,12 @@ jobs:
             echo "Audit runs on the originating PR (or the weekly cron); merge_group runs reuse that verdict."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: env.EVENT_NAME != 'merge_group'
 
       - name: Setup Node 20
         if: env.EVENT_NAME != 'merge_group'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
@@ -202,7 +202,7 @@ jobs:
         # (Phase C extraction from sage3c). Until pure-TS port lands,
         # the consumer path needs python3 on PATH.
         if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION != 'local'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
