@@ -1,4 +1,4 @@
 {
-  "packages/cli": "0.7.0-alpha.9",
-  "packages/schemas": "0.2.0-alpha.8"
+  "packages/cli": "0.7.0",
+  "packages/schemas": "0.2.0"
 }
