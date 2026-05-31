@@ -47,10 +47,12 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      cli_released:      ${{ steps.release.outputs['packages/cli--release_created'] }}
-      cli_version:       ${{ steps.release.outputs['packages/cli--version'] }}
-      schemas_released:  ${{ steps.release.outputs['packages/schemas--release_created'] }}
-      schemas_version:   ${{ steps.release.outputs['packages/schemas--version'] }}
+      cli_released:       ${{ steps.release.outputs['packages/cli--release_created'] }}
+      cli_version:        ${{ steps.release.outputs['packages/cli--version'] }}
+      schemas_released:   ${{ steps.release.outputs['packages/schemas--release_created'] }}
+      schemas_version:    ${{ steps.release.outputs['packages/schemas--version'] }}
+      sage_cli_released:  ${{ steps.release.outputs['packages/sage-cli--release_created'] }}
+      sage_cli_version:   ${{ steps.release.outputs['packages/sage-cli--version'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -88,8 +90,11 @@ jobs:
       - name: Install (workspace)
         run: npm ci
 
-      - name: Build (schemas first, then CLI -- order required by workspace)
-        run: npm run build
+      - name: Build (schemas first, then CLI -- targeted to avoid sage-cli's GH_TOKEN-dependent prebuild)
+        run: |
+          set -euo pipefail
+          npm run build --workspace=@momentiq/dark-factory-schemas
+          npm run build --workspace=@momentiq/dark-factory-cli
 
       - name: Validate CLI package (ESM smoke test + entrypoint resolves)
         working-directory: packages/cli
@@ -155,6 +160,89 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$SCHEMAS_VERSION" == 0.* ]]; then
+            npm publish --access public --tag alpha
+          else
+            npm publish --access public
+          fi
+
+  publish-sage-cli:
+    name: Publish @momentiq/sage-cli
+    needs: release-please
+    if: needs.release-please.outputs.sage_cli_released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # sage-cli needs TWO repo secrets:
+      #   1. MOMENTIQ_NPM_PUBLISH_TOKEN -- the @momentiq automation token
+      #      (same one publish-cli + publish-schemas use)
+      #   2. SAGE_BLUEPRINT_READ_TOKEN -- fine-grained PAT with
+      #      `Contents: Read` on momentiq-ai/sage-blueprint, used at
+      #      build time by scripts/bundle-template.mjs to fetch the
+      #      sage-blueprint template into packages/sage-cli/template/
+      #      before tsc builds. The bundled template ships in the npm
+      #      tarball via `files: ["dist", "template", ...]`.
+      - name: Preflight (MOMENTIQ_NPM_PUBLISH_TOKEN must be set)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.MOMENTIQ_NPM_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::MOMENTIQ_NPM_PUBLISH_TOKEN repo secret is unset. Generate an @momentiq automation token at npmjs.com and set it via: gh secret set MOMENTIQ_NPM_PUBLISH_TOKEN --repo momentiq-ai/dark-factory"
+            exit 1
+          fi
+
+      - name: Preflight (SAGE_BLUEPRINT_READ_TOKEN must be set)
+        env:
+          GH_TOKEN_PROBE: ${{ secrets.SAGE_BLUEPRINT_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN_PROBE:-}" ]]; then
+            echo "::error::SAGE_BLUEPRINT_READ_TOKEN repo secret is unset. Generate a fine-grained PAT with Contents:Read on momentiq-ai/sage-blueprint and set it via: gh secret set SAGE_BLUEPRINT_READ_TOKEN --repo momentiq-ai/dark-factory"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Install (workspace)
+        run: npm ci
+
+      - name: Build sage-cli (prebuild bundles sage-blueprint template -- needs GH_TOKEN)
+        env:
+          GH_TOKEN: ${{ secrets.SAGE_BLUEPRINT_READ_TOKEN }}
+          # SAGE_BLUEPRINT_REF defaults to 'main'; override to pin a
+          # specific tag per release. Comment out to always track main.
+          # SAGE_BLUEPRINT_REF: "v1.2.3"
+        run: npm run build --workspace=@momentiq/sage-cli
+
+      - name: Validate sage-cli package (ESM smoke + bin loads + bundle complete)
+        working-directory: packages/sage-cli
+        run: |
+          set -euo pipefail
+          # ESM import smoke -- module-init side effects must not throw.
+          node --input-type=module -e "import * as cli from './dist/index.js'; console.log('ESM import ok, exports:', Object.keys(cli).length, 'symbols')"
+          # Bin entry exists + loads as ESM.
+          test -f dist/cli.js || (echo "::error::dist/cli.js missing" && exit 1)
+          node --input-type=module -e "import('./dist/cli.js').catch(e => { console.error('bin import failed:', e.message); process.exit(1); })" \
+            || (echo "::error::dist/cli.js failed to load as a module" && exit 1)
+          # Bundled template is complete.
+          test -f template/copier.yaml || (echo "::error::bundled template missing copier.yaml" && exit 1)
+          test -d template/template     || (echo "::error::bundled template missing template/ dir" && exit 1)
+          test -f template/.bundle-info.json || (echo "::error::bundled template missing .bundle-info.json" && exit 1)
+          echo "bundle info:"; cat template/.bundle-info.json
+
+      - name: Publish (--tag alpha while pre-1.0)
+        working-directory: packages/sage-cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.MOMENTIQ_NPM_PUBLISH_TOKEN }}
+          SAGE_CLI_VERSION: ${{ needs.release-please.outputs.sage_cli_version }}
+        run: |
+          set -euo pipefail
+          if [[ "$SAGE_CLI_VERSION" == 0.* ]]; then
             npm publish --access public --tag alpha
           else
             npm publish --access public

@@ -14,6 +14,10 @@
     "packages/schemas": {
       "package-name": "@momentiq/dark-factory-schemas",
       "changelog-path": "CHANGELOG.md"
+    },
+    "packages/sage-cli": {
+      "package-name": "@momentiq/sage-cli",
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }

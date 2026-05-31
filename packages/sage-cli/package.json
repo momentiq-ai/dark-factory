@@ -1,0 +1,46 @@
+{
+  "name": "@momentiq/sage-cli",
+  "version": "0.1.0",
+  "description": "Sage OSS CLI — Copier-template wrapper that scaffolds a production-ready agentic AI product (FastAPI + Next.js + LangGraph + Helm) pre-wired to Cerebe and the Dark Factory gate on commit one. Bundles the Sage template inside the npm package; no GitHub access required.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "sage": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "template",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prebuild": "node scripts/bundle-template.mjs",
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "type-check": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/prompts": "^2.4.9",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "prompts": "^2.4.2",
+    "yaml": "^2.9.0"
+  }
+}
