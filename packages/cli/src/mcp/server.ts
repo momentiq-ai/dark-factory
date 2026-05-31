@@ -83,10 +83,11 @@ export interface CreateMcpServerOptions {
     options: import("../runner.js").ReviewRunOptions,
   ) => Promise<import("../runner.js").ReviewRunOutcome>;
   // Note: the v1 (Cycle 8) `_testHandoffGh` / `_testHandoffGit` runner
-  // injectors were removed in Cycle 12.2 Task 22 — v2 uses the object-shaped
+  // injectors were removed in Cycle 12.2 — v2 uses the object-shaped
   // GhClient/GitClient ports from src/handoff/ports.ts (one method per gh
-  // verb pattern), not function runners. The replacement v2 injectors land
-  // in Task 24 alongside the real registerHandoffTools impl.
+  // verb pattern), not function runners. v2 test seams live on
+  // registerHandoffTools' RegisterHandoffToolsOptions (`_gh` / `_git` /
+  // `_clock`); see src/mcp/tools/handoff.ts.
 }
 
 export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
@@ -137,7 +138,7 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
       : {}),
   });                                            // step 6 — df_review + df_review_status + df_bypass
   registerGenerateTools(server, toolOpts);      // step 8 — df_cycle_doc_generate + df_adr_generate (sampling)
-  registerHandoffTools(server, toolOpts);        // cycle12.2 — df_handoff + df_handoffs + df_accept + df_rehydrate (real impl in Task 24; stub for Tasks 22-23)
+  registerHandoffTools(server, toolOpts);        // cycle12.2 — df_handoff + df_accept + df_rehydrate + df_handoffs (v2 Issue-anchor)
 
   // step 4 — URI-addressable resources (df://repo/...). Single call
   // registers all 9 resources at once; see src/mcp/resources.ts.
