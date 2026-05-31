@@ -102,19 +102,25 @@ import { cmdMcp } from "./mcp/cli.js";
 // Assessor's records from momentiq-ai/df-assessments. See
 // docs/roadmap/cycles/cycle11-flow-assessor-surfacing-and-tools.md.
 import { cmdFlow } from "./commands/flow/index.js";
-// Cycle 8 Phase 8.2 — agent handoff protocol. `df handoff`/`df accept`/
-// `df rehydrate`/`df handoffs` carry working context (the reasoning a
-// session can't recover from `gh`) across a session boundary, modeling the
-// baton on native GitHub primitives (handoff label = stack, assignee =
-// ownership, PR timeline = audit). The mechanism is shared with the
-// `df_handoff`/etc. MCP tools via src/handoff/index.ts. See
-// docs/CONSUMER-ADOPTION.md § handoff.
+// Cycle 12 Phase 12.2 — agent handoff protocol (v2 — Issue-anchored, native-
+// baton). The four cmd* functions below wrap the verb orchestrators exported
+// from src/handoff/index.ts and route to them at the bottom of main(). v1
+// (Cycle 8) was a separate `./handoff/cli.js` module that wired the
+// PR-anchored verbs; the v2 surface is small enough to live inline here next
+// to the other subcommand handlers. Spec: docs/superpowers/specs/
+// 2026-05-30-agent-handoff-v2-issue-anchor-design.md.
 import {
-  cmdHandoff,
-  cmdAccept,
-  cmdRehydrate,
-  cmdHandoffs,
-} from "./handoff/cli.js";
+  HandoffError,
+  SpawnGhClient,
+  SpawnGitClient,
+  SystemClock,
+  runHandoff,
+  runAccept,
+  runRehydrate,
+  runHandoffs,
+  renderRehydrateText,
+} from "./handoff/index.js";
+import { requireIssueNumber, requireSafeArgs } from "./handoff/args.js";
 
 interface PackageMeta {
   name?: string;
@@ -197,18 +203,21 @@ function printHelp(meta: PackageMeta): void {
       "                              --json. Run `df flow --help` for the list,",
       "                              `df flow <sub> --help` for per-sub flags.",
       "",
-      "Subcommands (Cycle 8 — agent handoff protocol):",
-      "  df handoff                  Put a work-stream on the handoff stack:",
-      "                              upsert its marker-bounded rehydration note",
-      "                              (read from stdin) on the PR + label it",
-      "                              (auto-creates a draft PR if none). Scrubs",
-      "                              the note for secret-shaped content first.",
-      "  df handoffs                 List the stack of handed-off PRs (open,",
-      "                              labeled `handoff`) so you can pick one.",
-      "  df accept                   Claim a handoff PR (assign you, take it off",
-      "                              the stack), then rehydrate.",
-      "  df rehydrate                Read-only catch-up on a PR's note — derives",
-      "                              LIVE state first, changes no ownership.",
+      "Subcommands (Cycle 12 — agent handoff protocol, v2 Issue-anchored):",
+      "  df handoff [issue]          Put a work-stream on the handoff stack:",
+      "    [--link <ref>]...           upsert the marker-bounded rehydration",
+      "    [--unlink <ref>]...         note (read from stdin) as the dedicated",
+      "    [--new]                     handoff Issue's body, label it `handoff`,",
+      "                                leave it unassigned. Scrubs the note for",
+      "                                secret-shaped content first. Auto-creates",
+      "                                an Issue when @me has none (or --new).",
+      "  df handoffs                 List the stack of handed-off Issues (open,",
+      "                              labeled `handoff`, unassigned).",
+      "  df accept <issue>           Claim a handoff Issue (assign you), rehydrate,",
+      "                              then close it (Commitment 10).",
+      "  df rehydrate [issue]        Read-only catch-up on a handoff Issue's note —",
+      "                              derives LIVE state first, changes no ownership.",
+      "                              No-arg: 2-tier (open+@me → closed+@me ≤7d).",
       "",
       "Cost model:",
       "  The local hook path (review/gate-push) consumes Cursor / Codex / Claude",
@@ -340,10 +349,13 @@ const PHASE_F_LOCAL_SUBCOMMANDS = new Set([
 // stdout writer in that subtree) rather than the global printHelp().
 const PHASE_G_SUBCOMMANDS = new Set(["mcp"]);
 
-// Cycle 8 — agent handoff protocol verbs. Like the other subcommands they
-// talk to GitHub via `gh`; unlike the gate verbs they mutate PR state
-// (comments, label, assignee). `df handoff` reads the note body on stdin.
-const CYCLE8_SUBCOMMANDS = new Set([
+// Cycle 12 Phase 12.2 — agent handoff protocol v2 verbs (replaces the
+// Cycle 8 v1 set). Like the other subcommands they talk to GitHub via `gh`;
+// unlike the gate verbs they mutate Issue state (body, label, assignee).
+// `df handoff` reads the note body on stdin. The set is registered here so
+// the early --help interception above forwards to each subcommand's own help
+// printer (cmdHandoff/cmdAccept/cmdRehydrate/cmdHandoffs).
+const CYCLE12_SUBCOMMANDS = new Set([
   "handoff",
   "handoffs",
   "accept",
@@ -1300,6 +1312,374 @@ async function cmdAdmitPr(rest: string[]): Promise<number> {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Cycle 12 Phase 12.2 — agent handoff protocol v2 (Issue-anchored, native-baton).
+//
+// Four verbs replace the Cycle 8 (v1) PR-anchored verbs deleted in Task 22:
+//
+//   df handoff [issue] [--link <ref>]... [--unlink <ref>]... [--new]
+//     Reads note body on stdin. Posts the dedicated handoff Issue's URL to
+//     stdout, operator logs to stderr.
+//   df accept <issue>
+//     Take the baton: assign @me, rehydrate (read-only fetch), close.
+//   df rehydrate [issue]
+//     Read-only catch-up. No-arg → 2-tier resolution.
+//   df handoffs
+//     List the stack (open + handoff-labeled + unassigned).
+//
+// Convention: machine-readable output → stdout; operator logs/warns → stderr.
+// HandoffError → stderr + exit 1. Usage/arg error → exit 2. Success → exit 0.
+//
+// requireSafeArgs is defense-in-depth — in the TS CLI real argv kills the
+// shell-injection vector the bash .md/$ARGUMENTS surface was defending
+// against, but we keep the allow-list so the error wording stays
+// byte-equivalent with the bash-era impl for the few payload-rejection tests
+// the case-map ports forward.
+// ---------------------------------------------------------------------------
+
+async function cmdHandoff(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df handoff — put a work-stream on the handoff stack (v2 Issue-anchored).",
+        "",
+        "Usage:",
+        "  df handoff [issue] [--link <ref>]... [--unlink <ref>]... [--new]",
+        "",
+        "Upserts the marker-bounded rehydration note (read from stdin) as the",
+        "dedicated handoff Issue's body, adds the `handoff` label, leaves it",
+        "unassigned. Reads the composed note on stdin (pipe it in or use < note.md).",
+        "",
+        "Args:",
+        "  [issue]            Explicit handoff Issue number. Omit to update @me's",
+        "                     open handoff or create a new one.",
+        "",
+        "Flags:",
+        "  --link <ref>       Link a PR or Issue. Ref forms: number (same-repo),",
+        "                     owner/repo#N (cross-repo), URL, or pr:N / issue:N",
+        "                     prefix. May repeat.",
+        "  --unlink <ref>     Remove a linked item. May repeat.",
+        "  --new              Force-create a new Issue even if @me already has an",
+        "                     open handoff.",
+        "  --help, -h         Show this message.",
+        "",
+        "Output:",
+        "  stdout — the handoff Issue's URL.",
+        "  stderr — operator info / warn / log lines.",
+        "",
+        "Exit:",
+        "  0  success",
+        "  1  handoff error (bad state, gh failure, dirty drift, etc.)",
+        "  2  usage error",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+
+  // Defense-in-depth allow-list on every argv item.
+  try {
+    requireSafeArgs(rest);
+  } catch (err) {
+    process.stderr.write(`df handoff: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  // Parse args. Issue is the lone positional; --link/--unlink repeat.
+  let issueStr: string | undefined;
+  const link: string[] = [];
+  const unlink: string[] = [];
+  let forceNew = false;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i] as string;
+    if (arg === "--link") {
+      const v = rest[++i];
+      if (v === undefined) {
+        process.stderr.write("df handoff: --link requires a value.\n");
+        return 2;
+      }
+      link.push(v);
+    } else if (arg === "--unlink") {
+      const v = rest[++i];
+      if (v === undefined) {
+        process.stderr.write("df handoff: --unlink requires a value.\n");
+        return 2;
+      }
+      unlink.push(v);
+    } else if (arg === "--new") {
+      forceNew = true;
+    } else if (arg.startsWith("-")) {
+      process.stderr.write(`df handoff: unknown flag: ${arg}\n`);
+      return 2;
+    } else {
+      if (issueStr !== undefined) {
+        process.stderr.write(
+          `df handoff: unexpected positional argument: ${arg} (only one [issue] allowed).\n`,
+        );
+        return 2;
+      }
+      issueStr = arg;
+    }
+  }
+
+  let issue: number | undefined;
+  try {
+    issue = requireIssueNumber(issueStr);
+  } catch (err) {
+    process.stderr.write(`df handoff: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  // Read stdin (empty string on TTY — runHandoff will reject empty notes).
+  const note = await readStdinUtf8FromTtyOrStream();
+
+  try {
+    const result = await runHandoff({
+      noteStdin: note,
+      ...(issue !== undefined ? { issue } : {}),
+      link,
+      unlink,
+      forceNew,
+      gh: new SpawnGhClient(),
+      git: new SpawnGitClient(),
+      clock: new SystemClock(),
+    });
+    for (const log of result.logs) {
+      process.stderr.write(`handoff: ${log}\n`);
+    }
+    process.stdout.write(`${result.noteUrl}\n`);
+    return 0;
+  } catch (err) {
+    if (err instanceof HandoffError) {
+      process.stderr.write(`handoff: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
+async function cmdAccept(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df accept — take the baton on a handoff Issue (v2 Issue-anchored).",
+        "",
+        "Usage:",
+        "  df accept <issue>",
+        "",
+        "Atomic chain: validate → refuse-on-other-claimant → strict-rehydrate →",
+        "drift-check → assign @me → verify assignment → close (Commitment 10).",
+        "Any failure before assign leaves the Issue untouched on the stack.",
+        "",
+        "Args:",
+        "  <issue>            Handoff Issue number (required — `df handoffs` lists",
+        "                     the stack).",
+        "",
+        "Flags:",
+        "  --help, -h         Show this message.",
+        "",
+        "Output:",
+        "  stdout — rendered rehydration view (operator-readable).",
+        "  stderr — assign + close confirmation lines.",
+        "",
+        "Exit:",
+        "  0  success (assigned + rehydrated + closed)",
+        "  1  handoff error (other claimant, drift, gh failure, etc.)",
+        "  2  usage error",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+
+  try {
+    requireSafeArgs(rest);
+  } catch (err) {
+    process.stderr.write(`df accept: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  const issueStr = rest[0];
+  if (issueStr === undefined || issueStr === "") {
+    process.stderr.write(
+      "df accept: which one? run `df handoffs` to see the stack, then `df accept <issue>`.\n",
+    );
+    return 2;
+  }
+  if (rest.length > 1) {
+    process.stderr.write(
+      `df accept: unexpected extra arguments: ${rest.slice(1).join(" ")}\n`,
+    );
+    return 2;
+  }
+
+  let issue: number | undefined;
+  try {
+    issue = requireIssueNumber(issueStr);
+  } catch (err) {
+    process.stderr.write(`df accept: ${(err as Error).message}\n`);
+    return 2;
+  }
+  if (issue === undefined) {
+    process.stderr.write(
+      "df accept: which one? run `df handoffs` to see the stack, then `df accept <issue>`.\n",
+    );
+    return 2;
+  }
+
+  try {
+    const result = await runAccept({ issue, gh: new SpawnGhClient() });
+    process.stdout.write(`${renderRehydrateText(result.rehydrate)}\n`);
+    for (const log of result.logs) {
+      process.stderr.write(`accept: ${log}\n`);
+    }
+    return 0;
+  } catch (err) {
+    if (err instanceof HandoffError) {
+      process.stderr.write(`accept: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
+async function cmdRehydrate(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df rehydrate — read-only catch-up on a handoff Issue (v2 Issue-anchored).",
+        "",
+        "Usage:",
+        "  df rehydrate [issue]",
+        "",
+        "Derives LIVE state for the Issue + each linked work item. Changes no",
+        "ownership — this is the verb for resuming your OWN in-flight work;",
+        "/accept is for taking over someone else's.",
+        "",
+        "Args:",
+        "  [issue]            Explicit Issue number. Omit for 2-tier resolution:",
+        "                     tier 1 = open + @me, tier 2 = closed + @me ≤7d.",
+        "",
+        "Flags:",
+        "  --help, -h         Show this message.",
+        "",
+        "Output:",
+        "  stdout — rendered rehydration view (operator-readable).",
+        "  stderr — non-fatal warns (e.g. tier-2 closedAt-parse skip).",
+        "",
+        "Exit:",
+        "  0  success",
+        "  1  handoff error (unreachable Issue, gh failure, no-arg miss, etc.)",
+        "  2  usage error",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+
+  try {
+    requireSafeArgs(rest);
+  } catch (err) {
+    process.stderr.write(`df rehydrate: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  if (rest.length > 1) {
+    process.stderr.write(
+      `df rehydrate: unexpected extra arguments: ${rest.slice(1).join(" ")}\n`,
+    );
+    return 2;
+  }
+
+  const issueStr = rest[0];
+  let issue: number | undefined;
+  try {
+    issue = requireIssueNumber(issueStr);
+  } catch (err) {
+    process.stderr.write(`df rehydrate: ${(err as Error).message}\n`);
+    return 2;
+  }
+
+  try {
+    const result = await runRehydrate({
+      ...(issue !== undefined ? { issue } : {}),
+      gh: new SpawnGhClient(),
+      clock: new SystemClock(),
+    });
+    process.stdout.write(`${renderRehydrateText(result.rehydrate)}\n`);
+    for (const log of result.logs) {
+      process.stderr.write(`rehydrate: ${log}\n`);
+    }
+    return 0;
+  } catch (err) {
+    if (err instanceof HandoffError) {
+      process.stderr.write(`rehydrate: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
+async function cmdHandoffs(rest: string[]): Promise<number> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    process.stdout.write(
+      [
+        "df handoffs — list the stack of handed-off Issues (v2 Issue-anchored).",
+        "",
+        "Usage:",
+        "  df handoffs",
+        "",
+        "Prints the open + `handoff`-labeled + unassigned Issues, oldest first",
+        "by updatedAt — the stack to pick from with `df accept <issue>`.",
+        "",
+        "Flags:",
+        "  --help, -h         Show this message.",
+        "",
+        "Output:",
+        "  stdout — rendered stack list (header + one row per Issue + footer).",
+        "",
+        "Exit:",
+        "  0  success (empty stack also exits 0)",
+        "  1  handoff error (gh issue list failed)",
+        "  2  usage error",
+        "",
+      ].join("\n"),
+    );
+    return 0;
+  }
+
+  try {
+    requireSafeArgs(rest);
+  } catch (err) {
+    process.stderr.write(`df handoffs: ${(err as Error).message}\n`);
+    return 2;
+  }
+  if (rest.length > 0) {
+    process.stderr.write(
+      `df handoffs: takes no arguments (got: ${rest.join(" ")}).\n`,
+    );
+    return 2;
+  }
+
+  try {
+    const result = await runHandoffs({
+      gh: new SpawnGhClient(),
+      clock: new SystemClock(),
+    });
+    process.stdout.write(`${result.text}\n`);
+    for (const log of result.logs) {
+      process.stderr.write(`handoffs: ${log}\n`);
+    }
+    return 0;
+  } catch (err) {
+    if (err instanceof HandoffError) {
+      process.stderr.write(`handoffs: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
 async function main(argv: string[]): Promise<number> {
   const meta = readPackageMeta();
   const args = argv.slice(2);
@@ -1321,7 +1701,7 @@ async function main(argv: string[]): Promise<number> {
       !PHASE_F_SUBCOMMANDS.has(sub0) &&
       !PHASE_F_LOCAL_SUBCOMMANDS.has(sub0) &&
       !PHASE_G_SUBCOMMANDS.has(sub0) &&
-      !CYCLE8_SUBCOMMANDS.has(sub0) &&
+      !CYCLE12_SUBCOMMANDS.has(sub0) &&
       !CYCLE11_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
@@ -1370,18 +1750,22 @@ async function main(argv: string[]): Promise<number> {
   if (sub === "mcp") {
     return await cmdMcp(rest);
   }
-  // Cycle 8 — agent handoff protocol verbs.
+  // Cycle 12 Phase 12.2 — agent handoff protocol v2 verbs (Issue-anchored,
+  // native-baton). cmdHandoff/cmdAccept/cmdRehydrate/cmdHandoffs wrap the
+  // verb orchestrators from src/handoff/index.ts; their --help text owns the
+  // per-subcommand help via the CYCLE12_SUBCOMMANDS gate in the early --help
+  // interception above.
   if (sub === "handoff") {
     return await cmdHandoff(rest);
-  }
-  if (sub === "handoffs") {
-    return await cmdHandoffs(rest);
   }
   if (sub === "accept") {
     return await cmdAccept(rest);
   }
   if (sub === "rehydrate") {
     return await cmdRehydrate(rest);
+  }
+  if (sub === "handoffs") {
+    return await cmdHandoffs(rest);
   }
   // Cycle 11 Phase 11.1 — PR Flow Assessor surfacing.
   if (sub === "flow") {

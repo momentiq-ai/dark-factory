@@ -89,7 +89,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     await server.close();
   });
 
-  it("tools/list pins the catalog (19 tools: 15 cycle5 + cycle8 handoff/handoffs/accept/rehydrate)", async () => {
+  it("tools/list pins the catalog (19 tools: 15 cycle5 + cycle12 handoff/handoffs/accept/rehydrate)", async () => {
     const server = createMcpServer();
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -301,9 +301,15 @@ describe("MCP server (cycle5 Phase 1)", () => {
       }),
     );
 
-    // cycle8 — handoff verbs. df_handoff / df_accept WRITE PR state
-    // (readOnlyHint:false); df_handoffs / df_rehydrate are read-only.
+    // cycle12 — handoff verbs (Issue-anchor v2; supersedes cycle8 PR-anchor).
+    // df_handoff / df_accept WRITE issue state (readOnlyHint:false);
+    // df_handoffs / df_rehydrate are read-only.
     // ALL four hit the GitHub API → openWorldHint:true.
+    // Signature change: input `pr` → `issue`. Output shapes also changed:
+    //   - df_handoff:    { pr,pushed,created_draft_pr,warnings,note_url } → { issue,note_url,created }
+    //   - df_accept:     { pr,removed_label,warnings,rehydrate (contained) } → flat RehydrateData { issue,state,title,linked_items,note }
+    //   - df_rehydrate:  { pr,live_state,checks,checkout_hint }            → flat RehydrateData { issue,state,title,linked_items,note }
+    //   - df_handoffs:   output { entries }                                → output { rows }
     const dfHandoff = byName.get("df_handoff");
     expect(dfHandoff?.annotations?.readOnlyHint).toBe(false);
     expect(dfHandoff?.annotations?.destructiveHint).toBe(false);
@@ -312,16 +318,14 @@ describe("MCP server (cycle5 Phase 1)", () => {
     const handoffInputProps =
       (dfHandoff?.inputSchema?.properties ?? {}) as Record<string, unknown>;
     expect(handoffInputProps).toHaveProperty("note");
-    expect(handoffInputProps).toHaveProperty("pr");
+    expect(handoffInputProps).toHaveProperty("issue");
     expect(
       (dfHandoff?.outputSchema as { properties?: Record<string, unknown> })?.properties,
     ).toEqual(
       expect.objectContaining({
-        pr: expect.anything(),
+        issue: expect.anything(),
         note_url: expect.anything(),
-        pushed: expect.anything(),
-        created_draft_pr: expect.anything(),
-        warnings: expect.anything(),
+        created: expect.anything(),
       }),
     );
 
@@ -333,22 +337,23 @@ describe("MCP server (cycle5 Phase 1)", () => {
     );
     expect(
       (dfHandoffs?.outputSchema as { properties?: Record<string, unknown> })?.properties,
-    ).toHaveProperty("entries");
+    ).toHaveProperty("rows");
 
     const dfRehydrate = byName.get("df_rehydrate");
     expect(dfRehydrate?.annotations?.readOnlyHint).toBe(true);
     expect(dfRehydrate?.annotations?.openWorldHint).toBe(true);
     expect(
       (dfRehydrate?.inputSchema?.properties ?? {}) as Record<string, unknown>,
-    ).toHaveProperty("pr");
+    ).toHaveProperty("issue");
     expect(
       (dfRehydrate?.outputSchema as { properties?: Record<string, unknown> })?.properties,
     ).toEqual(
       expect.objectContaining({
-        pr: expect.anything(),
-        live_state: expect.anything(),
-        checks: expect.anything(),
-        checkout_hint: expect.anything(),
+        issue: expect.anything(),
+        state: expect.anything(),
+        title: expect.anything(),
+        linked_items: expect.anything(),
+        note: expect.anything(),
       }),
     );
 
@@ -359,15 +364,16 @@ describe("MCP server (cycle5 Phase 1)", () => {
     expect(dfAccept?.annotations?.openWorldHint).toBe(true);
     expect(
       (dfAccept?.inputSchema?.properties ?? {}) as Record<string, unknown>,
-    ).toHaveProperty("pr");
+    ).toHaveProperty("issue");
     expect(
       (dfAccept?.outputSchema as { properties?: Record<string, unknown> })?.properties,
     ).toEqual(
       expect.objectContaining({
-        pr: expect.anything(),
-        removed_label: expect.anything(),
-        warnings: expect.anything(),
-        rehydrate: expect.anything(),
+        issue: expect.anything(),
+        state: expect.anything(),
+        title: expect.anything(),
+        linked_items: expect.anything(),
+        note: expect.anything(),
       }),
     );
 
@@ -391,7 +397,8 @@ describe("MCP server (cycle5 Phase 1)", () => {
     ]);
 
     // Step 7 populated prompts/list with 5 pure-template prompts;
-    // cycle8 adds df.handoff + df.rehydrate (7 total).
+    // cycle12 (Issue-anchor; supersedes cycle8 PR-anchor) adds
+    // df.handoff + df.rehydrate (7 total).
     // Detailed shape pins live in tests/mcp/prompts.test.ts. Here we
     // just assert the catalog set.
     const prompts = await client.listPrompts();

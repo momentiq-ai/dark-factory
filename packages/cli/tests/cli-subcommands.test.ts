@@ -308,51 +308,85 @@ describe("df CLI — Phase F reusable-workflow gates", () => {
   });
 });
 
-describe("df CLI — Cycle 8 handoff subcommands", () => {
-  // These pin the cli.ts wiring (help routing + subcommand dispatch) for
-  // the four handoff verbs. The behavior matrix lives in
-  // tests/handoff/handoff-core.test.ts; the spawned binary just confirms
-  // the subcommands are registered and route to their own help printers
-  // (the `--help` router gate in main() is the easy thing to forget).
+describe("df CLI — Cycle 12 handoff subcommands (v2 Issue-anchored)", () => {
+  // These pin the cli.ts wiring (help routing + subcommand dispatch + arg
+  // validation) for the four v2 handoff verbs. The behavior matrix lives
+  // in tests/handoff/*-verb.test.ts; the spawned binary just confirms the
+  // subcommands are registered, route to their own help printers (the
+  // `--help` router gate in main() is the easy thing to forget), and that
+  // requireSafeArgs/requireIssueNumber reject payload-shaped argv loudly
+  // before any gh/git side-effect. Cycle 8 (PR-anchor) wording is gone —
+  // the v1 source/tests were deleted at Task 22.
 
-  it("--help lists the Cycle 8 handoff verbs", async () => {
+  it("--help lists the Cycle 12 handoff verbs under their own section", async () => {
     const r = await runDfCli(["--help"]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("df handoff");
+    expect(r.stdout).toContain("Cycle 12 — agent handoff protocol, v2 Issue-anchored");
+    expect(r.stdout).toContain("df handoff [issue]");
     expect(r.stdout).toContain("df handoffs");
-    expect(r.stdout).toContain("df accept");
-    expect(r.stdout).toContain("df rehydrate");
+    expect(r.stdout).toContain("df accept <issue>");
+    expect(r.stdout).toContain("df rehydrate [issue]");
   });
 
-  it("handoff --help routes to the subcommand's own help (not global)", async () => {
+  it("handoff --help routes to the subcommand's own help (v2 wording)", async () => {
     const r = await runDfCli(["handoff", "--help"]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("df handoff — put a work-stream on the handoff stack");
-    expect(r.stdout).toContain("agent-context:v1");
+    expect(r.stdout).toContain("df handoff — put a work-stream on the handoff stack (v2 Issue-anchored).");
+    expect(r.stdout).toContain("--link <ref>");
+    expect(r.stdout).toContain("--unlink <ref>");
+    expect(r.stdout).toContain("--new");
   });
 
-  it("handoffs --help routes to the subcommand's own help", async () => {
+  it("handoffs --help routes to the subcommand's own help (v2 wording)", async () => {
     const r = await runDfCli(["handoffs", "--help"]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("df handoffs — list the stack");
+    expect(r.stdout).toContain("df handoffs — list the stack of handed-off Issues (v2 Issue-anchored).");
   });
 
-  it("accept --help routes to the subcommand's own help", async () => {
+  it("accept --help routes to the subcommand's own help (v2 wording)", async () => {
     const r = await runDfCli(["accept", "--help"]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("df accept — take the baton");
+    expect(r.stdout).toContain("df accept — take the baton on a handoff Issue (v2 Issue-anchored).");
   });
 
-  it("rehydrate --help routes to the subcommand's own help", async () => {
+  it("rehydrate --help routes to the subcommand's own help (v2 wording)", async () => {
     const r = await runDfCli(["rehydrate", "--help"]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("df rehydrate — read-only catch-up");
+    expect(r.stdout).toContain("df rehydrate — read-only catch-up on a handoff Issue (v2 Issue-anchored).");
   });
 
-  it("accept with no PR arg exits 1 with a stack hint", async () => {
+  it("accept with no Issue arg exits 2 with a stack hint", async () => {
     const r = await runDfCli(["accept"]);
-    expect(r.exitCode).toBe(1);
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("df accept: which one?");
     expect(r.stderr).toContain("df handoffs");
+  });
+
+  it("handoff '0' exits 2 — requireIssueNumber rejects non-positive integers", async () => {
+    const r = await runDfCli(["handoff", "0"]);
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("df handoff: issue must be a positive integer");
+    expect(r.stderr).toContain("'0'");
+  });
+
+  it("handoff with payload-shaped argv exits 2 — requireSafeArgs rejects shell metachars, never echoes payload", async () => {
+    const r = await runDfCli(["handoff", "42; echo PWNED"]);
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("df handoff: argument contains disallowed characters");
+    expect(r.stderr).toContain("refusing for safety");
+    // Hard contract: the payload's command-half must NEVER appear in any
+    // stream — not echoed back, not executed, not leaked via diagnostics.
+    expect(r.stdout).not.toContain("PWNED");
+    expect(r.stderr).not.toContain("PWNED");
+  });
+
+  it("accept with payload-shaped argv exits 2 — same allow-list, no PWNED in output", async () => {
+    const r = await runDfCli(["accept", "42; echo PWNED"]);
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("df accept: argument contains disallowed characters");
+    expect(r.stderr).toContain("refusing for safety");
+    expect(r.stdout).not.toContain("PWNED");
+    expect(r.stderr).not.toContain("PWNED");
   });
 });
 

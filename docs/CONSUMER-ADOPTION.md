@@ -539,46 +539,83 @@ The agent should connect, list tools, call `df_doctor`, and render the structure
 - **No `resources/subscribe` in this release.** Subscriptions land in cycle 5 Phase 2 (the remote HTTP MCP gateway at `mcp.dark-factory.momentiq.ai`). Phase 1 stdio clients poll if they need freshness.
 - **The protocol version pinned for this release is `2025-06-18`.** Newer clients negotiate to whichever supported version they prefer; older clients negotiate down. The SDK manages this — you do nothing.
 
-## 12. Session continuity — the agent handoff protocol
+## 12. Session continuity — the agent handoff protocol (Cycle 12 Issue-anchor)
 
-`@momentiq/dark-factory-cli@0.3.0-alpha.10+` ships four verbs that carry an
+`@momentiq/dark-factory-cli` (alpha tag past `0.6.0-alpha.9`) ships four verbs that carry an
 agent's *working context* across a session boundary (reboot, local-model
 upgrade, dev→dev, dev→cloud-agent). The **state** of a work-stream (branch, diff,
-CI, mergeability) is recoverable from `gh`/the PR; the **reasoning** (why this
-approach, what was rejected, traps hit, where you were mid-thought) is not — it
-evaporates with the session. The verbs staple that reasoning to the PR as a
-single marker-bounded comment and model the **baton** entirely on native GitHub
-primitives — **no new system, no extra service, no state file**:
+CI, mergeability) is recoverable from `gh`/the linked PR(s); the **reasoning**
+(why this approach, what was rejected, traps hit, where you were mid-thought)
+is not — it evaporates with the session. The verbs anchor that reasoning on a
+**dedicated handoff GitHub Issue** (created by `/handoff`, links *outward* to
+zero or more PRs/issues, closed by `/accept` when the next session records the
+baton) and model the **baton** entirely on native GitHub primitives — **no new
+system, no extra service, no state file**:
 
-- a **`handoff` label** = the stack,
-- the **assignee** = who holds the baton,
-- the **PR timeline** = the acceptance audit (recorded for free).
+- a **`handoff` label** = lineage (survives close — closed handoff Issues are
+  the audit trail, queryable via `gh issue list --label handoff --state closed`),
+- the **assignee** = who holds the baton (empty = on the stack, `@me` = claimed),
+- the **issue timeline** = the assignment + close audit (recorded for free).
+
+**Cycle 12 protocol upgrade** (was: Cycle 8 PR-anchor; this is the v2
+Issue-anchor redesign):
+
+- The arg shape changed: `[pr]` → `[issue]` across all four verbs. There is **no
+  compat shim** — pin past the first Cycle 12.2 alpha (computed by
+  release-please on merge — past `0.6.0-alpha.9`) and adopt the new arg
+  shape.
+- The slash-command `.md` heredoc surface (which existed in Cycle 8 to wrap the
+  bash scripts under Claude Code's `$ARGUMENTS` substitution) is gone. The TS CLI
+  takes real argv directly, structurally closing the heredoc-breakout
+  trust-model surface the v1 critic kept flagging.
+- `git push` is no longer a side-effect of `df handoff`. The handoff event is
+  bounded to the Issue lifecycle (open → unassigned/assigned → closed by
+  `/accept`). Push your branch yourself when you're ready.
 
 Available identically as CLI subcommands and MCP tools (the [§11](#11-wire-the-mcp-server-into-your-agent)
-server exposes the same logic), plus two MCP prompts that carry the judgment:
+server exposes the same logic), plus MCP prompts that carry the judgment:
 
 | Verb | CLI | MCP tool | When |
 |---|---|---|---|
-| Hand off | `df handoff [pr] < note.md` | `df_handoff` | Pausing / ending / switching away |
+| Hand off | `df handoff [issue] [--link <ref>]... [--unlink <ref>]... [--new] < note.md` | `df_handoff` | Pausing / ending / switching away |
 | List the stack | `df handoffs` | `df_handoffs` | Fresh start — what's available? |
-| Accept | `df accept <pr>` | `df_accept` | Take over a handoff (claim + rehydrate) |
-| Rehydrate | `df rehydrate [pr]` | `df_rehydrate` | Resume your *own* in-flight work (read-only) |
+| Accept | `df accept <issue>` | `df_accept` | Take over a handoff (claim + rehydrate + close — Commitment 10) |
+| Rehydrate | `df rehydrate [issue]` | `df_rehydrate` | Resume your *own* in-flight work (read-only); no-arg → 2-tier lookup (open+@me, then closed+@me within 7d) |
 
-### The note
+### Linking work items
 
-A single PR comment bounded by `<!-- agent-context:v1 -->` … `<!-- /agent-context:v1 -->`
-markers (load-bearing — the upsert finds the note by them). Re-handing-off edits
-the note in place (PATCH; falls back to a fresh POST if the existing note was
-authored by another identity). Compose it from your *actual working memory* — the
-`df.handoff` MCP prompt (or the handoff skill) carries the exact format:
+A handoff issue links *outward* to zero or more PRs and issues — the work the
+session was on. `--link <ref>` adds; `--unlink <ref>` removes. Ref forms:
+
+- bare number (`103`) → same-repo PR (resolved PR-first; falls back to Issue)
+- `owner/repo#N` → cross-repo
+- `pr:N` / `issue:N` → explicit type
+- URL (`https://github.com/o/r/pull/103?tab=files`)
+
+`df rehydrate` derives live state for each linked work item (PR mergeable/review/
+checks; issue open/closed/assigned) and emits a copy-pastable `gh pr checkout N`
+hint for each OPEN linked PR (cross-repo gets `--repo owner/repo`).
+
+GitHub *project-item* linkage is deferred (OQ-12.7); supplying a project URL is
+explicitly refused with the deferred-to-Phase-12.2 message rather than the
+generic "not a number".
+
+### The note (issue body)
+
+The handoff issue's **body** carries the rehydration note, framed by
+`<!-- agent-context:v1 -->` … `<!-- /agent-context:v1 -->` markers (load-bearing
+— the upsert finds the block by them). Re-handing-off splices the new block in
+place; the script also maintains the `**Linked work items:**` section. Compose
+the note from your *actual working memory* — the `df.handoff` MCP prompt (or the
+handoff skill) carries the exact format:
 
 ```markdown
 <!-- agent-context:v1 -->
 > 🤖 **Agent rehydration context** — transient working memory, NOT a source of truth.
-> State is whatever `gh`/the PR says now; this is the *reasoning*. Stale by nature.
+> State is whatever `gh`/the linked work item(s) say now; this is the *reasoning*. Stale by nature.
 > _Updated: <YYYY-MM-DD> by <your model/session>_
 
-**Branch:** `<branch>` · pull it; don't assume a local checkout exists.
+**Branch (if any):** `<branch>` · pull it before editing. Blank ⇒ the work spans multiple items and no single branch is canonical.
 
 **Why this approach (and what I rejected):**
 - <the decision + the alternative you did NOT take, and why>
@@ -590,53 +627,77 @@ authored by another identity). Compose it from your *actual working memory* — 
 - <the thing you'd tell yourself if you walked back in 10 minutes later>
 
 **Derive current state (don't trust the above as current):**
-    Run df rehydrate on this PR — it derives live state safely.
+    Run /rehydrate on this issue — it derives live state for the issue and each
+    linked work item safely.
 <!-- /agent-context:v1 -->
 ```
 
+Do **not** include a `**Linked work items:**` section yourself — the script
+maintains it from `--link` / `--unlink` flags and from prior body content.
+
 ### Security rule (hard)
 
-A PR comment is readable by anyone with repo access and **cached/indexed even
-after deletion**. The note carries **setup steps** (procedural: "switch off the
-prod kube context before applying", "select the review workspace first", "run
-`df onboard`") — **never** secret values, tokens, API keys, credential file
-paths, connection strings, or any description of the existing security context.
+An issue body is readable by anyone with repo access, **cached/indexed even
+after deletion**, and **its edit history is more prominent than a PR comment's**
+(every body edit is recorded in the issue timeline). The note carries
+**setup steps** (procedural: "switch off the prod kube context before
+applying", "select the review workspace first", "run `df onboard`") — **never**
+secret values, tokens, API keys, credential file paths, connection strings, or
+any description of the existing security context.
 
 - `df handoff` **scrubs** the note for secret-shaped content (key/secret var
   names, GitHub/Slack/AWS token shapes, OpenAI/Anthropic/Google provider keys,
   credentialed connection strings, well-known credential file paths, PEM blocks)
-  and **refuses on a match**, reporting line numbers only — never the value. The
-  scrub is a *backstop*; you (guided by the `df.handoff` prompt) are the primary
-  control. If the scrub refuses your note, rephrase the offending line as a setup
-  step — don't work around it.
-- `df rehydrate` derives **live state itself** with fixed, script-owned `gh pr
-  view` / `gh pr checks` commands and prints it FIRST (the truth, not the note).
-  It **never executes text transcribed from a PR comment** — a PR comment is
-  attacker-influenceable, so executing it would be an injection vector. The
-  note's own "derive current state" lines are informational only.
+  and **refuses on a match**, reporting line numbers + filename only — never
+  the value, never echoed back to terminal/CI logs. The scrub is a *backstop*;
+  you (guided by the `df.handoff` prompt) are the primary control. If the
+  scrub refuses, rephrase the line as a setup step.
+- `df handoff` also scrubs the **linked PR/issue title** (fetched live from gh)
+  and the **auto-generated issue title** (derived from your branch name) —
+  refuses if either matches the secret pattern, so a branch named after a
+  secret can't leak into the repo-indexed issue title.
+- `df rehydrate` derives **live state itself** with fixed, script-owned
+  `gh issue view` / `gh pr view` commands and prints it FIRST (the truth, not
+  the note). It **never executes text transcribed from the issue body** — the
+  body is attacker-influenceable, so executing it would be an injection vector.
+  Control/ESC bytes in the body, title, and linked-item titles are stripped
+  before printing to defend against ANSI-escape terminal abuse.
 
 ### Other guardrails
 
-- **Note before push (D5).** `df handoff` posts the note *before* pushing, so the
-  reasoning survives even if a pre-push critic gate blocks. It warns loudly if the
-  branch tip isn't on `origin`.
-- **Dirty-worktree refusal.** Uncommitted *tracked* changes are not pushed by
-  `git push origin HEAD`, so `df handoff` refuses (commit/stash first) rather than
-  label a PR "available" whose branch is missing your work. Untracked files warn.
-- **Branch-mismatch guard.** An explicit `df handoff <pr>` whose PR branch ≠ your
-  current branch is refused (the note would land on one PR while the push targets
-  another).
-- **PR-number validation.** A non-integer PR arg is rejected before any `gh`
-  call, so a malicious `df rehydrate '42; …'` can never produce an injectable
-  copy-pastable command.
+- **No `git push`.** v2 removes the v1 push step. If you have uncommitted work
+  that's part of this handoff, commit and push it yourself; the script warns
+  but does not refuse.
+- **Race-safe upsert.** `df handoff` re-fetches the issue body just before
+  PATCH and aborts if a concurrent writer changed it (last-writer-wins window
+  is sub-second; documented per spec §7).
+- **Atomic accept** (Commitment 10). `df accept` runs 7 steps in order:
+  validate → refuse-other → strict-rehydrate → pre-assign drift → assign →
+  post-assign verify → close. Any failure leaves the issue open + unassigned
+  on the stack (no partial-state regression). The `handoff` label survives the
+  close for its lifetime.
+- **No-arg `/rehydrate` 2-tier lookup.** When you don't pass an issue:
+  (i) most recent open `handoff`-labeled issue assigned to `@me`, else
+  (ii) most recent CLOSED `handoff`-labeled issue accepted by `@me` within 7
+  days (the post-`/accept` crash/reboot/model-upgrade case). Both refuse with
+  a `/handoffs` pointer if neither matches.
+- **Refuse link cycles.** `--link` to a handoff-labeled issue is refused (no
+  handoff-issue-links-handoff-issue cycles).
+- **Issue arg validation.** A non-positive-integer issue arg is rejected by
+  `requireIssueNumber` before any `gh` call, plus a defense-in-depth allow-list
+  on the full argv (rejects shell metacharacters even though TS real argv
+  structurally closes the injection vector).
 
 ### Wiring
 
 The verbs need `gh` (authenticated) on PATH — the same dependency the cycle-doc
-and branch-protection subcommands already use. No extra config. As MCP tools they
-are exposed automatically by the [§11](#11-wire-the-mcp-server-into-your-agent)
+and branch-protection subcommands already use. No extra config. As MCP tools
+they are exposed automatically by the [§11](#11-wire-the-mcp-server-into-your-agent)
 server, so an MCP-wired agent discovers `df_handoff` / `df_accept` /
-`df_rehydrate` / `df_handoffs` without any prompting.
+`df_rehydrate` / `df_handoffs` (Issue-anchored; PR-arg removed)
+without any prompting. The MCP tools return both `structuredContent` (typed
+shape for clients that consume it) and `content[0].text` (bash-compatible
+rendered text for clients that don't).
 
 ## 13. References
 
