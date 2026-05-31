@@ -2,15 +2,15 @@
   "name": "@momentiq/dark-factory-workspace",
   "version": "0.0.0",
   "private": true,
-  "description": "Workspaces shell for @momentiq/dark-factory-cli and @momentiq/dark-factory-schemas",
+  "description": "Workspaces shell for the public Momentiq CLIs — @momentiq/dark-factory-cli, @momentiq/dark-factory-schemas, @momentiq/sage-cli.",
   "license": "Apache-2.0",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace=@momentiq/dark-factory-schemas && npm run build --workspace=@momentiq/dark-factory-cli",
-    "type-check": "npm run type-check --workspace=@momentiq/dark-factory-schemas && npm run type-check --workspace=@momentiq/dark-factory-cli",
-    "test": "npm test --workspace=@momentiq/dark-factory-schemas && npm test --workspace=@momentiq/dark-factory-cli"
+    "build": "npm run build --workspace=@momentiq/dark-factory-schemas && npm run build --workspace=@momentiq/dark-factory-cli && npm run build --workspace=@momentiq/sage-cli",
+    "type-check": "npm run type-check --workspace=@momentiq/dark-factory-schemas && npm run type-check --workspace=@momentiq/dark-factory-cli && npm run type-check --workspace=@momentiq/sage-cli",
+    "test": "npm test --workspace=@momentiq/dark-factory-schemas && npm test --workspace=@momentiq/dark-factory-cli && npm test --workspace=@momentiq/sage-cli"
   },
   "engines": {
     "node": ">=20"

@@ -1,0 +1,8 @@
+dist/
+node_modules/
+# The bundled template is a build artifact, populated by scripts/bundle-template.mjs
+# from a pinned sage-blueprint tag at CI build time. Never committed.
+# Use `template/*` (not `template/`) so the `.keep` re-include below works —
+# git can't re-include a child of a fully-ignored parent directory.
+template/*
+!template/.keep
