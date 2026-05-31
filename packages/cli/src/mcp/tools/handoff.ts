@@ -88,6 +88,17 @@ export function registerHandoffTools(
         "content first and REFUSES on a match (setup steps yes, secrets " +
         "never)." +
         DEPRECATION_NOTE,
+      annotations: {
+        // Writes the issue body + label + (optionally) creates a new
+        // issue. Reaches the GitHub API (openWorldHint:true). Not
+        // destructive (no irreversible deletes) and not idempotent (a
+        // second call with the same note re-upserts; new+forceNew may
+        // create another issue).
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
       inputSchema: {
         note: z
           .string()
@@ -174,6 +185,16 @@ export function registerHandoffTools(
         "read-only work precedes all mutations; any failure leaves the " +
         "issue open + unassigned on the stack." +
         DEPRECATION_NOTE,
+      annotations: {
+        // Writes the assignee + closes the issue (Commitment 10) via
+        // the GitHub API. Not destructive (the issue can be reopened
+        // and re-claimed) and not idempotent (a second call on the
+        // same closed issue is a no-op / error path).
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
       inputSchema: {
         issue: z
           .string()
@@ -204,6 +225,12 @@ export function registerHandoffTools(
         "then closed+@me within 7d). Works on open AND closed issues " +
         "(closed = forensic catch-up)." +
         DEPRECATION_NOTE,
+      annotations: {
+        // Pure read of the GitHub API — no mutations to issue/PR
+        // state. openWorldHint:true because it hits the GitHub API.
+        readOnlyHint: true,
+        openWorldHint: true,
+      },
       inputSchema: {
         issue: z
           .string()
@@ -237,6 +264,12 @@ export function registerHandoffTools(
         "Per-repo (gh issue list is repo-scoped; cross-repo aggregation " +
         "is deferred to OQ-12.3)." +
         DEPRECATION_NOTE,
+      annotations: {
+        // Pure list query (open + handoff-labeled + unassigned) over
+        // the GitHub API. No mutations.
+        readOnlyHint: true,
+        openWorldHint: true,
+      },
       inputSchema: {},
       outputSchema: {
         rows: z.array(
