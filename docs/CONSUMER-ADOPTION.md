@@ -541,7 +541,7 @@ The agent should connect, list tools, call `df_doctor`, and render the structure
 
 ## 12. Session continuity — the agent handoff protocol (Cycle 12 Issue-anchor)
 
-`@momentiq/dark-factory-cli@0.7.0-alpha.0+` ships four verbs that carry an
+`@momentiq/dark-factory-cli` (alpha tag past `0.6.0-alpha.9`) ships four verbs that carry an
 agent's *working context* across a session boundary (reboot, local-model
 upgrade, dev→dev, dev→cloud-agent). The **state** of a work-stream (branch, diff,
 CI, mergeability) is recoverable from `gh`/the linked PR(s); the **reasoning**
@@ -561,7 +561,9 @@ system, no extra service, no state file**:
 Issue-anchor redesign):
 
 - The arg shape changed: `[pr]` → `[issue]` across all four verbs. There is **no
-  compat shim** — pin past `0.7.0-alpha.0` and adopt the new arg shape.
+  compat shim** — pin past the first Cycle 12.2 alpha (computed by
+  release-please on merge — past `0.6.0-alpha.9`) and adopt the new arg
+  shape.
 - The slash-command `.md` heredoc surface (which existed in Cycle 8 to wrap the
   bash scripts under Claude Code's `$ARGUMENTS` substitution) is gone. The TS CLI
   takes real argv directly, structurally closing the heredoc-breakout
@@ -692,7 +694,7 @@ The verbs need `gh` (authenticated) on PATH — the same dependency the cycle-do
 and branch-protection subcommands already use. No extra config. As MCP tools
 they are exposed automatically by the [§11](#11-wire-the-mcp-server-into-your-agent)
 server, so an MCP-wired agent discovers `df_handoff` / `df_accept` /
-`df_rehydrate` / `df_handoffs` (Issue-anchored as of 0.7.0; PR-arg removed)
+`df_rehydrate` / `df_handoffs` (Issue-anchored; PR-arg removed)
 without any prompting. The MCP tools return both `structuredContent` (typed
 shape for clients that consume it) and `content[0].text` (bash-compatible
 rendered text for clients that don't).

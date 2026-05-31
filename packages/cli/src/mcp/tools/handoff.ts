@@ -4,9 +4,14 @@
 // 4 verb orchestrators to the MCP server per spec §9.
 //
 // Signature change from Cycle 8 v1 (deleted at Task 22): `pr` → `issue`.
-// Each tool's description carries an "Issue-anchored as of 0.7.0; PR-arg
-// removed" deprecation note (stays for one alpha cycle per spec §9 OQ-12.5,
-// then removed).
+// Each tool's description carries an "Issue-anchored; PR-arg removed"
+// deprecation note (stays for one alpha cycle per spec §9 OQ-12.5, then
+// removed). The note deliberately omits a specific version number because
+// release-please's `versioning-strategy: prerelease` computes the actual
+// bumped version from the conventional-commit history on merge — it could
+// land as 0.6.0-alpha.10 or 0.7.0-alpha.0 depending on its rules, and a
+// hardcoded prediction would either be wrong or need a follow-up edit
+// after the release PR computes the real number.
 //
 // Each tool returns BOTH:
 //   - structuredContent: the typed RunXResult / RehydrateData shape so
@@ -57,7 +62,7 @@ export interface RegisterHandoffToolsOptions {
   readonly _clock?: Clock;
 }
 
-const DEPRECATION_NOTE = " Issue-anchored as of 0.7.0; PR-arg removed.";
+const DEPRECATION_NOTE = " Issue-anchored; PR-arg removed.";
 
 export function registerHandoffTools(
   server: McpServer,

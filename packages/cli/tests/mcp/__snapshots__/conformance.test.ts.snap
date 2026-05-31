@@ -148,7 +148,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": true,
         "readOnlyHint": false,
       },
-      "description": "Take the baton on a handoff issue: validate, strict-rehydrate, assign @me, verify, then close (Commitment 10). Atomic ordering — read-only work precedes all mutations; any failure leaves the issue open + unassigned on the stack. Issue-anchored as of 0.7.0; PR-arg removed.",
+      "description": "Take the baton on a handoff issue: validate, strict-rehydrate, assign @me, verify, then close (Commitment 10). Atomic ordering — read-only work precedes all mutations; any failure leaves the issue open + unassigned on the stack. Issue-anchored; PR-arg removed.",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
@@ -1011,7 +1011,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": true,
         "readOnlyHint": false,
       },
-      "description": "Put a work-stream on the handoff stack: upsert the marker-bounded rehydration \`note\` you compose as the dedicated handoff issue's body, add the \`handoff\` label, and leave the issue unassigned (open on the stack). Auto-creates a new issue if none is supplied or none is owned by @me. Scrubs the note for secret-shaped content first and REFUSES on a match (setup steps yes, secrets never). Issue-anchored as of 0.7.0; PR-arg removed.",
+      "description": "Put a work-stream on the handoff stack: upsert the marker-bounded rehydration \`note\` you compose as the dedicated handoff issue's body, add the \`handoff\` label, and leave the issue unassigned (open on the stack). Auto-creates a new issue if none is supplied or none is owned by @me. Scrubs the note for secret-shaped content first and REFUSES on a match (setup steps yes, secrets never). Issue-anchored; PR-arg removed.",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
@@ -1081,7 +1081,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": true,
         "readOnlyHint": true,
       },
-      "description": "List the handoff stack (open + handoff-labeled + unassigned). Per-repo (gh issue list is repo-scoped; cross-repo aggregation is deferred to OQ-12.3). Issue-anchored as of 0.7.0; PR-arg removed.",
+      "description": "List the handoff stack (open + handoff-labeled + unassigned). Per-repo (gh issue list is repo-scoped; cross-repo aggregation is deferred to OQ-12.3). Issue-anchored; PR-arg removed.",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {},
@@ -1136,7 +1136,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": true,
         "readOnlyHint": true,
       },
-      "description": "Read-only catch-up on a handoff issue: derives live state + each linked work item's status + prints the rehydration note. No ownership change. No-arg resolves via 2-tier (open+@me first, then closed+@me within 7d). Works on open AND closed issues (closed = forensic catch-up). Issue-anchored as of 0.7.0; PR-arg removed.",
+      "description": "Read-only catch-up on a handoff issue: derives live state + each linked work item's status + prints the rehydration note. No ownership change. No-arg resolves via 2-tier (open+@me first, then closed+@me within 7d). Works on open AND closed issues (closed = forensic catch-up). Issue-anchored; PR-arg removed.",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
