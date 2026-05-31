@@ -71,9 +71,10 @@ export function validateLatestBlock(body: string): boolean {
  * transition to post). The new block can therefore contain its own marker
  * tokens without double-splicing.
  *
- * Edge note on `split("\n")`: a trailing `\n` produces a final empty
- * element which round-trips through `join("\n")` to the same trailing
- * newline, so the bash-side line-by-line text is preserved.
+ * Bash-parity contract: the marker-present branch always emits a trailing
+ * `\n` (matching bash awk's `print` ORS), regardless of input. The
+ * append-no-markers branch preserves the new block's trailing-newline
+ * status (matching bash `cat "$newfile"` which adds nothing of its own).
  */
 export function spliceAgentContextBlock(
   oldBody: string,
@@ -113,5 +114,6 @@ export function spliceAgentContextBlock(
       out.push(line);
     }
   }
-  return out.join("\n");
+  const result = out.join("\n");
+  return result.endsWith("\n") ? result : result + "\n";
 }

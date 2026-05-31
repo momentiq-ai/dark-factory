@@ -91,6 +91,14 @@ describe("markers — spliceAgentContextBlock", () => {
     // Should contain exactly ONE open marker (in the new block).
     expect((result.match(/<!-- agent-context:v1 -->/g) ?? []).length).toBe(1);
     expect((result.match(/<!-- \/agent-context:v1 -->/g) ?? []).length).toBe(1);
+    // Order: open must precede close (no inversion via splice).
+    expect(result.indexOf(MARKER_OPEN)).toBeLessThan(result.indexOf(MARKER_CLOSE));
+  });
+  it("marker-present branch emits trailing \\n even when input lacks one (bash-parity)", () => {
+    const oldBody = `before\n${O}\nold\n${C}`; // NO trailing \n
+    const newBlock = `${O}\nnew\n${C}`;
+    const result = spliceAgentContextBlock(oldBody, newBlock);
+    expect(result.endsWith("\n")).toBe(true);
   });
 });
 
