@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { Command } from "commander";
 
 import { runInit } from "./commands/init.js";
@@ -85,8 +88,34 @@ program
     process.exit(exitCode);
   });
 
-program.parseAsync(process.argv).catch((err: unknown) => {
-  const message = err instanceof Error ? err.message : String(err);
-  process.stderr.write(`error: ${message}\n`);
-  process.exit(1);
-});
+/**
+ * Only invoke commander's parse when this module is being run as the
+ * entrypoint (i.e. `sage` was typed at the shell or `node ./dist/cli.js`),
+ * NOT when it is dynamically imported by a smoke test like
+ *   node -e "import('./dist/cli.js')"
+ * which is exactly what the `publish-sage-cli` CI workflow does to
+ * verify the bundled bin loads cleanly. Without this guard, commander
+ * sees no command in argv, prints help, and exits 1 — which makes the
+ * `import()` reject and trips the validate step. The hosted W3 critic
+ * caught the failed run on the first publish attempt (#82 merge).
+ *
+ * The realpath dance handles symlinked installs (npm bin shims often
+ * symlink dist/cli.js into node_modules/.bin/sage).
+ */
+function isInvokedAsMain(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedAsMain()) {
+  program.parseAsync(process.argv).catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`error: ${message}\n`);
+    process.exit(1);
+  });
+}
