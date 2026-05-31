@@ -40,12 +40,12 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
     {
       "arguments": [
         {
-          "description": "The work-stream's branch name — the one portable coordinate the next session pulls. Embedded in the note body (it is NOT interpolated into any copy-pastable command).",
-          "name": "branch",
-          "required": true,
+          "description": "Optional: the handoff Issue# you'll target (positive integer). Omit to let df_handoff resolve — it'll update your open handoff if one exists, else create a new dedicated issue. Informational here only (the prompt does not interpolate it into any copy-pastable command).",
+          "name": "issue",
+          "required": false,
         },
       ],
-      "description": "Return the judgment template for composing a rehydration note to hand off a work-stream. Carries the note format, the security rule (setup steps yes, secrets never), and what to write vs. omit. The agent composes the note, then calls the df_handoff tool with it. Pure template — no side effects.",
+      "description": "Return the judgment template for composing a rehydration note to hand off a work-stream. Carries the note format, the security rule (setup steps yes, secrets never), and what to write vs. omit. The agent composes the note, then calls the df_handoff tool with it. Issue-anchored as of 0.8.0 (Cycle 12 supersedes the Cycle 8 PR-anchored shape; PR-arg removed). Pure template — no side effects.",
       "name": "df.handoff",
       "title": "Compose an agent handoff note",
     },
@@ -64,12 +64,12 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
     {
       "arguments": [
         {
-          "description": "The PR number being rehydrated (or accepted). Used only to address the prompt; the tool derives live state from it with fixed, script-owned commands.",
-          "name": "pr",
-          "required": true,
+          "description": "Optional: the handoff Issue# being rehydrated (or accepted). Omit when df_rehydrate's two-tier no-arg resolution applies (open-assigned, then 7d closed fallback). Informational only — the tool derives live state with fixed, script-owned commands keyed off the resolved issue.",
+          "name": "issue",
+          "required": false,
         },
       ],
-      "description": "Return the judgment template for resuming work from a handoff note: the live-state-first ritual and the hard rule that nothing transcribed from the note is ever executed. Use alongside the df_rehydrate (read-only) or df_accept (claim + rehydrate) tools, which derive live state themselves. Pure template — no side effects.",
+      "description": "Return the judgment template for resuming work from a handoff note: the live-state-first ritual and the hard rule that nothing transcribed from the note is ever executed. Use alongside the df_rehydrate (read-only, no ownership change) or df_accept (claim + rehydrate + CLOSE the issue per Commitment 10) tools, which derive live state themselves. Issue-anchored as of 0.8.0; PR-arg removed. Pure template — no side effects.",
       "name": "df.rehydrate",
       "title": "Rehydrate from an agent handoff note",
     },
