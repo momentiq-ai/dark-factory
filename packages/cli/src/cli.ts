@@ -102,19 +102,12 @@ import { cmdMcp } from "./mcp/cli.js";
 // Assessor's records from momentiq-ai/df-assessments. See
 // docs/roadmap/cycles/cycle11-flow-assessor-surfacing-and-tools.md.
 import { cmdFlow } from "./commands/flow/index.js";
-// Cycle 8 Phase 8.2 — agent handoff protocol. `df handoff`/`df accept`/
-// `df rehydrate`/`df handoffs` carry working context (the reasoning a
-// session can't recover from `gh`) across a session boundary, modeling the
-// baton on native GitHub primitives (handoff label = stack, assignee =
-// ownership, PR timeline = audit). The mechanism is shared with the
-// `df_handoff`/etc. MCP tools via src/handoff/index.ts. See
-// docs/CONSUMER-ADOPTION.md § handoff.
-import {
-  cmdHandoff,
-  cmdAccept,
-  cmdRehydrate,
-  cmdHandoffs,
-} from "./handoff/cli.js";
+// Cycle 12 Phase 12.2 — agent handoff protocol (v2 — Issue-anchored, native-
+// baton). The v1 (Cycle 8) CLI handlers were imported from `./handoff/cli.js`
+// here; that file was deleted in Task 22 and the v2 handlers land as one
+// commit in Task 25. Until then the four subcommand branches below fall
+// through to `notImplemented(sub)` — see the CYCLE12_SUBCOMMANDS comment +
+// the routing block at the bottom of main().
 
 interface PackageMeta {
   name?: string;
@@ -340,10 +333,15 @@ const PHASE_F_LOCAL_SUBCOMMANDS = new Set([
 // stdout writer in that subtree) rather than the global printHelp().
 const PHASE_G_SUBCOMMANDS = new Set(["mcp"]);
 
-// Cycle 8 — agent handoff protocol verbs. Like the other subcommands they
-// talk to GitHub via `gh`; unlike the gate verbs they mutate PR state
-// (comments, label, assignee). `df handoff` reads the note body on stdin.
-const CYCLE8_SUBCOMMANDS = new Set([
+// Cycle 12 Phase 12.2 — agent handoff protocol v2 verbs (replaces the
+// Cycle 8 v1 set). Like the other subcommands they talk to GitHub via `gh`;
+// unlike the gate verbs they mutate Issue state (body, label, assignee).
+// `df handoff` reads the note body on stdin. The set is registered here so
+// the early --help interception above forwards to the subcommand's own help
+// printer (Task 25); between Tasks 22 and 25 the verbs fall through to
+// notImplemented at the routing block, which is the deliberate
+// scope-of-this-commit posture.
+const CYCLE12_SUBCOMMANDS = new Set([
   "handoff",
   "handoffs",
   "accept",
@@ -1321,7 +1319,7 @@ async function main(argv: string[]): Promise<number> {
       !PHASE_F_SUBCOMMANDS.has(sub0) &&
       !PHASE_F_LOCAL_SUBCOMMANDS.has(sub0) &&
       !PHASE_G_SUBCOMMANDS.has(sub0) &&
-      !CYCLE8_SUBCOMMANDS.has(sub0) &&
+      !CYCLE12_SUBCOMMANDS.has(sub0) &&
       !CYCLE11_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
@@ -1370,19 +1368,13 @@ async function main(argv: string[]): Promise<number> {
   if (sub === "mcp") {
     return await cmdMcp(rest);
   }
-  // Cycle 8 — agent handoff protocol verbs.
-  if (sub === "handoff") {
-    return await cmdHandoff(rest);
-  }
-  if (sub === "handoffs") {
-    return await cmdHandoffs(rest);
-  }
-  if (sub === "accept") {
-    return await cmdAccept(rest);
-  }
-  if (sub === "rehydrate") {
-    return await cmdRehydrate(rest);
-  }
+  // Cycle 12 Phase 12.2 — agent handoff protocol v2 verbs. The v1
+  // handlers were deleted in Task 22; the v2 handlers land in Task 25.
+  // Until then the four verbs are unimplemented at the CLI surface — the
+  // MCP surface is similarly stubbed (registerHandoffTools is a no-op
+  // until Task 24). Falling through to notImplemented preserves a clean
+  // build between Tasks 22 and 25 (the whole feature ships as one PR at
+  // Task 34).
   // Cycle 11 Phase 11.1 — PR Flow Assessor surfacing.
   if (sub === "flow") {
     return await cmdFlow(rest, {

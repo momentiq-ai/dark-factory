@@ -82,14 +82,11 @@ export interface CreateMcpServerOptions {
   readonly _testRunReview?: (
     options: import("../runner.js").ReviewRunOptions,
   ) => Promise<import("../runner.js").ReviewRunOutcome>;
-  /**
-   * Test-only escape hatch — substitute the `gh`/`git` runners the
-   * cycle8 handoff tools shell out through, so they can be exercised
-   * over the in-memory transport without a PATH stub or the network.
-   * Production code leaves these undefined; the real `gh`/`git` ship.
-   */
-  readonly _testHandoffGh?: import("../handoff/index.js").GhRunner;
-  readonly _testHandoffGit?: import("../handoff/index.js").GitRunner;
+  // Note: the v1 (Cycle 8) `_testHandoffGh` / `_testHandoffGit` runner
+  // injectors were removed in Cycle 12.2 Task 22 — v2 uses the object-shaped
+  // GhClient/GitClient ports from src/handoff/ports.ts (one method per gh
+  // verb pattern), not function runners. The replacement v2 injectors land
+  // in Task 24 alongside the real registerHandoffTools impl.
 }
 
 export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
@@ -140,11 +137,7 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
       : {}),
   });                                            // step 6 — df_review + df_review_status + df_bypass
   registerGenerateTools(server, toolOpts);      // step 8 — df_cycle_doc_generate + df_adr_generate (sampling)
-  registerHandoffTools(server, {
-    ...toolOpts,
-    ...(opts._testHandoffGh !== undefined ? { _internalGh: opts._testHandoffGh } : {}),
-    ...(opts._testHandoffGit !== undefined ? { _internalGit: opts._testHandoffGit } : {}),
-  });                                            // cycle8 — df_handoff + df_handoffs + df_accept + df_rehydrate
+  registerHandoffTools(server, toolOpts);        // cycle12.2 — df_handoff + df_handoffs + df_accept + df_rehydrate (real impl in Task 24; stub for Tasks 22-23)
 
   // step 4 — URI-addressable resources (df://repo/...). Single call
   // registers all 9 resources at once; see src/mcp/resources.ts.

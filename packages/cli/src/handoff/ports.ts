@@ -11,16 +11,27 @@
 // The verb impl is constrained to call these in the SAME ORDER the bash
 // did — drift/race tests assert that order (see advisor finding #2).
 //
-// HandoffError is RE-EXPORTED from ./index.js (the v1 class) for the
-// duration of the Tasks 11-22 window. This keeps a SINGLE class identity
-// across all 19 v1 throw sites + the new TS port. Task 22 deletes the v1
-// index.ts and moves the class definition here (inverting the re-export).
+// HandoffError is the SINGLE class identity used across every v2 throw
+// site (verbs + ports + clients). Defined here (the lowest leaf in the
+// handoff module graph) so the new public surface (./index.js, Task 23)
+// can re-export from here without a cycle. The v1 monolith used to own
+// this class — Task 22 inverted the re-export when the v1 index.ts was
+// deleted, so this is now the canonical definition.
 
-// Single-class re-export to avoid the dual-HandoffError hazard during the
-// Tasks 11-22 window. The v1 class already has `savedNotePath?: string`
-// (used by handoff.ts when the push gate blocks). DO NOT define a new
-// HandoffError class here.
-export { HandoffError } from "./index.js";
+/**
+ * Raised by the core for every operator-facing refusal/abort (the bash
+ * `die`). Carries an optional `savedNotePath` so the CLI can echo where a
+ * composed note was preserved when a push/gate blocked it (Decision D5 —
+ * the reasoning is the precious artifact and is never discarded).
+ */
+export class HandoffError extends Error {
+  readonly savedNotePath: string | undefined;
+  constructor(message: string, savedNotePath?: string) {
+    super(message);
+    this.name = "HandoffError";
+    this.savedNotePath = savedNotePath;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // GhClient — every gh call the bash verbs make. Fine-grained per gh verb
