@@ -1096,6 +1096,21 @@ export class CursorCliAdapter implements CriticAdapter {
     const enriched: CriticResult = {
       ...result,
       durationMs,
+      // Cycle 6.3 — surface per-critic telemetry on the artifact-
+      // shaped result. The cursor-agent subprocess emits a
+      // `result.usage` block (parsed into `resultEvent.usageInput/
+      // OutputTokens`); these were previously only included in the
+      // adapter's emit-event payload. Hoist onto CriticResult so the
+      // hosted runtime persists + prices them. cursor-agent does not
+      // report a cached-prefix token count today; tokensCached stays
+      // undefined.
+      retries: attemptIdx,
+      ...(resultEvent.usageInputTokens !== null
+        ? { tokensInput: resultEvent.usageInputTokens }
+        : {}),
+      ...(resultEvent.usageOutputTokens !== null
+        ? { tokensOutput: resultEvent.usageOutputTokens }
+        : {}),
       validation: {
         qualityGateResults: packet.validation.evidence,
         qualityGatesMissing: packet.validation.missing,

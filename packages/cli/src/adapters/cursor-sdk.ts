@@ -382,6 +382,14 @@ export class CursorSdkAdapter implements CriticAdapter {
     // deterministic evidence the packet carried. The critic's echo is
     // accepted leniently above for legacy/varying responses but the
     // authoritative copy comes from us.
+    //
+    // Cycle 6.3 — tokensInput/tokensOutput/tokensCached are intentionally
+    // NOT populated here: the Cursor Agent SDK's RunResult shape
+    // (@cursor/sdk/dist/esm/run.d.ts) exposes only
+    //   { id, status, result, model, durationMs, git }
+    // — no usage / token data. Absence preserved; the hosted runtime's
+    // cost-projection step will record null cost for this critic and
+    // surface the gap via a coverage indicator.
     const enriched: CriticResult = {
       ...result,
       durationMs,
