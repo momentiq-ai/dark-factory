@@ -60,13 +60,8 @@ async function main() {
   mkdirSync(TEMPLATE_DEST, { recursive: true });
   await writeFile(KEEP_FILE, "# placeholder — see scripts/bundle-template.mjs\n");
 
-  if (LOCAL_PATH) {
-    await bundleFromLocal(LOCAL_PATH);
-  } else {
-    await bundleFromGit();
-  }
-
-  log("bundle complete");
+  const bundled = LOCAL_PATH ? await bundleFromLocal(LOCAL_PATH) : await bundleFromGit();
+  log(bundled ? "bundle complete" : "bundle skipped");
 }
 
 async function bundleFromLocal(source) {
@@ -82,18 +77,37 @@ async function bundleFromLocal(source) {
     source_repo: SOURCE_REPO,
     source_path: source,
   });
+  return true;
 }
 
 async function bundleFromGit() {
   const token = process.env["GH_TOKEN"] ?? process.env["GITHUB_TOKEN"];
   if (!token) {
-    fail(
-      "no SAGE_BLUEPRINT_LOCAL_PATH and no GH_TOKEN/GITHUB_TOKEN in env. " +
-        "Either set SAGE_BLUEPRINT_LOCAL_PATH=/path/to/sage-blueprint for local dev, " +
-        "or set GH_TOKEN to a token with Contents:Read on momentiq-ai/sage-blueprint. " +
-        "In CI, this token is the SAGE_BLUEPRINT_READ_TOKEN repo secret.",
-      2,
-    );
+    // No-op gracefully when no input is available. The wrapper's
+    // tsc build does NOT need the bundled template (template/ is at the
+    // package root, not under src/), so non-publish CI workflows can
+    // run `npm run build` against the workspace root without
+    // SAGE_BLUEPRINT_READ_TOKEN. The publish-sage-cli job has a
+    // separate "Validate sage-cli package" step that fails if it
+    // reaches publish without a bundled template — so the safety
+    // property holds: we never ship an empty bundle.
+    //
+    // Set SAGE_CLI_REQUIRE_BUNDLE=1 to opt back into the fail-fast
+    // behavior locally (useful when iterating on the script itself).
+    if (process.env["SAGE_CLI_REQUIRE_BUNDLE"] === "1") {
+      fail(
+        "no SAGE_BLUEPRINT_LOCAL_PATH and no GH_TOKEN/GITHUB_TOKEN in env, and " +
+          "SAGE_CLI_REQUIRE_BUNDLE=1 was set. Either provide a token / local path, " +
+          "or unset SAGE_CLI_REQUIRE_BUNDLE.",
+        2,
+      );
+    }
+    log("skip: no SAGE_BLUEPRINT_LOCAL_PATH and no GH_TOKEN/GITHUB_TOKEN in env.");
+    log("      Bundling skipped; template/ left empty.");
+    log("      This is the expected path in non-publish CI (agent-critic, schema-check, etc.).");
+    log("      The publish-sage-cli job sets GH_TOKEN and runs the real bundle step.");
+    log("      For local dev, set SAGE_BLUEPRINT_LOCAL_PATH=/path/to/sage-blueprint.");
+    return false;
   }
 
   const tmp = mkdtempSync(join(tmpdir(), "sage-blueprint-"));
@@ -114,6 +128,7 @@ async function bundleFromGit() {
   await writeBundleInfo({ commit, ref: DEFAULT_REF, source_repo: SOURCE_REPO });
 
   rmSync(tmp, { recursive: true, force: true });
+  return true;
 }
 
 function readGitCommit(path) {
