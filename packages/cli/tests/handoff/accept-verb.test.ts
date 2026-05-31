@@ -419,9 +419,13 @@ describe("/accept — close-failure recovery", () => {
     expect(gh.calls().some((c) => c === "gh issue close 42")).toBe(true);
   });
 
-  it("already assigned-to-@me → drift allow-list passes, close completes (retry path) (t_accept_self_already_assigned_passes)", async () => {
+  it("already assigned-to-@me → no drift, completes (t_accept_self_already_assigned_passes — baseline)", async () => {
     const { gh } = setup();
     // Initial view: already assigned to @me (prior step-5-OK / step-7-fail).
+    // updatedAt matches the slim slots, so the close-failure retry allow-list
+    // (accept-verb.ts:179-187) is NOT exercised here — that branch needs an
+    // updatedAt mismatch (see the next test). This baseline is the no-drift
+    // arm: same @me, no updatedAt change → trivial pass-through.
     gh.setIssueViewDefault(
       issueView({
         number: 42,
@@ -429,9 +433,6 @@ describe("/accept — close-failure recovery", () => {
         assignees: [{ login: "alien8d" }],
       }),
     );
-    // Slim slot 1 + 2: both see [@me]. The allow-list at step 4 lets
-    // initialStatus="me" + driftStatus="me" pass even on updatedAt drift,
-    // but here UPDATED_AT matches so we don't even hit that branch.
     gh.setIssueViewSlimDefault(
       slimView({ assignees: [{ login: "alien8d" }] }),
     );
@@ -439,6 +440,47 @@ describe("/accept — close-failure recovery", () => {
     const result = await runAccept({ issue: 42, gh });
     expect(result.issueNumber).toBe(42);
     expect(gh.calls().some((c) => c === "gh issue close 42")).toBe(true);
+  });
+
+  it("@me + updatedAt drift → close-failure retry allow-list passes (t_accept_self_already_assigned_passes — allow-list arm)", async () => {
+    // The LOAD-BEARING arm of accept-verb.ts:179-187: when INITIAL was @me
+    // and DRIFT is @me but updatedAt differs, the chain passes through
+    // (close-failure retry path — assign happened on a prior attempt, close
+    // failed, the operator re-ran /accept). This is the ONLY drift-pass
+    // branch in the verb; if someone deletes it so all updatedAt drift
+    // aborts, every other accept test still passes — this is the test that
+    // anchors that contract.
+    const { gh } = setup();
+    gh.setIssueViewDefault(
+      issueView({
+        number: 42,
+        body: bodyWithBlock(),
+        assignees: [{ login: "alien8d" }],
+        updatedAt: UPDATED_AT,
+      }),
+    );
+    // Slim slot 1: [@me], updatedAt DIFFERS → triggers the drift check;
+    // initialStatus == "me" && driftStatus == "me" → allow-list pass.
+    gh.setIssueViewSlimSlot(
+      1,
+      slimView({
+        assignees: [{ login: "alien8d" }],
+        updatedAt: "2026-05-30T01:00:00Z",
+      }),
+    );
+    // Slim slot 2: post-assign verify sees [@me] (assign is idempotent).
+    gh.setIssueViewSlimSlot(
+      2,
+      slimView({ assignees: [{ login: "alien8d" }] }),
+    );
+
+    const result = await runAccept({ issue: 42, gh });
+    expect(result.issueNumber).toBe(42);
+    // Close completed — the retry path succeeded.
+    expect(gh.calls().some((c) => c === "gh issue close 42")).toBe(true);
+    expect(result.logs.some((l) => /handoff event complete/i.test(l))).toBe(
+      true,
+    );
   });
 });
 
