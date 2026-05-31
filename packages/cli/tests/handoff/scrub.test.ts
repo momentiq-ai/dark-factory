@@ -15,8 +15,12 @@ const fixture = resolve(here, "fixtures/secret-patterns.bash-ere");
 
 describe("scrub — SECRET_PATTERNS SoT", () => {
   it("SECRET_PATTERNS_BASH_ERE is byte-equal to the DFP-vendored fixture", () => {
-    const vendored = readFileSync(fixture, "utf8").replace(/\n$/, "");
+    const vendored = readFileSync(fixture, "utf8").replace(/\r?\n$/, "");
     expect(SECRET_PATTERNS_BASH_ERE).toBe(vendored);
+  });
+
+  it("SECRET_PATTERNS_JS has no g flag (lastIndex would break per-line .test loop)", () => {
+    expect(SECRET_PATTERNS_JS.flags).not.toMatch(/g/);
   });
 });
 
@@ -71,5 +75,38 @@ describe("scrub — refusal contract (no value echo)", () => {
     expect(result.ok).toBe(false);
     expect(result.refusal).toContain("PR #303 title");
     expect(result.refusal).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  });
+});
+
+describe("scrub — structural edges", () => {
+  it("empty body returns ok", () => {
+    expect(scrubBody("", "/tmp/n.md")).toEqual({ ok: true });
+  });
+  it("no-newline clean body returns ok", () => {
+    expect(scrubBody("hello", "/tmp/n.md")).toEqual({ ok: true });
+  });
+  it("trailing-newline-only body returns ok", () => {
+    expect(scrubBody("\n", "/tmp/n.md")).toEqual({ ok: true });
+  });
+  it("marker-only body returns ok", () => {
+    expect(scrubBody(
+      "<!-- agent-context:v1 --><!-- /agent-context:v1 -->",
+      "/tmp/n.md",
+    )).toEqual({ ok: true });
+  });
+  it("no-trailing-newline secret on last line is found and reported", () => {
+    const r = scrubBody("line1\nAKIAIOSFODNN7EXAMPLE", "/tmp/n.md");
+    expect(r.ok).toBe(false);
+    expect(r.refusal).toContain(":2");
+    expect(r.refusal).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  });
+  it("cross-line secret (whole-body matches, per-line doesn't) reports '?' line", () => {
+    // JS \s spans \n; bash grep -qEi is per-line. The TS scrubber over-refuses
+    // here vs bash — documented safe-direction asymmetry (same as the
+    // unicode-\s caveat). The whole-body .test() fires, no single line does,
+    // so the refusal reports ':?' as the documented fallback.
+    const r = scrubBody("API_KEY\n=value", "/tmp/n.md");
+    expect(r.ok).toBe(false);
+    expect(r.refusal).toContain(":?");
   });
 });
