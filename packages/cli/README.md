@@ -4,9 +4,8 @@ Dark Factory OSS CLI — multi-vendor adversarial critic orchestration.
 
 ## What this package gives you
 
-All nine Dark Factory services extracted from sage3c, today consumable as a
-TypeScript library and (for the Python-backed and Phase D services) as `df`
-subcommands:
+Nine Dark Factory services, consumable as a TypeScript library and (where
+relevant) as `df` subcommands:
 
 1. **Critic Orchestrator** (`./adapters/*`) — vendor-neutral adapter contract
    (`CriticAdapter`) with concrete adapters for Cursor SDK, OpenAI Codex SDK,
@@ -23,33 +22,31 @@ subcommands:
 5. **Cycle-Doc Trailer Validator** (`./cycle-doc-validator/*` + `df validate-cycle-doc`)
    — enforces per-PR `Cycle:` / `Issue:` / `ProjectItem:` trailer rules.
 6. **Merge Queue Admission Policy** (`./policy/merge-queue.ts` + `df admit-pr`) —
-   plan-vs-code PR classifier (the same heuristic sage3c's plan-PR review gate
-   uses) + the typed ruleset shape (`defaultMainRulesetShape`,
-   `defaultCeReviewRulesetShape`, `defaultMergeQueueRule`) that consumers
-   declare so the branch-protection auditor can detect drift against it.
+   plan-vs-code PR classifier + the typed ruleset shape
+   (`defaultMainRulesetShape`, `defaultCeReviewRulesetShape`,
+   `defaultMergeQueueRule`) that consumers declare so the branch-protection
+   auditor can detect drift against it.
 7. **Branch-Protection Drift Detector** (`./branch-protection/*` + `df audit-branch-protection`)
    — compares a declarative `spec.yaml` against the live GitHub ruleset.
 8. **Audit / Compliance Trail** (`./evidence/audit-trail.ts` + `df audit stats`) —
    the `_runs.ndjson` NDJSON sink + read/summarize/agreement-rate/quorum-stats
-   helpers behind the legacy `make agent-review-stats`. Every critic run,
-   every gate verdict, every bypass invocation appends here.
+   helpers behind `make agent-review-stats`. Every critic run, every gate
+   verdict, every bypass invocation appends here.
 9. **Cycle Tracker Sync + PR Attribution** (`./cycle-tracker-sync/*` + `df sync-trackers` + `df attribute-pr`)
    — reconciles GitHub tracker issues with cycle docs + writes the
    `Cycle Ref` custom field on PR project items.
 
-After Phase D all nine services are present in the package. Phase E adds the
-reusable GitHub workflows that consumers wire up via `uses:`, plus stub
-subcommands (`status-check`, `critic`) so those workflows can satisfy the
-five required-status-check contexts in dark-factory's own ruleset while real
-critic / aggregator logic lands in Phase F.
+The package also ships five reusable GitHub Actions workflows
+(`.github/workflows/*.yml`) that consumers wire up via `uses:`. See the
+[root README](../../README.md#reusable-workflows) for the consumer wiring
+pattern.
 
 ## Status
 
-`0.1.0-alpha.6` — extracted from `momentiq-ai/sage3c:tools/agent-review/` +
-`scripts/ci/` per cycle 331.1 Phases B–F-LOCAL. Library API is stable;
-binary subcommands cover the full hook-facing surface (review, gate-push,
-doctor, gates, stats) under the subscription cost model. The Phase F
-`df critic` subcommand is the CI cold-path API-key version.
+`1.0.0` — shipped on npm. Library API + the hook-facing binary surface
+(`review`, `gate-push`, `doctor`, `gates`, `stats`) are stable. The
+`df critic` subcommand is the CI cold-path (API-key) counterpart to the
+subscription-auth local hooks.
 
 ## Install
 
@@ -87,19 +84,20 @@ await runValidateCycleDoc({
 df --help
 df --version
 
-# Phase C subcommands — each forwards remaining argv to the bundled Python
-# script verbatim, so `df <sub> --help` returns the Python argparse banner.
+# Python-backed subcommands — each forwards remaining argv to the bundled
+# Python script verbatim, so `df <sub> --help` returns the Python argparse
+# banner.
 df validate-cycle-doc --help
 df audit-branch-protection --use-bundled-default-spec --repo owner/repo
 df sync-trackers --dry-run
 df attribute-pr  # env-driven; needs PR_NUMBER, PR_NODE_ID, PR_BODY_FILE, PROJECT_TOKEN
 
-# Phase D subcommands — pure-TS, parse flags directly.
+# Pure-TS subcommands.
 df audit stats --path .git/agent-reviews/_runs.ndjson
 df admit-pr --files-stdin   # newline-separated file paths on stdin
-df admit-pr --files docs/roadmap/cycles/cycle331.md,packages/cli/src/cli.ts
+df admit-pr --files docs/roadmap/cycles/cycle1.md,packages/cli/src/cli.ts
 
-# Phase F-LOCAL hook-facing subcommands (subscription cost model).
+# Hook-facing subcommands (subscription cost model).
 df review --commit HEAD --profile local --foreground
 df gate-push                          # local pre-push, reads stdin
 df gate-push --commit HEAD --ci       # CI replay
@@ -107,24 +105,23 @@ df doctor --profile local             # env + per-adapter auth check
 df gates                              # static gates, no LLM
 df stats                              # alias for `df audit stats`
 
-# Phase G — MCP server (cycle 5). Stdio Model Context Protocol server
-# exposing the CLI surface to any MCP-speaking agent.
+# Stdio Model Context Protocol server — exposes the CLI surface to any
+# MCP-speaking agent.
 df mcp                                # start the stdio MCP server
 df mcp --help                         # config snippets for Claude Code, Cursor, Codex
 ```
 
 > **Note on `--use-bundled-default-spec`**: the bundled `spec-default.yaml`
-> mirrors the sage3c-shaped branch-protection posture (e.g., asserts the
-> `agent-critic` and `cycle-doc-validation` required contexts). It exists
-> as a working starting point for first-run audits and the standalone
-> repo's own dogfood gate. Consumers SHOULD author their own `spec.yaml`
+> asserts the standard Dark Factory required-status-check contexts (e.g.
+> `agent-critic`, `cycle-doc-validation`). It exists as a working starting
+> point for first-run audits. Consumers SHOULD author their own `spec.yaml`
 > matching their repo's actual posture — running the bundled default
 > against an arbitrary repo will surface drift against contexts that
 > don't exist there.
 
 ## For consumer repos — hook wiring + subscription cost model
 
-The Phase F-LOCAL subcommands (`review`, `gate-push`, `doctor`, `gates`,
+The hook-facing subcommands (`review`, `gate-push`, `doctor`, `gates`,
 `stats`) are designed to power consumer repos' `.husky/post-commit` and
 `.husky/pre-push` hooks. The **cost model** is critical: per-commit critic
 invocations from API tokens cost $1000s/week on a busy repo, while
@@ -251,12 +248,12 @@ API — see `packages/cli/src/doppler-bootstrap.ts` for the
 ## System requirements
 
 - **Node.js >=20**
-- **Python 3.11+** — required for services #5, #7, #9. The Phase C extraction
-  bundles the original Python scripts (`validate_cycle_doc.py`,
+- **Python 3.11+** — required for services #5, #7, #9. The package bundles
+  the source Python scripts (`validate_cycle_doc.py`,
   `audit_branch_protection.py`, `sync_cycle_trackers.py`,
   `attribute_pr_cycle_ref.py`) and wraps each in a TypeScript subprocess
-  spawn. The pure-TS rewrite is tracked as Phase C-PORT follow-up and will
-  eliminate this dependency in a future release.
+  spawn. A pure-TS rewrite is on the roadmap and will eliminate this
+  dependency in a future release.
 - **`gh` CLI** (authenticated) — all four Python scripts shell out to `gh api`
   for GitHub queries. CI invocations provide `GH_TOKEN` / `PROJECT_TOKEN`
   via environment.
@@ -278,6 +275,6 @@ option is supplied — pass it when invoking outside a git worktree.
 
 ## License
 
-Apache-2.0. The OSS critic surface is a public artifact. Calibrated prompts
-and the App's calibrated bypass-classifier are out-of-scope here and live in
-private repos (see [parent cycle 331](https://github.com/momentiq-ai/sage3c/blob/main/docs/roadmap/cycles/cycle331-dark-factory-platformization.md)).
+Apache-2.0. The OSS critic surface is a public artifact. The hosted Dark
+Factory runtime layers proprietary calibrated prompts and a calibrated
+bypass-classifier on top of this CLI; those are out-of-scope here.

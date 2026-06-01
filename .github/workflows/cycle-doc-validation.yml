@@ -31,7 +31,7 @@
 # and the deferred-hardening note re: full integrity-baked `npm pack`.
 # The validate-cycle-doc subcommand wraps a Python script bundled in
 # the CLI's `dist/cycle-doc-validator/`, so the consumer path still
-# requires `actions/setup-python@v5`.
+# requires `actions/setup-python@v6`.
 #
 # Security: PR fields (PR_NUMBER, PR_TITLE, PR_BODY, etc.) flow through
 # env vars before any run script references them, per
@@ -104,12 +104,12 @@ jobs:
             echo "(\`pull_request.body\` is not available on merge_group events.)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: env.EVENT_NAME == 'pull_request'
 
       - name: Setup Node 20
         if: env.EVENT_NAME == 'pull_request'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
@@ -164,7 +164,7 @@ jobs:
         # (Phase C extraction from sage3c). Until Phase E-PORT makes it
         # pure-TS, both the local and consumer paths need python3 on PATH.
         if: env.EVENT_NAME == 'pull_request'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 

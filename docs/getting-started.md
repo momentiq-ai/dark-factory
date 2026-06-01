@@ -167,7 +167,7 @@ Confirm by checking the CLI's banner:
 
 ```bash
 sage --version
-# @momentiq/sage-cli 0.1.0 (bundled momentiq-ai/sage-blueprint@<commit> via ref <tag>)
+# @momentiq/sage-cli 0.1.0 (bundled sage-blueprint@<commit> via ref <tag>)
 ```
 
 Now cd into the product:
@@ -364,6 +364,6 @@ The hosted Dark Factory runtime is in **Limited Availability** today — curated
 
 ### Filing issues + asking questions
 
-- [`momentiq-ai/dark-factory`](https://github.com/momentiq-ai/dark-factory/issues) — Dark Factory CLI, Sage CLI, hosted critic
-- [`momentiq-ai/cerebe-platform`](https://github.com/momentiq-ai/cerebe-platform/issues) — Cerebe (cognitive engine)
-- [`momentiq-ai/sage-blueprint`](https://github.com/momentiq-ai/sage-blueprint) — the Sage template itself (the issue tracker is private; surface bugs via the dark-factory issues for now and we'll route)
+- [`momentiq-ai/dark-factory`](https://github.com/momentiq-ai/dark-factory/issues) — Dark Factory CLI, Sage CLI, reusable workflows, hosted critic
+- Cerebe — file via the dashboard at [cerebe.ai](https://cerebe.ai), or contact [support@momentiq.ai](mailto:support@momentiq.ai)
+- Sage template — surface bugs via the [`momentiq-ai/dark-factory` issues](https://github.com/momentiq-ai/dark-factory/issues) and we'll route
