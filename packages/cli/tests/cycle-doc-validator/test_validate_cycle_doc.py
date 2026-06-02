@@ -167,6 +167,57 @@ def test_is_plan_pr_false_when_no_changed_files_returned():
     )
 
 
+def test_is_plan_pr_false_when_only_roadmap_index_edited():
+    """Issue #25 regression: a PR that only edits the roadmap index/overview
+    (e.g. ``docs/roadmap/roadmap-overview.md`` or
+    ``docs/roadmap/dark-factory-roadmap.md``) is NOT a plan PR.
+
+    Before the narrowing fix, the plan-PR classifier accepted any change
+    confined to ``docs/`` when paired with a ``docs(roadmap):`` title or
+    a ``plan-pr`` label. That forced consumers to manufacture a cycle
+    doc + tracking issue for routine roadmap-index refreshes. The
+    tightened contract: plan-PR detection requires that at least one
+    changed file is itself a cycle doc under
+    ``docs/roadmap/cycles/cycle*.md``.
+    """
+    assert not is_plan_pr(
+        title="docs(roadmap): refresh statuses on the roadmap index",
+        labels=[],
+        changed_files=["docs/roadmap/dark-factory-roadmap.md"],
+    )
+    assert not is_plan_pr(
+        title="docs(roadmap): drop stale columns",
+        labels=["plan-pr"],
+        changed_files=["docs/roadmap/roadmap-overview.md"],
+    )
+
+
+def test_is_plan_pr_true_when_cycle_doc_edited():
+    """Plan-PR detection still fires when a real cycle doc is in the diff."""
+    assert is_plan_pr(
+        title="docs(roadmap): extract from sage3c",
+        labels=[],
+        changed_files=[
+            "docs/roadmap/cycles/cycle331.1-extract-from-sage3c.md",
+        ],
+    )
+
+
+def test_is_plan_pr_false_for_cycles_dir_readme():
+    """The ``docs/roadmap/cycles/`` directory README is not a cycle doc.
+
+    Only filenames matching ``cycle*.md`` count toward plan-PR
+    classification — ``README.md`` (or any other non-cycle doc) sitting
+    next to the cycle files is index/meta content and should route
+    through the non-cycle PR contract.
+    """
+    assert not is_plan_pr(
+        title="docs(roadmap): refresh cycles index",
+        labels=[],
+        changed_files=["docs/roadmap/cycles/README.md"],
+    )
+
+
 # ---------------------------------------------------------------------------
 # status_completion_in_diff
 # ---------------------------------------------------------------------------
@@ -496,13 +547,23 @@ def test_validate_code_pr_completed_cycle_fails():
     )
 
 
-def test_validate_plan_pr_must_include_cycle_doc_in_diff():
-    """Plan PR cites cycle 318.4 but doesn't modify its doc → fail."""
+def test_validate_plan_pr_must_include_cited_cycle_doc_in_diff():
+    """Plan PR includes a cycle doc but cites a different cycle → fail.
+
+    The plan-PR classifier (post-#25) fires only when at least one
+    cycle doc is in the diff. A PR that touches ``cycle999.md`` but
+    cites ``Cycle: 318.4`` is still a plan PR (a real cycle doc is in
+    the diff), but it cites the wrong cycle — validate() must surface
+    that mismatch.
+    """
     errors = validate(
-        title="docs(roadmap): unrelated docs change",
+        title="docs(roadmap): touch one cycle but cite another",
         body="Cycle: 318.4\n",
         labels=["plan-pr"],
-        changed_files=["docs/architecture/something.md"],
+        changed_files=[
+            "docs/roadmap/cycles/cycle999-unrelated.md",
+            "docs/architecture/something.md",
+        ],
         diff="",
     )
     assert any(

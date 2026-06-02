@@ -35,7 +35,7 @@ _SAGE3C_FIXTURE_DEPENDENT_TESTS = {
     "test_validate_code_pr_happy_path_with_issue_trailer",
     "test_validate_code_pr_happy_path_with_autoclose_keyword",
     "test_validate_code_pr_missing_issue_and_project_item_fails",
-    "test_validate_plan_pr_must_include_cycle_doc_in_diff",
+    "test_validate_plan_pr_must_include_cited_cycle_doc_in_diff",
     "test_validate_plan_pr_happy_path",
     "test_validate_status_completion_in_implementing_pr_fails",
     "test_validate_rejects_terminal_base_cycle_even_if_pr_doc_reopens_it",
