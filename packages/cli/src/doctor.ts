@@ -27,7 +27,7 @@
 //     `subscription` / `api` was pinned by the profile and reports
 //     pass/fail accordingly.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   accessSync,
   constants,
@@ -147,11 +147,17 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorCheck[]> 
       : { remediation: `mkdir -p ${artifactDir} and ensure write permission` }),
   });
 
-  // Issue #105 — orphan-lock sweep. Subagent processes killed mid-run
+  // 5a. Issue #105 — orphan-lock sweep. Subagent processes killed mid-run
   // leave behind `.git/agent-reviews/<sha>.lock` files that block every
   // subsequent `df review` for that SHA. Walk the dir, parse each
   // lock's PID, and remove locks whose recorded PID is dead.
   checks.push(sweepOrphanLocks(artifactDir));
+
+  // 5b. Cache-tree corruption probe (issue #107). Detects the
+  // index-cache-tree-references-missing-object state a killed-mid-write
+  // `git commit` leaves the worktree in. Detect-only — the recovery
+  // (`git read-tree HEAD`) is destructive and stays operator-driven.
+  checks.push(probeCacheTree(root));
 
   // 6. Doppler bootstrap visibility (when caller supplied a BootstrapResult).
   // For the OSS doctor, this is informational — a `no-bootstrap-file` status
@@ -625,4 +631,94 @@ function isPidAlive(pid: number): boolean {
     if (e.code === "ESRCH") return false;
     return true;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #107 — cache-tree corruption probe.
+//
+// Detects the specific corruption shape `dark-factory-platform#170`
+// reproduced: the index's cache-tree references an object (tree or
+// blob) that doesn't exist in `.git/objects/`. This is the state a
+// killed-mid-write `git commit` leaves the worktree in — the cache-tree
+// has been updated to reference the new tree SHA, but the tree object
+// itself was never finalised before the process was killed.
+//
+// Probe shape: `git fsck` (no flags). When the cache-tree is dangling,
+// fsck emits a line containing the literal substring
+// `invalid sha1 pointer in cache-tree of`. Adjacent bad-repo states
+// (broken HEAD ref, missing blob NOT in cache-tree, dangling orphan
+// objects) emit different error messages that don't match this regex,
+// so the probe is specific without being noisy.
+//
+// Detect-only: the recovery (`git read-tree HEAD`) discards staged
+// work. The operator must decide whether to preserve the staged
+// changes (re-add them after `read-tree`) or accept the loss. The
+// probe surfaces the diagnosis + remediation hint and nothing more.
+// ---------------------------------------------------------------------------
+
+export const CACHE_TREE_CORRUPTION_REGEX =
+  /invalid sha1 pointer in cache-tree of/;
+
+export function probeCacheTree(repoRoot: string): DoctorCheck {
+  if (!existsSync(resolve(repoRoot, ".git"))) {
+    // `df doctor`'s base-infra checks already cover the
+    // "not-a-git-repo" case (artifact_dir_writable + git_core_hookspath
+    // both fail). Surface this informationally so the probe doesn't
+    // throw / fail-closed on the wrong condition.
+    return {
+      name: "cache_tree_probe",
+      passed: true,
+      detail: `${repoRoot} is not a git working tree — cache-tree probe skipped`,
+    };
+  }
+  const result = spawnSync("git", ["fsck"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    // fsck output goes to stderr; we don't need stdout but capture it
+    // anyway so the buffer doesn't fill and stall fsck on huge repos.
+  });
+  if (result.error) {
+    // ENOENT (git not on PATH) is genuinely informational — the rest of
+    // `df doctor` (which all shells out to git) will surface that
+    // diagnostic loudly. Don't double-report.
+    return {
+      name: "cache_tree_probe",
+      passed: true,
+      detail: `git fsck not runnable in ${repoRoot}: ${result.error.message}`,
+    };
+  }
+  const stderr = result.stderr ?? "";
+  const stdout = result.stdout ?? "";
+  const combined = `${stdout}\n${stderr}`;
+  if (CACHE_TREE_CORRUPTION_REGEX.test(combined)) {
+    // Extract the offending SHA(s) for a more actionable detail line.
+    // The fsck error reads: `error: <sha>: invalid sha1 pointer in
+    // cache-tree of <index-path>`. Capture all of them; multiple
+    // corrupt entries are possible after a churny mid-commit kill.
+    const matches = combined.matchAll(
+      /([0-9a-f]{40}): invalid sha1 pointer in cache-tree of (\S+)/g,
+    );
+    const offenders = Array.from(matches).map((m) => ({
+      sha: m[1] ?? "(unknown)",
+      indexPath: m[2] ?? "(unknown)",
+    }));
+    const detail =
+      offenders.length > 0
+        ? `cache-tree references missing object${offenders.length > 1 ? "s" : ""}: ${offenders
+            .map((o) => `${o.sha} in ${o.indexPath}`)
+            .join("; ")}`
+        : `git fsck reported cache-tree corruption: ${combined.trim()}`;
+    return {
+      name: "cache_tree_probe",
+      passed: false,
+      detail,
+      remediation:
+        "Run `git read-tree HEAD` in the affected worktree to rebuild the index from HEAD's tree — WARNING: this discards any staged changes; re-add them after recovery if needed.",
+    };
+  }
+  return {
+    name: "cache_tree_probe",
+    passed: true,
+    detail: `git fsck reports no cache-tree corruption in ${repoRoot}`,
+  };
 }
