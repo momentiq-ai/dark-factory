@@ -40,12 +40,12 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
     {
       "arguments": [
         {
-          "description": "The work-stream's branch name — the one portable coordinate the next session pulls. Embedded in the note body (it is NOT interpolated into any copy-pastable command).",
-          "name": "branch",
+          "description": "The work-stream's operator-facing title — what shows up in \`df handoffs\` rows and as the dedicated handoff Issue's title. Embedded in the note body (it is NOT interpolated into any copy-pastable command).",
+          "name": "title",
           "required": true,
         },
       ],
-      "description": "Return the judgment template for composing a rehydration note to hand off a work-stream. Carries the note format, the security rule (setup steps yes, secrets never), and what to write vs. omit. The agent composes the note, then calls the df_handoff tool with it. Pure template — no side effects.",
+      "description": "Return the judgment template for composing a rehydration note to hand off a work-stream onto the v2 Issue-anchored stack. Carries the note format, the security rule (setup steps yes, secrets never), and what to write vs. omit. The agent composes the note, then calls the df_handoff tool with it (the note lands on the dedicated handoff Issue's body). Pure template — no side effects.",
       "name": "df.handoff",
       "title": "Compose an agent handoff note",
     },
@@ -64,12 +64,12 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
     {
       "arguments": [
         {
-          "description": "The PR number being rehydrated (or accepted). Used only to address the prompt; the tool derives live state from it with fixed, script-owned commands.",
-          "name": "pr",
+          "description": "The handoff Issue number being rehydrated (or accepted). Used only to address the prompt; the tool derives live state with fixed, script-owned \`gh issue view\` + per-link \`gh pr view\` / \`gh issue view\` commands.",
+          "name": "issue",
           "required": true,
         },
       ],
-      "description": "Return the judgment template for resuming work from a handoff note: the live-state-first ritual and the hard rule that nothing transcribed from the note is ever executed. Use alongside the df_rehydrate (read-only) or df_accept (claim + rehydrate) tools, which derive live state themselves. Pure template — no side effects.",
+      "description": "Return the judgment template for resuming work from a v2 Issue-anchored handoff: the live-state-first ritual and the hard rule that nothing transcribed from the note is ever executed. Use alongside the df_rehydrate (read-only) or df_accept (claim + rehydrate + close) tools, which derive live state themselves from the Issue and its linked work items. Pure template — no side effects.",
       "name": "df.rehydrate",
       "title": "Rehydrate from an agent handoff note",
     },
@@ -148,7 +148,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": true,
         "readOnlyHint": false,
       },
-      "description": "Take the baton on a handoff issue: validate, strict-rehydrate, assign @me, verify, then close (Commitment 10). Atomic ordering — read-only work precedes all mutations; any failure leaves the issue open + unassigned on the stack. Issue-anchored; PR-arg removed.",
+      "description": "Take the baton on a handoff issue: validate, strict-rehydrate, assign @me, verify, then close (Commitment 10). Atomic ordering — read-only work precedes all mutations; any failure leaves the issue open + unassigned on the stack.",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
@@ -1011,7 +1011,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": true,
         "readOnlyHint": false,
       },
-      "description": "Put a work-stream on the handoff stack: upsert the marker-bounded rehydration \`note\` you compose as the dedicated handoff issue's body, add the \`handoff\` label, and leave the issue unassigned (open on the stack). Auto-creates a new issue if none is supplied or none is owned by @me. Scrubs the note for secret-shaped content first and REFUSES on a match (setup steps yes, secrets never). Issue-anchored; PR-arg removed.",
+      "description": "Put a work-stream on the handoff stack: upsert the marker-bounded rehydration \`note\` you compose as the dedicated handoff issue's body, add the \`handoff\` label, and leave the issue unassigned (open on the stack). Auto-creates a new issue if none is supplied or none is owned by @me. Scrubs the note for secret-shaped content first and REFUSES on a match (setup steps yes, secrets never).",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
@@ -1081,7 +1081,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": true,
         "readOnlyHint": true,
       },
-      "description": "List the handoff stack (open + handoff-labeled + unassigned). Per-repo (gh issue list is repo-scoped; cross-repo aggregation is deferred to OQ-12.3). Issue-anchored; PR-arg removed.",
+      "description": "List the handoff stack (open + handoff-labeled + unassigned). Per-repo (gh issue list is repo-scoped; cross-repo aggregation is deferred to OQ-12.3).",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {},
@@ -1136,7 +1136,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": true,
         "readOnlyHint": true,
       },
-      "description": "Read-only catch-up on a handoff issue: derives live state + each linked work item's status + prints the rehydration note. No ownership change. No-arg resolves via 2-tier (open+@me first, then closed+@me within 7d). Works on open AND closed issues (closed = forensic catch-up). Issue-anchored; PR-arg removed.",
+      "description": "Read-only catch-up on a handoff issue: derives live state + each linked work item's status + prints the rehydration note. No ownership change. No-arg resolves via 2-tier (open+@me first, then closed+@me within 7d). Works on open AND closed issues (closed = forensic catch-up).",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,

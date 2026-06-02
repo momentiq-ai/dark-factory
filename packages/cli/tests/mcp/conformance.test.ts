@@ -227,4 +227,48 @@ describe("MCP catalog conformance snapshot (cycle5 Phase 1 step 11)", () => {
       ).toBeGreaterThan(0);
     }
   });
+
+  // The four v2 Issue-anchored handoff tools shipped a one-alpha-cycle
+  // deprecation note in their `description` strings (Cycle 12 §9 OQ-12.5)
+  // so MCP clients seeing the catalog could tell the v1 PR-arg shape was
+  // gone:
+  //
+  //   "Issue-anchored; PR-arg removed."
+  //
+  // After one alpha rotation that note is removed (issue #72) — the
+  // package is at 1.0.0 (past the time-gate). The matching `df.handoff` /
+  // `df.rehydrate` PROMPT descriptions must also be free of any
+  // deprecation-note residue. The descriptions may still use the words
+  // "Issue-anchored" or "PR-arg" in normal prose — what's banned is the
+  // specific deprecation-note phrasing.
+  it("the v2 handoff surface no longer carries the alpha-cycle deprecation note (#72)", async () => {
+    const targetedTools = ["df_handoff", "df_accept", "df_rehydrate", "df_handoffs"];
+    const targetedPrompts = ["df.handoff", "df.rehydrate"];
+    const bannedSubstrings = [
+      "Issue-anchored; PR-arg removed",
+      "Issue-anchored as of 0.8.0; PR-arg removed",
+      "PR-arg removed",
+    ];
+    const snapshot = await captureCatalog();
+    for (const name of targetedTools) {
+      const tool = snapshot.tools.find((t) => t.name === name);
+      expect(tool, `tool ${name} missing from catalog`).toBeDefined();
+      for (const banned of bannedSubstrings) {
+        expect(
+          tool?.description ?? "",
+          `tool ${name} description must not contain "${banned}"`,
+        ).not.toContain(banned);
+      }
+    }
+    for (const name of targetedPrompts) {
+      const prompt = snapshot.prompts.find((p) => p.name === name);
+      expect(prompt, `prompt ${name} missing from catalog`).toBeDefined();
+      for (const banned of bannedSubstrings) {
+        expect(
+          prompt?.description ?? "",
+          `prompt ${name} description must not contain "${banned}"`,
+        ).not.toContain(banned);
+      }
+    }
+  });
 });
