@@ -85,13 +85,16 @@ jobs:
       - name: Detect App credentials
         id: detect-app
         env:
-          APP_ID_SET: ${{ secrets.CI_BOT_APP_ID != '' }}
+          # Both must be set; a partial config (one secret present, the
+          # other missing) would still fail at create-github-app-token's
+          # input validation, never reaching the fallback path.
+          APP_CREDS_SET: ${{ secrets.CI_BOT_APP_ID != '' && secrets.CI_BOT_PRIVATE_KEY != '' }}
         run: |
-          if [ "$APP_ID_SET" = "true" ]; then
+          if [ "$APP_CREDS_SET" = "true" ]; then
             echo "has_app=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_app=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::CI_BOT_APP_ID not configured; release-please will run under GITHUB_TOKEN. Release PRs will require admin-merge (see PR #120) until App credentials are added."
+            echo "::notice::CI_BOT_APP_ID and/or CI_BOT_PRIVATE_KEY not configured; release-please will run under GITHUB_TOKEN. Release PRs will require admin-merge (see PR #120) until both App credentials are added."
           fi
 
       - name: Mint CI bot installation token
