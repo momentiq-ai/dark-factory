@@ -75,8 +75,28 @@ jobs:
       # the release PR's head SHA. Without this, every release PR has to
       # be admin-merged (PR #103 evidence: zero required checks ran,
       # only the hosted W3 critic posted).
+      # Skip cleanly if App credentials aren't configured yet (graceful
+      # degrade). Until PJ adds CI_BOT_APP_ID + CI_BOT_PRIVATE_KEY repo
+      # secrets, releases continue to work under GITHUB_TOKEN exactly as
+      # before -- only the "downstream workflows run on release PR head
+      # SHA" benefit is unrealized, requiring admin-merge for release
+      # PRs. Once the App is configured, this step succeeds and the
+      # App token flows into release-please below.
+      - name: Detect App credentials
+        id: detect-app
+        env:
+          APP_ID_SET: ${{ secrets.CI_BOT_APP_ID != '' }}
+        run: |
+          if [ "$APP_ID_SET" = "true" ]; then
+            echo "has_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_app=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CI_BOT_APP_ID not configured; release-please will run under GITHUB_TOKEN. Release PRs will require admin-merge (see PR #120) until App credentials are added."
+          fi
+
       - name: Mint CI bot installation token
         id: app-token
+        if: steps.detect-app.outputs.has_app == 'true'
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.CI_BOT_APP_ID }}
@@ -85,7 +105,10 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          # Use App token if minted; otherwise fall back to GITHUB_TOKEN
+          # (which still works, just doesn't trigger downstream workflows
+          # on the release PR -- see PR #120 for full context).
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
