@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.1.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v1.0.0...dark-factory-cli-v1.1.0) (2026-06-02)
+
+
+### Features
+
+* **adapters/codex-sdk:** expose sandbox_mode for trusted-container contexts ([#98](https://github.com/momentiq-ai/dark-factory/issues/98)) ([ada1ab2](https://github.com/momentiq-ai/dark-factory/commit/ada1ab2982670734bb7e5e2f6c9fb078c43482bc)), closes [#68](https://github.com/momentiq-ai/dark-factory/issues/68)
+* **cli:** bounded lockfile strategy for review-packet ([#104](https://github.com/momentiq-ai/dark-factory/issues/104)) ([891ff30](https://github.com/momentiq-ai/dark-factory/commit/891ff303e12324566254eb04fba84a69da6129ed)), closes [#67](https://github.com/momentiq-ai/dark-factory/issues/67)
+* **cli:** implement df show/status + scrub help text (closes [#55](https://github.com/momentiq-ai/dark-factory/issues/55) [#89](https://github.com/momentiq-ai/dark-factory/issues/89)) ([#101](https://github.com/momentiq-ai/dark-factory/issues/101)) ([edda2d7](https://github.com/momentiq-ai/dark-factory/commit/edda2d7d0ee116857cc735f816aeb2b08e8a1c9f))
+* **doctor:** cache-tree corruption probe (closes [#107](https://github.com/momentiq-ai/dark-factory/issues/107)) ([#110](https://github.com/momentiq-ai/dark-factory/issues/110)) ([e9e9d98](https://github.com/momentiq-ai/dark-factory/commit/e9e9d9835f8e643bad22d63d624fd61cf3919e0e))
+* **schemas+adapters:** add CliReviewFinding.requiresHumanJudgment LLM self-flag ([#111](https://github.com/momentiq-ai/dark-factory/issues/111)) ([7041549](https://github.com/momentiq-ai/dark-factory/commit/7041549b569798d2d31a484930a5b1c785bceb0a)), closes [#106](https://github.com/momentiq-ai/dark-factory/issues/106)
+
+
+### Bug Fixes
+
+* **adapters/codex-sdk:** degrade sandbox-init failures to status:error (closes [#109](https://github.com/momentiq-ai/dark-factory/issues/109)) ([#112](https://github.com/momentiq-ai/dark-factory/issues/112)) ([ac4a168](https://github.com/momentiq-ai/dark-factory/commit/ac4a168c19e3c96d34c2b50be67a499cdc64eaa7))
+* **adapters/cursor-cli:** emit status=complete + opt-out sandbox flag ([#92](https://github.com/momentiq-ai/dark-factory/issues/92)) ([aa8a326](https://github.com/momentiq-ai/dark-factory/commit/aa8a326299a0c0f72d3755e872fc0f7129fe6979)), closes [#70](https://github.com/momentiq-ai/dark-factory/issues/70) [#91](https://github.com/momentiq-ai/dark-factory/issues/91)
+* **cli:** loud diagnostic for zero-evidence reviews + df doctor triage ([#96](https://github.com/momentiq-ai/dark-factory/issues/96)) ([3374540](https://github.com/momentiq-ai/dark-factory/commit/337454069f07085f552e093d045e4462c56ebc98)), closes [#51](https://github.com/momentiq-ai/dark-factory/issues/51)
+* **cli:** SIGTERM lock release + df doctor orphan-lock sweep ([#108](https://github.com/momentiq-ai/dark-factory/issues/108)) ([ff9c55b](https://github.com/momentiq-ai/dark-factory/commit/ff9c55bd5773999f6cb3139dc0b601967d3f22bd)), closes [#105](https://github.com/momentiq-ai/dark-factory/issues/105)
+* **cycle-doc-validator:** narrow plan-PR scope to docs/roadmap/cycles/cycle*.md ([#95](https://github.com/momentiq-ai/dark-factory/issues/95)) ([73a4942](https://github.com/momentiq-ai/dark-factory/commit/73a49422f992b9da76a34dccab1aa80a6dcea4f2)), closes [#25](https://github.com/momentiq-ai/dark-factory/issues/25)
+* **mcp:** handoff/rehydrate prompts to v2 Issue-anchored + drop deprecation note ([#99](https://github.com/momentiq-ai/dark-factory/issues/99)) ([946f323](https://github.com/momentiq-ai/dark-factory/commit/946f323f69f9a2d53c63472ce44c345e94aa0142)), closes [#79](https://github.com/momentiq-ai/dark-factory/issues/79) [#72](https://github.com/momentiq-ai/dark-factory/issues/72)
+* **observability:** default sink for self-mod-guard splits info→stdout, warn→stderr ([#97](https://github.com/momentiq-ai/dark-factory/issues/97)) ([ddfc22f](https://github.com/momentiq-ai/dark-factory/commit/ddfc22f7f611be331f68ade9e86122cdb1b19942)), closes [#57](https://github.com/momentiq-ai/dark-factory/issues/57)
+* **workflows:** pr-status-check context + agent-critic timeout/leak (closes [#27](https://github.com/momentiq-ai/dark-factory/issues/27) [#29](https://github.com/momentiq-ai/dark-factory/issues/29)) ([#102](https://github.com/momentiq-ai/dark-factory/issues/102)) ([28adf90](https://github.com/momentiq-ai/dark-factory/commit/28adf908b4012283219a0b302399f9e63047d175))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.3.0 to 0.4.0
+
 ## [1.0.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.7.0...dark-factory-cli-v1.0.0) (2026-05-31)
 
 
