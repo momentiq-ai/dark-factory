@@ -22,8 +22,19 @@ name: SDK Release
 #   - Repository secret `MOMENTIQ_NPM_PUBLISH_TOKEN`: an automation token for
 #     `@momentiq` scope with publish permission (npmjs.com -> Access
 #     tokens -> Generate New Token -> Automation -> scoped to @momentiq).
-#   - Branch protection on main allowing the release-please bot to push
-#     its release PRs (default is fine; the action uses GITHUB_TOKEN).
+#   - Repository secrets `CI_BOT_APP_ID` + `CI_BOT_PRIVATE_KEY`: the
+#     `momentiq-ci-bot` GitHub App credentials. Used to mint an
+#     installation token that release-please-action runs under, so
+#     release PRs are authored by the App (not `github-actions[bot]`).
+#     This is load-bearing: PRs created with the default `GITHUB_TOKEN`
+#     do NOT trigger downstream `pull_request` workflows (GitHub's
+#     "prevent recursive workflows" rule), which would leave release
+#     PRs blocked by required checks that never run. App-minted tokens
+#     are exempt from that rule. The App requires `contents:write` +
+#     `pull-requests:write` on this repo. See
+#     https://github.com/peter-evans/create-pull-request/blob/main/docs/concepts-guidelines.md#triggering-further-workflow-runs
+#     and PR #103 (which was admin-merged because zero required workflows
+#     ran on its head SHA) for the original incident.
 #
 # Until the secret is set, the `release-please` job still runs and opens
 # Release PRs successfully -- only the publish jobs will fail-fast on
@@ -54,9 +65,27 @@ jobs:
       sage_cli_released:  ${{ steps.release.outputs['packages/sage-cli--release_created'] }}
       sage_cli_version:   ${{ steps.release.outputs['packages/sage-cli--version'] }}
     steps:
+      # Mint an installation token for the `momentiq-ci-bot` GitHub App so
+      # release-please-action runs under the App's identity. PRs created
+      # or synchronized with the default `GITHUB_TOKEN` do NOT trigger
+      # downstream `pull_request` workflows -- App-minted installation
+      # tokens are exempt from that rule, so the required-status-check
+      # contexts (agent-critic / pr-status-check / schema-check /
+      # cycle-doc-validation / branch-protection-audit) actually run on
+      # the release PR's head SHA. Without this, every release PR has to
+      # be admin-merged (PR #103 evidence: zero required checks ran,
+      # only the hosted W3 critic posted).
+      - name: Mint CI bot installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CI_BOT_APP_ID }}
+          private-key: ${{ secrets.CI_BOT_PRIVATE_KEY }}
+
       - uses: googleapis/release-please-action@v4
         id: release
         with:
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
