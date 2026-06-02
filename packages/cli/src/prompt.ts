@@ -129,6 +129,7 @@ export function compileCriticPrompt(options: CompilePromptOptions): CompiledProm
   sections.push("- Use one of these verdicts: APPROVED, CHANGES_REQUESTED.");
   sections.push("- If you cannot decide safely, use CHANGES_REQUESTED with requiresHumanJudgment: true and a finding that names the missing evidence.");
   sections.push(`- Findings with severity in [${blockingSeverities.join(", ")}] MUST include file, evidence, impact, requiredFix.`);
+  sections.push("- Per-finding requiresHumanJudgment (optional, boolean): set to true on a SPECIFIC finding that you cannot objectively verify from this sandbox (subjective taste, missing runtime evidence, etc.). OMIT the field entirely when not applicable — do NOT default to false. This is distinct from the result-level requiresHumanJudgment flag.");
   sections.push("- Cite manifesto sections (e.g. \"§3\") on findings whose principle is in the embedded manifesto.");
   sections.push("- Confidence is one of: low, medium, high, unknown.");
   sections.push("- Critic id MUST be exactly: " + critic.id);
@@ -212,7 +213,8 @@ const JSON_SCHEMA_DESCRIPTION = `{
       "evidence": "concrete pointer to what is wrong",
       "impact": "what breaks or risks if shipped",
       "requiredFix": "concrete change required",
-      "manifestoSection": "§N when applicable"
+      "manifestoSection": "§N when applicable",
+      "requiresHumanJudgment": "boolean, OPTIONAL — set to true on THIS finding when you cannot objectively verify it from this sandbox (subjective taste, missing runtime evidence, etc.). OMIT the field when not applicable; do NOT emit false as a default."
     }
   ],
   "validation": {

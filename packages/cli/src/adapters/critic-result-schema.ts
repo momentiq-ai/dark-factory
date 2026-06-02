@@ -96,6 +96,16 @@ const ReviewFindingZ = z.object({
   evidencePath: z.string().optional(),
   routeId: z.string().optional(),
   justification: z.string().optional(),
+  // Issue #106 — LLM self-flag at per-finding granularity: set to `true`
+  // when the model believes this specific finding cannot be objectively
+  // verified from the sandbox and warrants human judgement. The adapter
+  // copies it through verbatim from the model output; no heuristic
+  // derivation. Optional at the wire level so consumers can distinguish
+  // "the critic didn't report" from "the critic reported false" —
+  // `parseFinding` preserves the omitted-vs-false distinction by
+  // omitting the field from the parsed object when absent rather than
+  // defaulting to false.
+  requiresHumanJudgment: z.boolean().optional(),
 });
 
 const QualityGateResultZ = z.object({
