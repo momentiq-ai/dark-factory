@@ -41,9 +41,14 @@ aligned with CONTRIBUTING.md "Trailers" section):
   1. **Type detection.** Plan PR if title starts with ``docs(roadmap):``
      or ``docs(<cycle>):``, OR PR has label ``plan-pr``, AND every
      changed path is under ``docs/`` (or is the repo-root ``AGENTS.md``
-     / ``CLAUDE.md``). The "docs only" check is broader than just
-     cycle-doc paths so a plan PR can include supporting ADR / engineering
-     docs in the same change without being misclassified as a code PR.
+     / ``CLAUDE.md``), AND at least one changed file is itself a cycle
+     doc matching ``docs/roadmap/cycles/cycle*.md``. The "docs only"
+     check is broader than just cycle-doc paths so a plan PR can include
+     supporting ADR / engineering docs in the same change without being
+     misclassified as a code PR. The "at least one cycle doc" check
+     (issue #25) prevents routine roadmap-index refreshes
+     (``docs/roadmap/roadmap-overview.md``, ``docs/roadmap/dark-factory-
+     roadmap.md``) from being forced through the full plan-PR contract.
      Otherwise code PR.
 
   2. **Bot/automation exemption.** PRs with any of the labels
@@ -651,6 +656,21 @@ def _parse_paginated_commit_messages(raw: str) -> str:
     return "\n\n".join(_parse_paginated_commits_to_list(raw))
 
 
+def _is_cycle_doc_path(path: str) -> bool:
+    """Match ``docs/roadmap/cycles/cycle<id>(-<slug>)?.md``.
+
+    The classifier counts only files whose basename starts with
+    ``cycle`` followed by an id character. Sibling files like
+    ``docs/roadmap/cycles/README.md`` are index/meta content and do
+    NOT trigger the plan-PR contract.
+    """
+    prefix = "docs/roadmap/cycles/cycle"
+    if not path.startswith(prefix) or not path.endswith(".md"):
+        return False
+    next_char = path[len(prefix) : len(prefix) + 1]
+    return next_char.isdigit()
+
+
 def is_plan_pr(
     title: str,
     labels: Iterable[str],
@@ -658,13 +678,22 @@ def is_plan_pr(
 ) -> bool:
     """Plan PR detection per Component 2 rule 1.
 
-    A PR is a plan PR if BOTH conditions hold:
+    A PR is a plan PR if ALL three conditions hold:
       - title matches ``docs(roadmap):`` OR ``docs(<cycle>):``,
         OR the PR has the label ``plan-pr``;
-      - AND every changed file is under ``docs/`` (no code paths). We
-        use the broader ``docs/`` rather than just cycle-doc paths so
-        that a plan PR can add supporting docs (ADR, engineering doc)
-        in the same change.
+      - every changed file is under ``docs/`` (no code paths) — a plan
+        PR may include supporting docs (ADR, engineering doc) in the
+        same change, so we accept the broader ``docs/`` prefix here;
+      - AND at least one changed file is itself a cycle doc matching
+        ``docs/roadmap/cycles/cycle*.md``.
+
+    The third condition narrows what used to be a too-broad classifier
+    (issue #25): editing only ``docs/roadmap/dark-factory-roadmap.md``
+    or ``docs/roadmap/roadmap-overview.md`` is a routine index refresh,
+    not a plan PR — forcing the full plan-PR trailer contract on those
+    edits required manufacturing throwaway cycle docs + tracking
+    issues. The plan-PR contract now fires only when the diff actually
+    creates or updates a cycle doc.
     """
     label_match = any(label.strip().lower() == "plan-pr" for label in labels)
     title_match = bool(PLAN_TITLE_RE.match(title or ""))
@@ -672,7 +701,8 @@ def is_plan_pr(
     if not files:
         return False
     docs_only = all(p.startswith("docs/") or p == "AGENTS.md" or p == "CLAUDE.md" for p in files)
-    return (label_match or title_match) and docs_only
+    cycle_doc_in_diff = any(_is_cycle_doc_path(p) for p in files)
+    return (label_match or title_match) and docs_only and cycle_doc_in_diff
 
 
 def status_completion_in_diff(diff: str) -> list[str]:
