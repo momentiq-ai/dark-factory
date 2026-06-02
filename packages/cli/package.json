@@ -23,6 +23,10 @@
       "types": "./dist/trusted-surface/index.d.ts",
       "import": "./dist/trusted-surface/index.js"
     },
+    "./compact": {
+      "types": "./dist/compact/index.d.ts",
+      "import": "./dist/compact/index.js"
+    },
     "./evidence": {
       "types": "./dist/evidence/index.d.ts",
       "import": "./dist/evidence/index.js"

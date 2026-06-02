@@ -1,0 +1,26 @@
+diff --git a/yarn.lock b/yarn.lock
+index abc123..def456 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -50,16 +50,21 @@
+-foo@^1.2.3:
+-  version "1.2.3"
+-  resolved "https://registry.yarnpkg.com/foo/-/foo-1.2.3.tgz#abc"
+-  integrity sha512-OLDFOOHASH==
++foo@^1.2.4:
++  version "1.2.4"
++  resolved "https://registry.yarnpkg.com/foo/-/foo-1.2.4.tgz#def"
++  integrity sha512-NEWFOOHASH==
++
++bar@^2.0.0:
++  version "2.0.0"
++  resolved "https://registry.yarnpkg.com/bar/-/bar-2.0.0.tgz#ghi"
++  integrity sha512-NEWBARHASH==
+-baz@^0.5.1:
+-  version "0.5.1"
+-  resolved "https://registry.yarnpkg.com/baz/-/baz-0.5.1.tgz#jkl"
+-  integrity sha512-REMOVEDBAZHASH==
+ qux@^3.1.0:
+   version "3.1.0"
+   resolved "https://registry.yarnpkg.com/qux/-/qux-3.1.0.tgz#mno"
+   integrity sha512-QUXHASH==

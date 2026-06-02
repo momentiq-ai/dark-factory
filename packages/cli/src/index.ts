@@ -153,6 +153,27 @@ export {
   type QuorumStats,
 } from "./evidence/audit-trail.js";
 
+// ADR 0001 — bounded lockfile strategy (issue #67).
+// Compactor primitives re-exported so consumer code + tests can
+// inspect the per-format extractors, default globs, and caps.
+export {
+  identifyLockfileKind,
+  extractFromUnifiedDiff,
+  renderDiffStub,
+  renderContentStub,
+  effectiveMode,
+  compactDiff,
+  splitDiffByFile,
+  DEFAULT_GENERATED_LOCKFILE_GLOBS,
+  MAX_COMPACTED_DIFF_BYTES,
+  MAX_COMPACTED_CONTENT_BYTES,
+  type LockfileKind,
+  type CompactedPackageDelta,
+  type CompactedLockfileDelta,
+  type CompactedContentInput,
+  type CompactDiffOutput,
+} from "./compact/index.js";
+
 // Runner — drives the orchestrator end-to-end.
 export {
   runReview,
