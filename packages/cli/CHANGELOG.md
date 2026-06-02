@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v1.0.0...dark-factory-cli-v1.1.0) (2026-06-02)
+
+
+### Features
+
+* **adapters/codex-sdk:** expose sandbox_mode for trusted-container contexts ([#98](https://github.com/momentiq-ai/dark-factory/issues/98)) ([ada1ab2](https://github.com/momentiq-ai/dark-factory/commit/ada1ab2982670734bb7e5e2f6c9fb078c43482bc)), closes [#68](https://github.com/momentiq-ai/dark-factory/issues/68)
+* **cli:** bounded lockfile strategy for review-packet ([#104](https://github.com/momentiq-ai/dark-factory/issues/104)) ([891ff30](https://github.com/momentiq-ai/dark-factory/commit/891ff303e12324566254eb04fba84a69da6129ed)), closes [#67](https://github.com/momentiq-ai/dark-factory/issues/67)
+
+
+### Bug Fixes
+
+* **cli:** loud diagnostic for zero-evidence reviews + df doctor triage ([#96](https://github.com/momentiq-ai/dark-factory/issues/96)) ([3374540](https://github.com/momentiq-ai/dark-factory/commit/337454069f07085f552e093d045e4462c56ebc98)), closes [#51](https://github.com/momentiq-ai/dark-factory/issues/51)
+* **cycle-doc-validator:** narrow plan-PR scope to docs/roadmap/cycles/cycle*.md ([#95](https://github.com/momentiq-ai/dark-factory/issues/95)) ([73a4942](https://github.com/momentiq-ai/dark-factory/commit/73a49422f992b9da76a34dccab1aa80a6dcea4f2)), closes [#25](https://github.com/momentiq-ai/dark-factory/issues/25)
+* **mcp:** handoff/rehydrate prompts to v2 Issue-anchored + drop deprecation note ([#99](https://github.com/momentiq-ai/dark-factory/issues/99)) ([946f323](https://github.com/momentiq-ai/dark-factory/commit/946f323f69f9a2d53c63472ce44c345e94aa0142)), closes [#79](https://github.com/momentiq-ai/dark-factory/issues/79) [#72](https://github.com/momentiq-ai/dark-factory/issues/72)
+* **observability:** default sink for self-mod-guard splits info→stdout, warn→stderr ([#97](https://github.com/momentiq-ai/dark-factory/issues/97)) ([ddfc22f](https://github.com/momentiq-ai/dark-factory/commit/ddfc22f7f611be331f68ade9e86122cdb1b19942)), closes [#57](https://github.com/momentiq-ai/dark-factory/issues/57)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.3.0 to 0.4.0
+
 ## [1.0.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v0.7.0...dark-factory-cli-v1.0.0) (2026-05-31)
 
 
