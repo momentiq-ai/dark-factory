@@ -114,12 +114,13 @@ export interface ResolveBaselineOptions {
   // a library embedder that injects `loaded` out-of-band does.
   injectedConfigAuthoritative?: boolean;
   // Issue #57 — structured sink for the trusted-surface self-modification
-  // notices, each carrying an explicit `level` (info vs warn). Defaults to
-  // writing the message to `process.stderr` (CLI back-compat — local `df`
-  // output is unchanged). A library embedder (the W3 worker) passes a sink
-  // that routes by level into its own structured logger (OTel/GCP severity)
-  // and does NOT touch `process.stderr`, so the benign `info` notice stops
-  // polluting severity>=ERROR alerting.
+  // notices, each carrying an explicit `level` (info vs warn). When omitted,
+  // the default sink splits by level: `info` → stdout, `warn` → stderr. That
+  // way a consuming runtime (GKE/Cloud Logging, etc.) that classifies severity
+  // by stream sees the benign "reviewing against parent baseline" notice as
+  // severity:INFO instead of severity:ERROR. A library embedder (the W3 worker)
+  // can still inject a sink that routes by level into its own structured logger
+  // (OTel/GCP severity) and bypass the streams entirely.
   notify?: (notice: PolicyNotice) => void;
 }
 
@@ -136,9 +137,18 @@ export async function resolvePolicyBaseline(
     return { loaded, triggeredBy: [] };
   }
 
-  // Issue #57 — default sink writes the message to stderr (back-compat); the
-  // `level` is consumed by an injected sink, not by the default.
-  const notify = options.notify ?? ((n: PolicyNotice) => process.stderr.write(n.message));
+  // Issue #57 — default sink routes by level so a hosted runtime that
+  // consumes the CLI's output byte-identically (GKE/Cloud Logging) classifies
+  // the benign "reviewing against parent baseline" notice as severity:INFO
+  // (stdout) instead of severity:ERROR (stderr). Genuine warnings — the
+  // fallback when parent policy is unavailable, or an env-override typo —
+  // stay on stderr so operator alerting still surfaces them.
+  const notify =
+    options.notify ??
+    ((n: PolicyNotice) => {
+      const stream = n.level === "info" ? process.stdout : process.stderr;
+      stream.write(n.message);
+    });
 
   let parent: string;
   try {

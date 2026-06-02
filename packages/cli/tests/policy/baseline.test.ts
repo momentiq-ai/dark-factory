@@ -22,7 +22,7 @@
 // fail-open hazard (a customer who commits their own `profiles.<name>` cannot
 // override the embedder's injected gate).
 
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -331,8 +331,11 @@ describe("runReview / runCommitGate thread injectedConfigAuthoritative (#56)", (
 // severity so a consuming runtime's severity-based alerting (GKE/Cloud Logging
 // in dark-factory-platform#81) isn't polluted. The benign "reviewing against
 // parent baseline" line is INFO; the "parent policy unavailable" fallback is
-// WARN. The default sink still writes to stderr (CLI back-compat); a library
-// embedder injects a sink that maps level → its own structured logger.
+// WARN. The DEFAULT sink (no `notify` injected) splits by level: info → stdout,
+// warn → stderr — so a hosted runtime that consumes the CLI's output byte-
+// identically gets the benign info notice on stdout (severity:INFO in
+// GKE/Cloud Logging) instead of stderr (severity:ERROR). A library embedder may
+// still inject a sink that maps level → its own structured logger.
 
 interface CollectedNotice {
   level: "info" | "warn";
@@ -397,5 +400,75 @@ describe("resolvePolicyBaseline — notice severity (#57)", () => {
     });
 
     expect(notices.some((n) => n.level === "info" && /reviewing against parent baseline/.test(n.message))).toBe(true);
+  });
+
+  test("default sink: the benign 'reviewing against parent baseline' info notice is written to STDOUT, not stderr", async () => {
+    // Closes #57: when no `notify` is injected (the byte-identical path a
+    // hosted runtime consumes), the benign INFO notice MUST land on stdout so
+    // GKE/Cloud Logging classifies it as severity:INFO. Routing it to stderr
+    // (the previous behavior) was the GKE alerting-pollution bug — every
+    // benign self-mod guard fire produced a severity:ERROR alert.
+    const { sha, injected, dir } = await setupSelfModRepo(customerConfig(false));
+
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((c: string | Uint8Array) => {
+      stdoutChunks.push(typeof c === "string" ? c : Buffer.from(c).toString("utf8"));
+      return true;
+    }) as typeof process.stdout.write);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((c: string | Uint8Array) => {
+      stderrChunks.push(typeof c === "string" ? c : Buffer.from(c).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write);
+
+    try {
+      await resolvePolicyBaseline({
+        loaded: injected,
+        sha,
+        cwd: dir,
+        // notify omitted — exercise the default sink.
+      });
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+
+    // The benign INFO notice MUST be on stdout.
+    expect(stdoutChunks.some((m) => /reviewing against parent baseline/.test(m))).toBe(true);
+    // And MUST NOT be on stderr (the GKE severity-pollution path).
+    expect(stderrChunks.some((m) => /reviewing against parent baseline/.test(m))).toBe(false);
+  });
+
+  test("default sink: the 'parent policy unavailable' warn notice is written to STDERR", async () => {
+    // Genuine warnings (self-mod check SKIPPED because parent has no policy)
+    // remain on stderr — operators need them to surface in severity-based
+    // alerting. This asserts we did NOT over-correct #57 by silencing real
+    // warnings along with the benign info notice.
+    const { sha, loaded, dir } = await setupFirstConfigRepo();
+
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((c: string | Uint8Array) => {
+      stdoutChunks.push(typeof c === "string" ? c : Buffer.from(c).toString("utf8"));
+      return true;
+    }) as typeof process.stdout.write);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((c: string | Uint8Array) => {
+      stderrChunks.push(typeof c === "string" ? c : Buffer.from(c).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write);
+
+    try {
+      await resolvePolicyBaseline({
+        loaded,
+        sha,
+        cwd: dir,
+      });
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+
+    expect(stderrChunks.some((m) => /parent policy is unavailable|falling back to HEAD policy/.test(m))).toBe(true);
+    expect(stdoutChunks.some((m) => /parent policy is unavailable|falling back to HEAD policy/.test(m))).toBe(false);
   });
 });
