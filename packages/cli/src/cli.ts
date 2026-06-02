@@ -172,7 +172,7 @@ function printHelp(meta: PackageMeta): void {
       "                              per-adapter auth.",
       "",
       "CI / reusable-workflow gates:",
-      "  df status-check             Sentinel aggregator (PR Status Check).",
+      "  df status-check             Sentinel aggregator (pr-status-check).",
       "                              Exits 0 — merge queue is the real",
       "                              aggregator.",
       "  df critic                   Real Critic Orchestrator wiring (agent-",
@@ -305,7 +305,7 @@ const PHASE_D_SUBCOMMANDS = new Set(["audit", "admit-pr"]);
 //
 //   - `status-check` stays thin: a sentinel aggregator. The merge queue's
 //     ALLGREEN rule already does the real cross-check aggregation; this
-//     subcommand exists for the `PR Status Check` ruleset context.
+//     subcommand exists for the `pr-status-check` ruleset context.
 //
 //   - `critic` is now wired to the real Critic Orchestrator (Phase B
 //     extraction). It loads `.agent-review/config.json`, instantiates
@@ -364,9 +364,9 @@ const CYCLE11_SUBCOMMANDS = new Set(["flow"]);
 const SHOW_STATUS_SUBCOMMANDS = new Set(["show", "status"]);
 
 function cmdStatusCheck(_rest: string[]): number {
-  // PR Status Check is a sentinel aggregator. As cycle 331.1 Phase E
+  // pr-status-check is a sentinel aggregator. As cycle 331.1 Phase E
   // documents in `.github/workflows/pr-status-check.yml`, this gate is
-  // present specifically to satisfy the `PR Status Check` ruleset context
+  // present specifically to satisfy the `pr-status-check` ruleset context
   // — its passage means "the workflow itself reached this step", which
   // is the contract every other status check separately enforces. There
   // is no useful aggregation work to do here that the merge queue's

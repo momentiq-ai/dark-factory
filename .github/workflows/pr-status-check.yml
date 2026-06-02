@@ -1,6 +1,6 @@
-# PR Status Check — reusable workflow shape (cycle 331.1 Phase E).
+# pr-status-check — reusable workflow shape (cycle 331.1 Phase E).
 #
-# This is the no-op aggregator gate. It satisfies the `PR Status Check`
+# This is the no-op aggregator gate. It satisfies the `pr-status-check`
 # required-status-check context in dark-factory's own main1 ruleset
 # (id 16808560) and is published as a reusable workflow for consumers
 # (sage3c / cerebe-platform / external repos) to invoke from their own
@@ -184,11 +184,11 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "## PR Status Check Summary"
+            echo "## pr-status-check Summary"
             echo ""
             if [[ "$JOB_STATUS" == "success" ]]; then
-              echo "PR Status Check stub passed (Phase E no-op aggregator)."
+              echo "pr-status-check stub passed (Phase E no-op aggregator)."
             else
-              echo "PR Status Check stub failed — investigate workspace install or build."
+              echo "pr-status-check stub failed — investigate workspace install or build."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

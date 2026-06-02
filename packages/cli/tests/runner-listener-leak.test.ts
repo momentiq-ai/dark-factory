@@ -165,6 +165,59 @@ async function setupRepo(): Promise<{ dir: string; sha: string; loaded: LoadedCo
   };
 }
 
+// Capture the signal passed to every adapter so the env-driven path can be
+// inspected post-hoc: was a signal created? Were max-listeners raised on it?
+// Did adapters receive an already-aborted signal under a fast deadline?
+interface SignalRecord {
+  signal: AbortSignal | undefined;
+  abortedAtEntry: boolean;
+}
+
+function makeSignalRecordingAdapter(
+  id: string,
+  record: { signals: SignalRecord[] },
+  options: { delayMs?: number } = {},
+): CriticAdapter {
+  return {
+    id,
+    requiredEnvVars: [] as const,
+    async review(
+      _packet: ReviewPacket,
+      critic: CriticConfig,
+      reviewOpts: CriticReviewOptions,
+    ): Promise<CriticResult> {
+      record.signals.push({
+        signal: reviewOpts.signal,
+        abortedAtEntry: reviewOpts.signal?.aborted ?? false,
+      });
+      if (options.delayMs && options.delayMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, options.delayMs));
+      }
+      // Even under abort, the adapter resolves with a structured complete result;
+      // the env-path test only cares that the runner threaded the signal through.
+      return {
+        criticId: critic.id,
+        status: "complete",
+        verdict: "APPROVED",
+        requiresHumanJudgment: false,
+        reviewer: {
+          name: critic.name,
+          adapter: critic.adapter,
+          model: critic.model,
+          runtime: critic.runtime,
+        },
+        summary: "ok",
+        findings: [],
+        validation: { qualityGateResults: [], qualityGatesMissing: [] },
+        confidence: "high",
+      };
+    },
+    async doctor(_critic: CriticConfig): Promise<DoctorCheck[]> {
+      return [];
+    },
+  };
+}
+
 describe("runReview — abort-listener leak guard (issue #29)", () => {
   test("raises the per-signal max-listeners cap so concurrent critics don't trip MaxListenersExceededWarning", async () => {
     const { dir, sha, loaded } = await setupRepo();
@@ -227,5 +280,145 @@ describe("runReview — abort-listener leak guard (issue #29)", () => {
       leakWarn,
       `unexpected listener-leak warning: ${leakWarn?.message ?? "(none)"}`,
     ).toBeUndefined();
+  });
+});
+
+describe("runReview — DF_CRITIC_TIMEOUT_MS env-driven deadline (issue #29)", () => {
+  test("when env is set and no caller signal, runner creates an internal signal and raises the cap", async () => {
+    const { dir, sha, loaded } = await setupRepo();
+    const registry = new AdapterRegistry();
+    const record = { signals: [] as SignalRecord[] };
+    for (const id of CRITIC_IDS) {
+      registry.register(makeSignalRecordingAdapter(id, record));
+    }
+
+    const prior = process.env["DF_CRITIC_TIMEOUT_MS"];
+    process.env["DF_CRITIC_TIMEOUT_MS"] = "900000";
+    try {
+      await runReview({ loaded, registry, ref: sha, cwd: dir });
+    } finally {
+      if (prior === undefined) delete process.env["DF_CRITIC_TIMEOUT_MS"];
+      else process.env["DF_CRITIC_TIMEOUT_MS"] = prior;
+    }
+
+    expect(record.signals).toHaveLength(CRITIC_IDS.length);
+    // Every adapter saw an internally-created AbortSignal — the env path
+    // produced a deadline-bearing signal even though the caller passed none.
+    for (const r of record.signals) {
+      expect(r.signal, "env-driven signal threaded to adapter").toBeDefined();
+      expect(r.signal!.aborted, "future deadline; not aborted at entry").toBe(false);
+      // The runner raised the per-signal cap on the env-created signal too,
+      // matching the caller-supplied-signal branch's invariant.
+      expect(getMaxListeners(r.signal!)).toBeGreaterThan(10);
+    }
+  });
+
+  test("when env is unset (and no caller signal), runner threads no signal", async () => {
+    const { dir, sha, loaded } = await setupRepo();
+    const registry = new AdapterRegistry();
+    const record = { signals: [] as SignalRecord[] };
+    for (const id of CRITIC_IDS) {
+      registry.register(makeSignalRecordingAdapter(id, record));
+    }
+
+    const prior = process.env["DF_CRITIC_TIMEOUT_MS"];
+    delete process.env["DF_CRITIC_TIMEOUT_MS"];
+    try {
+      await runReview({ loaded, registry, ref: sha, cwd: dir });
+    } finally {
+      if (prior !== undefined) process.env["DF_CRITIC_TIMEOUT_MS"] = prior;
+    }
+
+    for (const r of record.signals) {
+      expect(r.signal, "no env, no caller signal → adapter sees undefined").toBeUndefined();
+    }
+  });
+
+  test.each(["not-a-number", "0", "-1"])(
+    "invalid env value '%s' falls back to no internal signal (operator-error fail-safe)",
+    async (bad) => {
+      const { dir, sha, loaded } = await setupRepo();
+      const registry = new AdapterRegistry();
+      const record = { signals: [] as SignalRecord[] };
+      for (const id of CRITIC_IDS) {
+        registry.register(makeSignalRecordingAdapter(id, record));
+      }
+
+      const prior = process.env["DF_CRITIC_TIMEOUT_MS"];
+      process.env["DF_CRITIC_TIMEOUT_MS"] = bad;
+      try {
+        await runReview({ loaded, registry, ref: sha, cwd: dir });
+      } finally {
+        if (prior === undefined) delete process.env["DF_CRITIC_TIMEOUT_MS"];
+        else process.env["DF_CRITIC_TIMEOUT_MS"] = prior;
+      }
+      for (const r of record.signals) {
+        expect(
+          r.signal,
+          `invalid DF_CRITIC_TIMEOUT_MS=${bad} must fall back to no internal signal`,
+        ).toBeUndefined();
+      }
+    },
+  );
+
+  test("caller-supplied signal takes precedence over env-set deadline", async () => {
+    const { dir, sha, loaded } = await setupRepo();
+    const registry = new AdapterRegistry();
+    const record = { signals: [] as SignalRecord[] };
+    for (const id of CRITIC_IDS) {
+      registry.register(makeSignalRecordingAdapter(id, record));
+    }
+
+    const controller = new AbortController();
+    const callerSignal = controller.signal;
+
+    const prior = process.env["DF_CRITIC_TIMEOUT_MS"];
+    process.env["DF_CRITIC_TIMEOUT_MS"] = "900000";
+    try {
+      await runReview({
+        loaded,
+        registry,
+        ref: sha,
+        cwd: dir,
+        signal: callerSignal,
+      });
+    } finally {
+      if (prior === undefined) delete process.env["DF_CRITIC_TIMEOUT_MS"];
+      else process.env["DF_CRITIC_TIMEOUT_MS"] = prior;
+    }
+
+    for (const r of record.signals) {
+      // Precedence rule: when the caller supplies a signal, the env's
+      // internal-deadline branch must NOT replace it (caller owns cancellation).
+      expect(r.signal).toBe(callerSignal);
+    }
+  });
+
+  test("a short env deadline aborts the internal signal before downstream work observes it", async () => {
+    const { dir, sha, loaded } = await setupRepo();
+    const registry = new AdapterRegistry();
+    const record = { signals: [] as SignalRecord[] };
+    // Each adapter holds the signal long enough for the 50ms deadline to fire.
+    for (const id of CRITIC_IDS) {
+      registry.register(makeSignalRecordingAdapter(id, record, { delayMs: 250 }));
+    }
+
+    const prior = process.env["DF_CRITIC_TIMEOUT_MS"];
+    process.env["DF_CRITIC_TIMEOUT_MS"] = "50";
+    try {
+      await runReview({ loaded, registry, ref: sha, cwd: dir });
+    } finally {
+      if (prior === undefined) delete process.env["DF_CRITIC_TIMEOUT_MS"];
+      else process.env["DF_CRITIC_TIMEOUT_MS"] = prior;
+    }
+
+    // Every adapter saw the same env-created signal, and by the time the
+    // adapter's hold-delay elapsed, the deadline had fired — proving the
+    // env-driven AbortController is wired end-to-end into the adapter surface.
+    expect(record.signals.length).toBeGreaterThan(0);
+    for (const r of record.signals) {
+      expect(r.signal).toBeDefined();
+      expect(r.signal!.aborted, "50ms env deadline fired during 250ms adapter hold").toBe(true);
+    }
   });
 });

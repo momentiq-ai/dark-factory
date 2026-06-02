@@ -19,6 +19,7 @@ interface WorkflowJob {
   name?: string;
   "runs-on"?: string;
   "timeout-minutes"?: number;
+  env?: Record<string, string | number>;
   steps?: Array<Record<string, unknown>>;
   [k: string]: unknown;
 }
@@ -95,5 +96,43 @@ describe("agent-critic workflow shape (issue #29)", () => {
     // loosening above 30m wastes consumer minutes for the long-tail case.
     expect(t as number).toBeGreaterThanOrEqual(15);
     expect(t as number).toBeLessThanOrEqual(30);
+  });
+
+  it("agent-critic wires DF_CRITIC_TIMEOUT_MS strictly less than the job timeout", () => {
+    // Issue #29 invariant: the CLI's internal deadline (DF_CRITIC_TIMEOUT_MS)
+    // must fire BEFORE the job-level `timeout-minutes` cancel kicks in so the
+    // CLI can abort its critics and surface a structured `error` CriticResult
+    // (degrade-and-pass under min-complete-quorum) instead of being killed by
+    // the runner. Without this assertion a future edit could drop the env var,
+    // misspell it, or raise it above the job timeout — reopening the
+    // taxpilot2a#72 flake class.
+    const doc = loadWorkflow("agent-critic.yml");
+    const job = doc.jobs?.["agent-critic"];
+    expect(job).toBeDefined();
+
+    const env = job!.env;
+    expect(env, "issue #29: agent-critic job missing `env:` block").toBeDefined();
+    const raw = env!["DF_CRITIC_TIMEOUT_MS"];
+    expect(
+      raw,
+      "issue #29: agent-critic.env.DF_CRITIC_TIMEOUT_MS is required so the " +
+        "CLI aborts before the job-level timeout-minutes cancel.",
+    ).toBeDefined();
+
+    // YAML may parse the quoted "900000" as a string; coerce and validate.
+    const innerMs = Number(raw);
+    expect(Number.isFinite(innerMs) && innerMs > 0).toBe(true);
+
+    const jobTimeoutMs = (job!["timeout-minutes"] as number) * 60_000;
+    // Require at least 60s headroom so the CLI has time to: (a) receive the
+    // abort signal, (b) let adapters finalize their CriticResult, (c) write
+    // the per-SHA evidence artifact, all before the runner SIGKILLs the job.
+    const HEADROOM_MS = 60_000;
+    expect(
+      innerMs,
+      `issue #29 invariant violated: DF_CRITIC_TIMEOUT_MS (${innerMs}ms) must be ` +
+        `at least ${HEADROOM_MS}ms below the job timeout (${jobTimeoutMs}ms) so ` +
+        `the CLI can abort, finalize results, and write evidence before the runner kills the job.`,
+    ).toBeLessThanOrEqual(jobTimeoutMs - HEADROOM_MS);
   });
 });

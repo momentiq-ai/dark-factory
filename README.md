@@ -141,7 +141,7 @@ Consumer repos `uses:` these from their own CI:
 | File | Status-check context | Purpose |
 |---|---|---|
 | `.github/workflows/agent-critic.yml` | `agent-critic` | Multi-vendor critic quorum (Cursor / Codex / Gemini / Grok) |
-| `.github/workflows/pr-status-check.yml` | `PR Status Check` | Aggregator gate |
+| `.github/workflows/pr-status-check.yml` | `pr-status-check` | Aggregator gate |
 | `.github/workflows/schema-check.yml` | `schema-check` | Builds `@momentiq/dark-factory-schemas` |
 | `.github/workflows/cycle-doc-validation.yml` | `cycle-doc-validation` | Enforces `Cycle:` / `Issue:` PR trailers |
 | `.github/workflows/branch-protection-audit.yml` | `branch-protection-audit` | Drift detector for branch rulesets |
