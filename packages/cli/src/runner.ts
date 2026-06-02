@@ -28,6 +28,12 @@ import {
   writePending,
   type WriteResult,
 } from "./report.js";
+import {
+  applySelfConsistencyResult,
+  runSelfConsistencyProbe,
+  type SelfConsistencyProbeFn,
+} from "./self-consistency.js";
+import { gitShowFile } from "./git.js";
 // Service #8 — Audit Trail (Phase D boundary). Telemetry sink is the
 // runtime side of the `_runs.ndjson` audit log; the read/analyze side
 // lives in the same module so they evolve in lockstep.
@@ -73,6 +79,19 @@ export interface ReviewRunOptions {
   // own structured logger so the benign info notice doesn't land at
   // severity:ERROR. See `ResolveBaselineOptions.notify`.
   onPolicyNotice?: (notice: PolicyNotice) => void;
+  // Issue dark-factory-platform#112 — optional self-consistency probe.
+  // When supplied, the runner runs one cheap LLM call per blocker|high
+  // finding (after `Promise.all(adapter.review())`) to detect findings
+  // whose empirical claim does NOT hold against the implicated file.
+  // Findings the probe judges inconsistent are tagged
+  // `selfInconsistent: true`; the aggregator's
+  // `unilateralVetoRules.requireCorroborationFor` policy then decides
+  // whether the demoted finding still vetoes or becomes a
+  // `critic_disagreement` note. When omitted the runner skips the
+  // probe entirely (back-compat — adapters never produced the tag
+  // themselves; the probe is the sole writer). Pure injectable so
+  // tests and operators-without-keys can run normally.
+  selfConsistencyProbe?: SelfConsistencyProbeFn;
 }
 
 export interface ReviewRunOutcome {
@@ -332,7 +351,7 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
         resolvedProfile?.profile,
       ),
     );
-    const results: CriticResult[] = await Promise.all(
+    const rawResults: CriticResult[] = await Promise.all(
       requiredCritics.map(async (critic) => {
         if (!registry.has(critic.adapter)) {
           return {
@@ -356,6 +375,28 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
         return adapter.review(packet!, critic, reviewOptions);
       }),
     );
+
+    // Issue dark-factory-platform#112 — self-consistency probe pass.
+    // Runs ONLY when both (a) the caller supplied a probe callable AND
+    // (b) the active aggregation policy declares a corroboration rule
+    // listing flag(s) the probe knows how to populate. Skipping when
+    // the policy is absent avoids spending tokens on a tag the
+    // aggregator wouldn't act on. The probe is bounded per critic +
+    // per finding by `runSelfConsistencyProbe`'s eligibility guards
+    // (non-blocking severity → skip; no file → skip; loadFileContent
+    // null → skip without an LLM call).
+    const probeApplies =
+      options.selfConsistencyProbe !== undefined &&
+      loaded.config.aggregation.unilateralVetoRules?.requireCorroborationFor.includes(
+        "self_inconsistent",
+      ) === true;
+    const results: CriticResult[] = probeApplies
+      ? await Promise.all(
+          rawResults.map(async (r) =>
+            applyProbePassToCritic(r, sha, cwd, options.selfConsistencyProbe!, loaded, sink),
+          ),
+        )
+      : rawResults;
 
     const finishedAt = new Date().toISOString();
     artifact = buildAggregate({
@@ -418,10 +459,14 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
       (loaded.config.aggregation.policy === "min-complete-quorum"
         ? (loaded.config.aggregation.quorum ?? 2)
         : 2);
+    // Issue dark-factory-platform#112 — thread the optional
+    // `unilateralVetoRules` so the `aggregateReason` telemetry value
+    // matches the artifact verdict (both now honor corroboration).
     const aggregateReason = quorumAggregateVerdict(
       results,
       loaded.config.aggregation.blockingSeverities,
       quorum,
+      loaded.config.aggregation.unilateralVetoRules,
     ).reason;
 
     emit(sink, {
@@ -725,6 +770,69 @@ async function safeParent(sha: string, cwd: string): Promise<string> {
 
 function emit(sink: TelemetrySink | undefined, event: TelemetryEvent): void {
   if (sink) sink.emit(event);
+}
+
+/**
+ * Issue dark-factory-platform#112 — run the self-consistency probe
+ * across one critic's findings and return a (possibly-new) CriticResult
+ * with the `selfInconsistent` flag stamped on findings the probe
+ * judged inconsistent. Pure aside from the probe call + git read; the
+ * probe and gitShowFile are the only side-effect channels.
+ *
+ * Behavior per finding (see `runSelfConsistencyProbe` for the full
+ * matrix):
+ *   - non-blocking severity OR no file → skip (probe not invoked).
+ *   - blocking severity AND file present → load file content via
+ *     `gitShowFile(sha, path)`; pass to probe; stamp if inconsistent.
+ *   - probe error / timeout / malformed output → default-to-consistent.
+ *
+ * Emits one `self_consistency_probe` event per processed finding for
+ * audit-log visibility (matches the cycle 322.7 pattern of per-decision
+ * telemetry).
+ */
+async function applyProbePassToCritic(
+  critic: CriticResult,
+  sha: string,
+  cwd: string,
+  probe: SelfConsistencyProbeFn,
+  loaded: LoadedConfig,
+  sink: TelemetrySink | undefined,
+): Promise<CriticResult> {
+  const blockingSeverities = loaded.config.aggregation.blockingSeverities;
+  if (critic.status !== "complete" || critic.findings.length === 0) {
+    return critic;
+  }
+  let mutated = false;
+  const newFindings = await Promise.all(
+    critic.findings.map(async (f) => {
+      const result = await runSelfConsistencyProbe(
+        f,
+        critic.criticId,
+        sha,
+        blockingSeverities,
+        async (path) => gitShowFile(sha, path, cwd),
+        probe,
+      );
+      // Skip telemetry for trivial skips (non-blocking severity / no
+      // file) to avoid `_runs.ndjson` noise — those are the common
+      // case for any low-severity finding.
+      if (result.reason !== "probe_skipped") {
+        emit(sink, {
+          ts: new Date().toISOString(),
+          event: "self_consistency_probe",
+          commit: sha,
+          criticId: critic.criticId,
+          status: result.reason,
+          ...(result.detail !== undefined ? { detail: result.detail } : {}),
+        });
+      }
+      const tagged = applySelfConsistencyResult(f, result);
+      if (tagged !== f) mutated = true;
+      return tagged;
+    }),
+  );
+  if (!mutated) return critic;
+  return { ...critic, findings: newFindings };
 }
 
 // Issue #105 — wrap the per-SHA `releaseCommitLock` flow with signal

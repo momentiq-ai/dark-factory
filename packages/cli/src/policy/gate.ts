@@ -19,6 +19,8 @@ import {
 import { parseCommitTrailers } from "../evidence/index.js";
 import { resolveArtifactDir, resolveArtifactRoot, telemetryPath } from "../paths.js";
 import {
+  findingCarriesCorroborationFlag,
+  isCorroboratedByOtherCritic,
   isCriticCompleted,
   criticVetoesGate,
   quorumAggregateVerdict,
@@ -259,6 +261,7 @@ export async function evaluateCommitGate(options: EvaluateGateOptions): Promise<
       effectiveQuorum,
       blocks,
       warnings,
+      loaded.config.aggregation.unilateralVetoRules,
     );
   } else {
     // Cycle 322.2 Component 4 — `required` flag threading.
@@ -454,6 +457,7 @@ export async function evaluatePushGate(options: EvaluatePushGateOptions): Promis
       effectiveQuorum,
       blocks,
       warnings,
+      loaded.config.aggregation.unilateralVetoRules,
     );
   } else {
     const requiredCriticIds = new Set(
@@ -595,6 +599,10 @@ function recomputeArtifactVerdict(
       scopedResults as ReadonlyArray<unknown> as Parameters<typeof quorumAggregateVerdict>[0],
       loaded.config.aggregation.blockingSeverities,
       quorum,
+      // Issue dark-factory-platform#112 — thread the corroboration
+      // rules so a profile-filtered recompute honors the same policy
+      // the live verdict computation does.
+      loaded.config.aggregation.unilateralVetoRules,
     ).verdict;
   }
   // block-if-any: only required critics drive the aggregate.
@@ -851,12 +859,53 @@ function evaluateCriticResults(
 // runbook for choosing `quorum`; until then, the policy stays at
 // `block-if-any` and `blockOnReviewError` continues to drive the
 // fail-closed behavior in the legacy evaluator below.
+/**
+ * Issue dark-factory-platform#112 — collect blocking-severity findings
+ * the critic produced that should be demoted from blocks to warnings
+ * under the corroboration policy. A finding is demoted when ALL of:
+ *   1. It carries a flag listed in `rules.requireCorroborationFor`
+ *      (mapped via `FLAG_TO_FINDING_KEY` in `report.ts`).
+ *   2. No OTHER completed critic raises a blocking finding on the
+ *      same file within `rules.requireCorroborationOnHunkRadius` lines.
+ *
+ * Findings without a flag, or with corroboration, are NOT demoted —
+ * the safety net stays intact for findings the critic can defend.
+ * The demoted set is populated in `sink` (mutation-free at the caller
+ * boundary: the caller pre-allocates the Set).
+ */
+function collectDemotedFindings(
+  critic: import("@momentiq/dark-factory-schemas").CriticResult,
+  allResults: readonly import("@momentiq/dark-factory-schemas").CriticResult[],
+  blockingSeverities: ReviewSeverity[],
+  rules: import("@momentiq/dark-factory-schemas").UnilateralVetoRules,
+  sink: Set<ReviewFinding>,
+): void {
+  for (const f of critic.findings) {
+    if (!blockingSeverities.includes(f.severity)) continue;
+    if (!findingCarriesCorroborationFlag(f, rules.requireCorroborationFor)) continue;
+    const corroborated = isCorroboratedByOtherCritic(
+      f,
+      critic.criticId,
+      allResults,
+      blockingSeverities,
+      rules.requireCorroborationOnHunkRadius,
+    );
+    if (!corroborated) sink.add(f);
+  }
+}
+
 export function evaluateQuorumCriticResults(
   artifact: ReviewArtifact,
   blockingSeverities: ReviewSeverity[],
   quorum: number,
   blocks: GateBlock[],
   warnings: GateWarning[],
+  // Issue dark-factory-platform#112 — optional unilateral-veto rules.
+  // When supplied, blocking findings that carry one of the
+  // configured corroboration-required flags AND are not corroborated
+  // by another critic within the configured radius are demoted to
+  // `critic_disagreement` warnings instead of contributing to blocks.
+  unilateralVetoRules?: import("@momentiq/dark-factory-schemas").UnilateralVetoRules,
 ): void {
   // Surface every critic's terminal state as a warning so the
   // artifact reader sees all per-critic diagnostics even when no
@@ -877,7 +926,34 @@ export function evaluateQuorumCriticResults(
     }
     // Completed critic. Vetoes contribute blocks; non-veto findings
     // contribute warnings.
-    const vetoes = criticVetoesGate(result, blockingSeverities);
+    //
+    // Issue dark-factory-platform#112 — pre-compute the per-finding
+    // demotion set under `unilateralVetoRules`. A blocking-severity
+    // finding that's flagged for corroboration AND has none from
+    // another critic within the configured radius gets demoted: it
+    // contributes to `warnings` (as `critic_disagreement`) instead of
+    // `blocks`. Findings with no flag, or with corroboration, stay on
+    // the block path.
+    const demoted = new Set<ReviewFinding>();
+    if (unilateralVetoRules !== undefined) {
+      collectDemotedFindings(
+        result,
+        artifact.criticResults,
+        blockingSeverities,
+        unilateralVetoRules,
+        demoted,
+      );
+    }
+    const ctx =
+      unilateralVetoRules !== undefined
+        ? {
+            allResults: artifact.criticResults,
+            rules: unilateralVetoRules,
+          }
+        : undefined;
+    const vetoes = ctx
+      ? criticVetoesGate(result, blockingSeverities, ctx)
+      : criticVetoesGate(result, blockingSeverities);
     if (vetoes) {
       if (result.requiresHumanJudgment) {
         blocks.push({
@@ -898,11 +974,37 @@ export function evaluateQuorumCriticResults(
       );
       for (const f of blocking) {
         const detail = `${f.category}@${f.file ?? "?"}: ${f.evidence}`;
-        blocks.push({
-          reason: `${f.severity}_finding`,
-          criticId: result.criticId,
-          detail,
-        });
+        if (demoted.has(f)) {
+          warnings.push({
+            reason: "critic_disagreement",
+            criticId: result.criticId,
+            detail,
+          });
+        } else {
+          blocks.push({
+            reason: `${f.severity}_finding`,
+            criticId: result.criticId,
+            detail,
+          });
+        }
+      }
+    } else {
+      // Critic didn't veto — but blocking findings still need to be
+      // surfaced somewhere. Under corroboration-policy demotion, they
+      // become `critic_disagreement` warnings; otherwise this branch
+      // does nothing (the existing semantics — non-vetoing critic's
+      // blocking findings only ever surface via the `vetoes === true`
+      // branch under standard quorum policy).
+      if (demoted.size > 0) {
+        for (const f of result.findings) {
+          if (!demoted.has(f)) continue;
+          const detail = `${f.category}@${f.file ?? "?"}: ${f.evidence}`;
+          warnings.push({
+            reason: "critic_disagreement",
+            criticId: result.criticId,
+            detail,
+          });
+        }
       }
     }
     // Non-blocking findings are always warnings regardless of vetoes.
@@ -929,6 +1031,7 @@ export function evaluateQuorumCriticResults(
     artifact.criticResults,
     blockingSeverities,
     quorum,
+    unilateralVetoRules,
   );
   if (outcome.reason === "quorum_unmet" && blocks.length === 0) {
     const completed = artifact.criticResults.filter(isCriticCompleted).length;

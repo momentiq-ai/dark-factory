@@ -15,7 +15,117 @@ import {
   type ReviewFinding,
   type ReviewSeverity,
   type ReviewVerdict,
+  type UnilateralVetoRules,
 } from "@momentiq/dark-factory-schemas";
+
+// ---------------------------------------------------------------------------
+// Issue dark-factory-platform#112 — flag-name → ReviewFinding-key mapping.
+//
+// The policy config (`AggregationConfig.unilateralVetoRules.requireCorroborationFor`)
+// uses snake_case opaque identifiers so the wire surface is stable
+// independent of the TypeScript field name. The aggregator translates
+// each identifier to the corresponding `ReviewFinding` boolean property
+// at evaluation time. Future flags (e.g. `requires_human_judgment`,
+// `low_confidence`) land here when they need the same
+// corroboration-or-disagreement-note treatment.
+// ---------------------------------------------------------------------------
+
+const FLAG_TO_FINDING_KEY: Record<string, keyof ReviewFinding> = {
+  self_inconsistent: "selfInconsistent",
+};
+
+/**
+ * True when the finding carries any of the flags listed in
+ * `requireCorroborationFor`. Flags not present in `FLAG_TO_FINDING_KEY`
+ * are ignored — an unknown flag in config is a no-op rather than a
+ * runtime error so operators can pin policy without first deploying a
+ * CLI that knows the flag (forward-compat).
+ *
+ * Exported so `gate.ts` shares the canonical translation table and
+ * cannot drift.
+ */
+export function findingCarriesCorroborationFlag(
+  finding: ReviewFinding,
+  flagNames: readonly string[],
+): boolean {
+  for (const name of flagNames) {
+    const key = FLAG_TO_FINDING_KEY[name];
+    if (key === undefined) continue;
+    const v = finding[key];
+    if (v === true) return true;
+  }
+  return false;
+}
+
+/**
+ * True when at least one OTHER completed critic has a blocking-severity
+ * finding on the SAME file within `radius` lines of `target`.
+ *
+ * Exported so `gate.ts` shares the canonical corroboration predicate
+ * and cannot drift.
+ *
+ * "Other" = different `criticId`. Critics never corroborate themselves.
+ * "Blocking-severity" = `blockingSeverities.includes(f.severity)`. The
+ * corroborator is checked WITHOUT recursing into the corroboration
+ * rule — a corroborator that itself carries `selfInconsistent: true`
+ * still corroborates (the spec's safety net is "another critic saw a
+ * blocker here too", not "another critic's blocker survived
+ * corroboration"). This intentional asymmetry prevents an N-way
+ * corroboration-cycle.
+ *
+ * `target.file === undefined` → returns false (corroboration is
+ * file-scoped; a finding without a file cannot be corroborated).
+ * `target.line === undefined` → treats the target line as `0` (matches
+ * any line in the same file within the radius window — the safety
+ * net errs toward "yes, this is corroborated" when the target's
+ * location is imprecise).
+ */
+export function isCorroboratedByOtherCritic(
+  target: ReviewFinding,
+  targetCriticId: string,
+  allResults: readonly CriticResult[],
+  blockingSeverities: readonly ReviewSeverity[],
+  radius: number,
+): boolean {
+  if (!target.file) return false;
+  const targetLine = target.line ?? 0;
+  for (const other of allResults) {
+    if (other.criticId === targetCriticId) continue;
+    if (other.status !== "complete") continue;
+    for (const f of other.findings) {
+      if (!blockingSeverities.includes(f.severity)) continue;
+      if (f.file !== target.file) continue;
+      if (target.line === undefined || f.line === undefined) return true;
+      const distance = Math.abs(f.line - targetLine);
+      if (distance <= radius) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A finding the aggregator demoted from a unilateral veto to an
+ * informational `critic_disagreement` note because the
+ * `unilateralVetoRules.requireCorroborationFor` policy fired AND no
+ * other critic corroborated within the radius. Surfaced on
+ * `QuorumAggregateOutcome` so the runner can emit
+ * `critic_disagreement` telemetry and the artifact writer can render
+ * the note in the per-run markdown.
+ */
+export interface CriticDisagreementNote {
+  criticId: string;
+  file: string;
+  line?: number;
+  severity: ReviewSeverity;
+  /**
+   * The corroboration-flag name from the policy that triggered the
+   * demotion (currently always `"self_inconsistent"`). Future flags
+   * surface here without a new field.
+   */
+  flag: string;
+  /** Short summary cut from the finding's `evidence` for the note. */
+  evidence: string;
+}
 
 export interface AggregateInputs {
   loaded: LoadedConfig;
@@ -88,11 +198,19 @@ function aggregateVerdict(
     // report CHANGES_REQUESTED (uses root quorum=2). Codex P2 caught
     // this divergence on PR #1468.
     const quorum = quorumOverride ?? loaded.config.aggregation.quorum;
+    // Issue dark-factory-platform#112 — thread the optional
+    // `unilateralVetoRules` so the persisted artifact's verdict honors
+    // the same corroboration policy the runtime gate evaluator does.
     // Schema validation guarantees `quorum` is set when the policy
     // is `min-complete-quorum`; the defensive fallback to 2 is for
     // hand-constructed configs in tests (the parser would already
     // have rejected a real on-disk config without quorum).
-    return quorumAggregateVerdict(results, blockingSeverities, quorum ?? 2).verdict;
+    return quorumAggregateVerdict(
+      results,
+      blockingSeverities,
+      quorum ?? 2,
+      loaded.config.aggregation.unilateralVetoRules,
+    ).verdict;
   }
 
   // Cycle 322.2 Component 4 — `required` flag threading.
@@ -157,6 +275,27 @@ export function isCriticCompleted(r: CriticResult): boolean {
 }
 
 /**
+ * Optional context for the corroboration check
+ * (issue dark-factory-platform#112). When omitted, `criticVetoesGate`
+ * behaves exactly as the pre-#112 implementation (back-compat for the
+ * many callers that don't know about the policy).
+ */
+export interface VetoCorroborationContext {
+  /** All critic results in this review run — used to look for
+   *  cross-critic corroboration on the same file within radius. */
+  allResults: readonly CriticResult[];
+  rules: UnilateralVetoRules;
+  /**
+   * Optional sink for findings the aggregator demoted to a
+   * `critic_disagreement` note. The caller pre-allocates the array;
+   * this function pushes one entry per demotion. Surfaced as
+   * `QuorumAggregateOutcome.disagreements` so the runner can emit
+   * telemetry without re-walking the results.
+   */
+  disagreementSink?: CriticDisagreementNote[];
+}
+
+/**
  * Cycle 322.3 — does this completed critic veto the gate?
  *
  * Manifesto §11 "first principles veto": any rigorous critic with a
@@ -164,15 +303,122 @@ export function isCriticCompleted(r: CriticResult): boolean {
  * CHANGES_REQUESTED verdict) blocks the gate regardless of how many
  * other critics approved. Returns `false` for non-completed critics
  * — only a completed critic can veto.
+ *
+ * Issue dark-factory-platform#112 — when `corroborationCtx` is
+ * supplied AND the critic's only veto trigger is a blocking finding
+ * carrying one of the configured corroboration-required flags (e.g.
+ * `selfInconsistent: true`), the function checks whether ANOTHER
+ * critic raises a blocking finding on the same file within
+ * `rules.requireCorroborationOnHunkRadius` lines. If not, the
+ * finding is demoted to a `critic_disagreement` note (pushed to
+ * `disagreementSink`) and DOES NOT contribute to a veto. Findings
+ * without a flag still veto unconditionally — the safety net is
+ * intact for findings the critic can defend.
+ *
+ * Note: a critic that vetoes via `CHANGES_REQUESTED` verdict OR
+ * `requiresHumanJudgment` is NOT subject to corroboration — those
+ * are coarser-grained signals than per-finding flags and the spec
+ * narrows the rule to per-finding flag triggers only.
  */
 export function criticVetoesGate(
   r: CriticResult,
   blockingSeverities: ReviewSeverity[],
+  corroborationCtx?: VetoCorroborationContext,
 ): boolean {
   if (!isCriticCompleted(r)) return false;
-  if (r.verdict === "CHANGES_REQUESTED") return true;
+  // requiresHumanJudgment is a coarser-grained signal than per-finding
+  // flags; the spec narrows corroboration to per-finding triggers
+  // only. A critic that flags requiresHumanJudgment vetoes
+  // unconditionally regardless of policy.
   if (r.requiresHumanJudgment) return true;
-  if (hasBlockingFinding(r.findings, blockingSeverities)) return true;
+
+  // Back-compat path: no policy → check verdict OR any blocking
+  // finding (the pre-#112 §11 semantic).
+  if (corroborationCtx === undefined) {
+    if (r.verdict === "CHANGES_REQUESTED") return true;
+    return hasBlockingFinding(r.findings, blockingSeverities);
+  }
+
+  // Issue dark-factory-platform#112 — policy-aware veto evaluation.
+  // Walk every blocking finding and partition into:
+  //   - `anyUnflaggedBlocking`: the safety net — any finding the
+  //     critic can defend stands as a veto.
+  //   - `anyCorroboratedFlagged`: flagged AND another critic raised a
+  //     same-file blocker within radius → veto stands.
+  //   - `demotions`: flagged AND uncorroborated → recorded as
+  //     `critic_disagreement` notes; do NOT contribute to veto.
+  //
+  // A critic with `verdict === "CHANGES_REQUESTED"` is itself subject
+  // to demotion under policy WHEN every blocking finding is demoted
+  // AND the verdict is downstream of those findings (heuristic: if no
+  // unflagged or corroborated blocker remains, the CR verdict is the
+  // critic's downstream summary of the now-demoted finding(s)). This
+  // is the spec's "verdict flips from CHANGES_REQUESTED to APPROVED"
+  // case from the DoD. A critic with CR and NO blocking findings at
+  // all retains its veto unconditionally — the verdict in that case
+  // is verdict-only with no per-finding flag to demote.
+  const { allResults, rules, disagreementSink } = corroborationCtx;
+  let anyUnflaggedBlocking = false;
+  let anyCorroboratedFlagged = false;
+  let anyBlockingFinding = false;
+  const demotions: CriticDisagreementNote[] = [];
+  for (const f of r.findings) {
+    if (!blockingSeverities.includes(f.severity)) continue;
+    anyBlockingFinding = true;
+    const flagged = findingCarriesCorroborationFlag(f, rules.requireCorroborationFor);
+    if (!flagged) {
+      anyUnflaggedBlocking = true;
+      continue;
+    }
+    const corroborated = isCorroboratedByOtherCritic(
+      f,
+      r.criticId,
+      allResults,
+      blockingSeverities,
+      rules.requireCorroborationOnHunkRadius,
+    );
+    if (corroborated) {
+      anyCorroboratedFlagged = true;
+      continue;
+    }
+    // Flagged AND uncorroborated → demote to a disagreement note.
+    if (f.file) {
+      demotions.push({
+        criticId: r.criticId,
+        file: f.file,
+        ...(f.line !== undefined ? { line: f.line } : {}),
+        severity: f.severity,
+        // The first flag the finding actually carries wins for note
+        // attribution; in practice today only `self_inconsistent` is
+        // a registered key so this is a single-element search.
+        flag:
+          rules.requireCorroborationFor.find((name) => {
+            const key = FLAG_TO_FINDING_KEY[name];
+            return key !== undefined && f[key] === true;
+          }) ?? rules.requireCorroborationFor[0]!,
+        evidence: f.evidence,
+      });
+    }
+  }
+  // Veto sustained when any defendable signal remains:
+  //   - An unflagged blocker (the safety net).
+  //   - A corroborated flagged blocker (another critic agrees).
+  //   - A CHANGES_REQUESTED verdict that's NOT downstream of the
+  //     now-demoted findings — i.e. the critic returned CR without any
+  //     blocking finding to attribute it to (verdict-only block, the
+  //     coarser §11 signal). That CR survives policy because there's
+  //     no per-finding flag to demote it through.
+  if (anyUnflaggedBlocking || anyCorroboratedFlagged) {
+    if (disagreementSink) disagreementSink.push(...demotions);
+    return true;
+  }
+  if (r.verdict === "CHANGES_REQUESTED" && !anyBlockingFinding) {
+    // Verdict-only block, no blockers to demote → veto sustained.
+    return true;
+  }
+  // All blockers demoted (and either APPROVED verdict OR
+  // CHANGES_REQUESTED-downstream-of-blockers) → no veto.
+  if (disagreementSink) disagreementSink.push(...demotions);
   return false;
 }
 
@@ -198,6 +444,15 @@ export interface QuorumAggregateOutcome {
   // the gate blocks with `quorum_unmet`.
   completedCount: number;
   totalCount: number;
+  /**
+   * Issue dark-factory-platform#112 — findings the aggregator demoted
+   * from a unilateral veto to an informational disagreement note
+   * because the `unilateralVetoRules.requireCorroborationFor` policy
+   * fired AND no other critic corroborated. Always present (empty
+   * array when no demotions occurred OR no policy was active) so
+   * callers can branch on `.length` without an undefined check.
+   */
+  disagreements: CriticDisagreementNote[];
 }
 
 /**
@@ -225,15 +480,33 @@ export function quorumAggregateVerdict(
   results: CriticResult[],
   blockingSeverities: ReviewSeverity[],
   quorum: number,
+  unilateralVetoRules?: UnilateralVetoRules,
 ): QuorumAggregateOutcome {
   const completed = results.filter(isCriticCompleted);
-  const vetoer = completed.find((r) => criticVetoesGate(r, blockingSeverities));
+  const disagreements: CriticDisagreementNote[] = [];
+  // Issue dark-factory-platform#112 — when the policy is set, thread
+  // it through every `criticVetoesGate` call so a single uncorroborated
+  // flagged finding doesn't sweep a veto. The disagreement sink is
+  // shared across critics so the runner sees all demotions in one
+  // pass.
+  const ctx: VetoCorroborationContext | undefined =
+    unilateralVetoRules !== undefined
+      ? {
+          allResults: results,
+          rules: unilateralVetoRules,
+          disagreementSink: disagreements,
+        }
+      : undefined;
+  const vetoer = completed.find((r) =>
+    ctx ? criticVetoesGate(r, blockingSeverities, ctx) : criticVetoesGate(r, blockingSeverities),
+  );
   if (vetoer) {
     return {
       verdict: "CHANGES_REQUESTED",
       reason: "veto",
       completedCount: completed.length,
       totalCount: results.length,
+      disagreements,
     };
   }
   if (completed.length < quorum) {
@@ -242,6 +515,7 @@ export function quorumAggregateVerdict(
       reason: "quorum_unmet",
       completedCount: completed.length,
       totalCount: results.length,
+      disagreements,
     };
   }
   // Quorum met and no veto — vote the majority of completed critics.
@@ -261,6 +535,7 @@ export function quorumAggregateVerdict(
     reason: "majority",
     completedCount: completed.length,
     totalCount: results.length,
+    disagreements,
   };
 }
 

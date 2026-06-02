@@ -107,6 +107,52 @@ export interface AggregationConfig {
   // "block-if-any" (a stale `quorum` field after a policy switch
   // would be a silent foot-gun).
   quorum?: number;
+  // Issue dark-factory-platform#112 — conditional unilateral-veto rules.
+  // A unilateral veto (a single critic's blocking finding) normally
+  // sustains the §11 "single rigorous critic" safety net. This
+  // policy lets the operator demand corroboration BEFORE such a
+  // veto applies — narrowed to specific finding-flag names so the
+  // safety net stays intact for findings the critic can defend.
+  //
+  // `requireCorroborationFor` — list of opaque flag names. When a
+  // veto-eligible finding carries one of these flags (currently only
+  // `self_inconsistent`; future flags can ride this same plumbing),
+  // the aggregator requires another critic to raise a blocking
+  // finding on the same file within `requireCorroborationOnHunkRadius`
+  // lines. Otherwise the finding is recorded as a
+  // `critic_disagreement` note in telemetry and does NOT block the
+  // gate.
+  //
+  // `requireCorroborationOnHunkRadius` — non-negative integer line
+  // radius (inclusive). 0 means exact-line match; the spec calls for
+  // 5 so a finding at line 42 corroborates with another critic's
+  // blocking finding on lines 37..47 in the same file. Defaults to 0
+  // when omitted but `requireCorroborationFor` is set (caller MUST
+  // pass an explicit value via config to opt in to the wider radius).
+  //
+  // Wire-format opaqueness: the flag strings here are NOT TypeScript
+  // enum members — they're identifiers the runtime maps to specific
+  // `ReviewFinding` boolean properties. The mapping is centralized in
+  // `report.ts` (`FLAG_TO_FINDING_KEY`) so future flag additions land
+  // in one place.
+  unilateralVetoRules?: UnilateralVetoRules;
+}
+
+export interface UnilateralVetoRules {
+  /**
+   * Opaque flag-name strings (snake_case wire form). When a finding
+   * carries the corresponding flag (e.g. `self_inconsistent` ↔
+   * `ReviewFinding.selfInconsistent`), the corroboration requirement
+   * applies. Non-empty when present.
+   */
+  requireCorroborationFor: string[];
+  /**
+   * Non-negative integer; line-radius (inclusive) within which a
+   * corroborating blocking finding from another critic must land.
+   * `0` means exact-line; `5` was the issue dark-factory-platform#112
+   * recommendation.
+   */
+  requireCorroborationOnHunkRadius: number;
 }
 
 // Cycle 322.7 — Profile envelopes that let the same config drive
@@ -540,6 +586,23 @@ export interface ReviewFinding {
   // `CriticResult.requiresHumanJudgment` semantic but at per-finding
   // granularity).
   requiresHumanJudgment?: boolean;
+  // Issue dark-factory-platform#112 — in-aggregator self-consistency
+  // probe verdict. Stamped by the runner's self-consistency probe pass
+  // (one cheap LLM call per blocker|high finding) when the probe
+  // determines the finding's empirical claim does NOT hold against the
+  // diff hunk it implicates. Wire form in policy config is
+  // `self_inconsistent` (snake_case identifier in
+  // `AggregationConfig.unilateralVetoRules.requireCorroborationFor`);
+  // the TS field is camelCase per the rest of the schema. The mapping
+  // is centralized in `cli/src/report.ts` (`FLAG_TO_FINDING_KEY`).
+  //
+  // Probe failure modes (timeout, error) default to "consistent" — the
+  // gate's safety net is unchanged when the probe degrades; that's a
+  // separate cycle 10 critic-observability concern, not a verdict path.
+  // Adapters do NOT populate this field; the runner does, after the
+  // adapter returns. Optional; omitted/undefined === "probe didn't run
+  // OR probe found consistent".
+  selfInconsistent?: boolean;
 }
 
 export interface CriticReviewerInfo {
@@ -887,7 +950,20 @@ export interface TelemetryEvent {
     // `{path: lockfileKind}` map (mirroring cycle-332 convention).
     // Operators detect glob-miss regressions by greppping for this
     // event and confirming expected paths appear in perFileCounts.
-    | "compacted_files";
+    | "compacted_files"
+    // Issue dark-factory-platform#112 — emitted once per finding the
+    // self-consistency probe processed. `criticId` identifies the
+    // owning critic; `status` carries the probe outcome (one of
+    // "probe_consistent", "probe_inconsistent", "probe_error",
+    // "no_evidence", "probe_skipped"); `detail` carries the
+    // probe-supplied reason when present (consistent / inconsistent
+    // verdicts) or the error message (probe_error). Operators grep
+    // this event family to confirm the probe ran, count
+    // inconsistencies per vendor, and detect probe-degradation
+    // patterns. NOT emitted when the probe is disabled (no
+    // selfConsistencyProbe injected OR policy doesn't list
+    // `self_inconsistent`).
+    | "self_consistency_probe";
   commit?: string;
   criticId?: string;
   adapter?: string;
@@ -987,6 +1063,14 @@ export interface TelemetryEvent {
   cacheInvalidationReason?: CacheInvalidationReason;
   perFileCounts?: string;
   normalizationTarget?: string;
+  // Issue dark-factory-platform#112 — generic per-event free-text detail
+  // slot. Used by `self_consistency_probe` events to carry the
+  // probe-supplied `reason` (consistent / inconsistent narrative) or
+  // the error message (probe_error). Other events MAY use this for
+  // human-readable context that doesn't fit a typed field; keep
+  // structured data in typed fields where possible to preserve
+  // greppability.
+  detail?: string;
 }
 
 export class SchemaError extends Error {
@@ -1262,6 +1346,68 @@ export function parseAgentReviewConfig(raw: unknown): AgentReviewConfig {
       `quorum is only valid for policy="min-complete-quorum"; remove it or switch policy`,
     );
   }
+  // Issue dark-factory-platform#112 — parse the optional
+  // `unilateralVetoRules` block. Validation:
+  //   - Object; both subfields required when the block is present.
+  //   - `requireCorroborationFor`: non-empty string array, no
+  //     duplicates, every entry non-empty.
+  //   - `requireCorroborationOnHunkRadius`: non-negative integer
+  //     (0 means exact-line match — still narrows the safety net,
+  //     so we allow it).
+  // Absence parses identically to pre-#112 configs.
+  const unilateralVetoRulesRaw = aggregationRaw["unilateralVetoRules"];
+  let unilateralVetoRules: UnilateralVetoRules | undefined;
+  if (unilateralVetoRulesRaw !== undefined && unilateralVetoRulesRaw !== null) {
+    const rulesObj = need(
+      isObject,
+      unilateralVetoRulesRaw,
+      "$.aggregation.unilateralVetoRules",
+      "object",
+    );
+    const flagsRaw = parseStringArray(
+      rulesObj["requireCorroborationFor"],
+      "$.aggregation.unilateralVetoRules.requireCorroborationFor",
+    );
+    if (flagsRaw.length === 0) {
+      throw new SchemaError(
+        "$.aggregation.unilateralVetoRules.requireCorroborationFor",
+        "must contain at least one flag name",
+      );
+    }
+    const flagSet = new Set<string>();
+    for (const f of flagsRaw) {
+      if (f.length === 0) {
+        throw new SchemaError(
+          "$.aggregation.unilateralVetoRules.requireCorroborationFor",
+          "flag names must be non-empty strings",
+        );
+      }
+      if (flagSet.has(f)) {
+        throw new SchemaError(
+          "$.aggregation.unilateralVetoRules.requireCorroborationFor",
+          `duplicate flag name: ${f}`,
+        );
+      }
+      flagSet.add(f);
+    }
+    const radius = need(
+      isInteger,
+      rulesObj["requireCorroborationOnHunkRadius"],
+      "$.aggregation.unilateralVetoRules.requireCorroborationOnHunkRadius",
+      "non-negative integer",
+    );
+    if (radius < 0) {
+      throw new SchemaError(
+        "$.aggregation.unilateralVetoRules.requireCorroborationOnHunkRadius",
+        `must be >= 0, got ${radius}`,
+      );
+    }
+    unilateralVetoRules = {
+      requireCorroborationFor: flagsRaw,
+      requireCorroborationOnHunkRadius: radius,
+    };
+  }
+
   const aggregation: AggregationConfig = {
     policy: aggregationPolicy,
     blockingSeverities: parseStringArray(
@@ -1271,6 +1417,7 @@ export function parseAgentReviewConfig(raw: unknown): AgentReviewConfig {
       needEnum(REVIEW_SEVERITIES, s, `$.aggregation.blockingSeverities[${i}]`),
     ),
     ...(quorum !== undefined ? { quorum } : {}),
+    ...(unilateralVetoRules !== undefined ? { unilateralVetoRules } : {}),
   };
 
   const gitRaw = need(isObject, root["git"], "$.git", "object");
@@ -1812,6 +1959,16 @@ function parseFinding(raw: unknown, path: string, blockingSeverities: ReviewSeve
     `${path}.requiresHumanJudgment`,
     "boolean",
   );
+  // Issue dark-factory-platform#112 — optional self-consistency-probe
+  // verdict. Parsed via the same `optional()` pattern as other v2
+  // extensions so adapter-produced artifacts that predate the field
+  // (or that bypass the probe pass) still parse identically.
+  const selfInconsistent = optional(
+    isBoolean,
+    obj["selfInconsistent"],
+    `${path}.selfInconsistent`,
+    "boolean",
+  );
   if (blockingSeverities.includes(severity) && !file) {
     throw new SchemaError(`${path}.file`, `blocking severity ${severity} requires file`);
   }
@@ -1830,6 +1987,7 @@ function parseFinding(raw: unknown, path: string, blockingSeverities: ReviewSeve
     ...(justification !== undefined ? { justification } : {}),
     ...(contentHash !== undefined ? { contentHash } : {}),
     ...(requiresHumanJudgment !== undefined ? { requiresHumanJudgment } : {}),
+    ...(selfInconsistent !== undefined ? { selfInconsistent } : {}),
   };
 }
 
