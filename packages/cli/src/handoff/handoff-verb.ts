@@ -550,9 +550,12 @@ export async function runHandoff(
   logs.push(`updated handoff issue #${issueNum}`);
   return {
     issueNumber: issueNum,
-    // We don't have the URL handy without an extra view; bash echoes
-    // `#$ISSUE`. The CLI can format it as a repo-relative ref.
-    noteUrl: `#${issueNum}`,
+    // Parity with the CREATE branch (which returns `created.url`) — issue #73.
+    // `prePatch` already fetched the full IssueView for the race-safety drift
+    // check, so the html_url is in hand at zero extra cost. The fallback to
+    // the bash-style `#N` short form covers fakes that don't populate `url`
+    // (existing test fixtures); production gh always provides it.
+    noteUrl: prePatch.url ?? `#${issueNum}`,
     created: false,
     logs,
   };

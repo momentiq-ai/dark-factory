@@ -131,6 +131,41 @@ describe("/handoff — explicit issue path", () => {
     expect(gh.calls().some((c) => c.startsWith("gh issue create"))).toBe(false);
   });
 
+  it("PATCH path returns full html_url (parity with CREATE), not a synthesized #N (#73)", async () => {
+    const { gh, git, clock } = setup();
+    const url = "https://github.com/momentiq-ai/dark-factory/issues/200";
+    gh.setIssueViewDefault(
+      issueView({ number: 200, body: bodyWithBlock(), url }),
+    );
+    const result = await runHandoff({
+      noteStdin: NOTE,
+      issue: 200,
+      gh,
+      git,
+      clock,
+    });
+    expect(result.created).toBe(false);
+    expect(result.noteUrl).toBe(url);
+    expect(result.noteUrl).toMatch(/^https:\/\/github\.com\//);
+    expect(result.noteUrl).not.toBe("#200");
+  });
+
+  it("PATCH path falls back to #N when issueView returns no url field (defensive)", async () => {
+    const { gh, git, clock } = setup();
+    // Explicitly no url on the fixture — exercises the fallback branch.
+    gh.setIssueViewDefault(
+      issueView({ number: 201, body: bodyWithBlock() }),
+    );
+    const result = await runHandoff({
+      noteStdin: NOTE,
+      issue: 201,
+      gh,
+      git,
+      clock,
+    });
+    expect(result.noteUrl).toBe("#201");
+  });
+
   it("refuse on closed handoff issue, no PATCH (t_handoff_refuse_closed_issue)", async () => {
     const { gh, git, clock } = setup();
     gh.setIssueViewDefault(

@@ -49,6 +49,14 @@ export interface IssueView {
   readonly labels: ReadonlyArray<{ readonly name: string }>;
   readonly updatedAt: string; // ISO-8601
   readonly closedAt: string | null;
+  /**
+   * Canonical html_url of the issue. Optional on the type so existing test
+   * fixtures (built as `IssueView` literals across the suite) don't need to
+   * thread a URL — the runtime `SpawnGhClient` always populates it via the
+   * `url` field in the gh JSON request. Consumers that rely on the URL must
+   * fall back gracefully when it's absent.
+   */
+  readonly url?: string;
 }
 
 /**
