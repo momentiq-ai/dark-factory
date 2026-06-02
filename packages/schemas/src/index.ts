@@ -645,6 +645,24 @@ export interface TelemetryEvent {
     //     invariant (only populated when overriding TO block-if-any
     //     AND the source config had zero required critics).
     | "aggregation_policy_overridden"
+    // Issue #68 — emitted by the codex-sdk adapter when a critic's
+    // `model.params[].sandbox_mode` opts out of the default `read-only`
+    // host-level sandbox. Mirrors the `aggregation_policy_overridden`
+    // pattern: the operator-visible audit trail for a safety knob
+    // being relaxed. Used in hosted/trusted-container contexts where
+    // the container itself is the security boundary (the bwrap-based
+    // read-only sandbox cannot be granted SYS_ADMIN on GKE Autopilot
+    // and similar locked-down runtimes). Fires exactly once per
+    // critic run (on the first attempt) and is suppressed when
+    // sandbox_mode resolves to "read-only" (the default — no override
+    // happened). Carries:
+    //   - `criticId`, `adapter`, `commit`, `model`: standard critic-run
+    //     identifiers so operators can correlate with the matching
+    //     `critic_run_started`.
+    //   - `sandboxMode`: the resolved sandbox mode (one of
+    //     "workspace-write" | "danger-full-access" — `read-only`
+    //     never appears here because it's the default).
+    | "sandbox_mode_overridden"
     // Cycle 332 — review-push (per-push delta) telemetry. Operators
     // correlate these events to confirm carry-forward is operating
     // as designed and to investigate cache invalidations.
@@ -765,6 +783,14 @@ export interface TelemetryEvent {
   configured?: AggregationPolicy;
   overridden?: AggregationPolicy;
   autoPromotedCritics?: string[];
+  // Issue #68 — populated on `sandbox_mode_overridden` events emitted
+  // by the codex-sdk adapter. Carries the resolved Codex sandbox mode
+  // ("workspace-write" | "danger-full-access" — "read-only" never
+  // appears here because it's the default and produces no event).
+  // The field is typed as `string` to keep the schemas package
+  // adapter-agnostic; vocabulary validation lives in the adapter
+  // (see `CODEX_SANDBOX_MODES` in `adapters/codex-sdk.ts`).
+  sandboxMode?: string;
   // Cycle 332 — push-delta telemetry payload fields. Populated only
   // on the events introduced this cycle; legacy events keep these
   // undefined.

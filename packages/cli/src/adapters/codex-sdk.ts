@@ -292,6 +292,29 @@ const ALLOWED_REASONING_EFFORTS: ReadonlySet<string> = new Set([
 ]);
 export const DEFAULT_REASONING_EFFORT = "high" as const;
 
+// Issue #68 — `sandbox_mode` param id used in `critic.model.params`;
+// threaded into Codex's `startThread({ sandboxMode })`. Operators
+// opt into a relaxed host-level sandbox when the container itself is
+// the security boundary (e.g., hosted W3 worker on GKE Autopilot,
+// where bwrap's `clone(CLONE_NEWUSER)` is rejected by the security
+// profile and `read-only` fails at startup with `bwrap: No
+// permissions to create a new namespace`).
+const SANDBOX_MODE_PARAM_ID = "sandbox_mode";
+
+// Allowed values mirror the `@openai/codex-sdk@0.130.0` SandboxMode
+// union exactly. Keep this list as the single source of truth so a
+// typo at the config site doesn't silently corrupt the SDK call:
+// invalid values fall back to {@link DEFAULT_SANDBOX_MODE} via
+// {@link resolveCodexSandboxMode}.
+export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export const CODEX_SANDBOX_MODES: readonly CodexSandboxMode[] = [
+  "read-only",
+  "workspace-write",
+  "danger-full-access",
+];
+const ALLOWED_SANDBOX_MODES: ReadonlySet<string> = new Set(CODEX_SANDBOX_MODES);
+export const DEFAULT_SANDBOX_MODE: CodexSandboxMode = "read-only";
+
 // ---------------------------------------------------------------------------
 // Test surface
 
@@ -450,6 +473,29 @@ export function resolveCodexReasoningEffort(critic: CriticConfig): string {
   const norm = v.toLowerCase();
   if (ALLOWED_REASONING_EFFORTS.has(norm)) return norm;
   return DEFAULT_REASONING_EFFORT;
+}
+
+/**
+ * Issue #68 — resolve the Codex `sandboxMode` from `critic.model.params`.
+ *
+ * Falls back to {@link DEFAULT_SANDBOX_MODE} ("read-only") when unset OR
+ * when the value is malformed (typo, wrong type). The typo-tolerance is
+ * intentional: a relaxed sandbox setting silently corrupting an SDK call
+ * would be worse than the operator's misconfiguration loudly defaulting
+ * to the safe value at review time.
+ *
+ * Operators opt into `workspace-write` or `danger-full-access` when the
+ * container is the security boundary (hosted W3 worker on GKE Autopilot
+ * lacks SYS_ADMIN, so bwrap's `read-only` sandbox fails at startup with
+ * `bwrap: No permissions to create a new namespace`).
+ */
+export function resolveCodexSandboxMode(critic: CriticConfig): CodexSandboxMode {
+  const param = critic.model.params.find((p) => p.id === SANDBOX_MODE_PARAM_ID);
+  if (!param) return DEFAULT_SANDBOX_MODE;
+  const v = param.value;
+  if (typeof v !== "string") return DEFAULT_SANDBOX_MODE;
+  if (ALLOWED_SANDBOX_MODES.has(v)) return v as CodexSandboxMode;
+  return DEFAULT_SANDBOX_MODE;
 }
 
 /**
@@ -636,6 +682,7 @@ export class CodexSdkAdapter implements CriticAdapter {
     attemptIdx: number,
   ): Promise<AttemptOutcome> {
     const reasoningEffort = resolveCodexReasoningEffort(critic);
+    const sandboxMode = resolveCodexSandboxMode(critic);
 
     // Issue #2103 — strict-no-fallback auth resolution. The runner sets
     // `critic.auth` via `applyProfileAuth()` from
@@ -678,6 +725,23 @@ export class CodexSdkAdapter implements CriticAdapter {
         adapter: this.id,
         model: critic.model.id,
       });
+      // Issue #68 — surface the host-level sandbox relaxation in the
+      // audit trail so operators can grep `_runs.ndjson` for runs that
+      // opted out of bwrap defense-in-depth. Fires exactly once per
+      // critic run (first attempt only, mirrors critic_run_started).
+      // Suppressed on the default path so the back-compat usage emits
+      // zero new events.
+      if (sandboxMode !== DEFAULT_SANDBOX_MODE) {
+        options.emit?.({
+          ts: new Date().toISOString(),
+          event: "sandbox_mode_overridden",
+          commit: packet.commit.sha,
+          criticId: critic.id,
+          adapter: this.id,
+          model: critic.model.id,
+          sandboxMode,
+        });
+      }
     }
 
     let codex: CodexClient;
@@ -726,10 +790,18 @@ export class CodexSdkAdapter implements CriticAdapter {
       thread = codex.startThread({
         workingDirectory: packet.repoRoot,
         // Defense in depth — critic must never write files even if a
-        // malicious diff convinces the model to try. Read-only sandbox
-        // blocks WRITES, not READS, so the agent may still run shell
-        // commands to explore the repo (see fixtures/spike-codex-2026-05.json).
-        sandboxMode: "read-only",
+        // malicious diff convinces the model to try. Default `read-only`
+        // sandbox blocks WRITES, not READS, so the agent may still run
+        // shell commands to explore the repo (see
+        // fixtures/spike-codex-2026-05.json). Issue #68 — operators may
+        // opt into `workspace-write` or `danger-full-access` via
+        // `critic.model.params[].sandbox_mode` when the container itself
+        // is the security boundary (e.g., hosted W3 worker on GKE
+        // Autopilot, where bwrap's `clone(CLONE_NEWUSER)` is rejected
+        // by the security profile so `read-only` fails at startup).
+        // The override emits a `sandbox_mode_overridden` telemetry
+        // event so the audit log captures the relaxation.
+        sandboxMode,
         // No interactive prompts in non-interactive runs.
         approvalPolicy: "never",
         // Critic must not exfiltrate diff content to external services.

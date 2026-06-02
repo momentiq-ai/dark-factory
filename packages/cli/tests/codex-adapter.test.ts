@@ -30,9 +30,13 @@ import { CRITIC_RESULT_JSON_SCHEMA } from "../src/adapters/critic-result-schema.
 import {
   CODEX_API_KEY_ENV,
   CODEX_HOME_ENV,
+  CODEX_SANDBOX_MODES,
   CODEX_SDK_ADAPTER_ID,
   CodexSdkAdapter,
+  DEFAULT_SANDBOX_MODE,
+  resolveCodexSandboxMode,
   type CodexClient,
+  type CodexSandboxMode,
   type CodexThread,
   type CodexTurnResult,
 } from "../src/adapters/codex-sdk.js";
@@ -1273,4 +1277,257 @@ test("review: CriticResult populates tokensInput/Output but not tokensCached whe
   expect_eq(result.tokensInput, 800);
   expect_eq(result.tokensOutput, 120);
   expect_eq(result.tokensCached, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #68 — sandbox_mode opt-in for hosted/trusted-container contexts
+//
+// The codex CLI's bwrap-based read-only sandbox fails at startup on GKE
+// Autopilot (no SYS_ADMIN cap, so `clone(CLONE_NEWUSER)` is rejected). The
+// hosted W3 worker pod is the security boundary (read-only rootfs, non-root,
+// dropped caps, per-job emptyDir workspace, egress via Cloud NAT) — strictly
+// stronger isolation than bwrap could provide inside the container. The
+// adapter must expose `sandboxMode` (matching `@openai/codex-sdk`'s
+// SandboxMode enum: "read-only" | "workspace-write" | "danger-full-access")
+// so operators opt into a relaxed host-level sandbox when the container
+// IS the security boundary. Default unchanged — `read-only` keeps
+// defense-in-depth on developer workstations.
+
+test("CODEX_SANDBOX_MODES enumerates the @openai/codex-sdk SandboxMode union", () => {
+  expect_deep([...CODEX_SANDBOX_MODES], ["read-only", "workspace-write", "danger-full-access"]);
+});
+
+test("DEFAULT_SANDBOX_MODE is 'read-only' (unchanged default for local-workstation usage)", () => {
+  expect_eq(DEFAULT_SANDBOX_MODE, "read-only");
+});
+
+test("resolveCodexSandboxMode returns 'read-only' when sandbox_mode param is absent", () => {
+  const c: CriticConfig = {
+    ...CRITIC,
+    model: { id: "gpt-5.5-codex", params: [] },
+  };
+  expect_eq(resolveCodexSandboxMode(c), "read-only");
+});
+
+test("resolveCodexSandboxMode returns the param value when set to a valid SandboxMode", () => {
+  for (const mode of ["read-only", "workspace-write", "danger-full-access"] as const) {
+    const c: CriticConfig = {
+      ...CRITIC,
+      model: { id: "gpt-5.5-codex", params: [{ id: "sandbox_mode", value: mode }] },
+    };
+    expect_eq(resolveCodexSandboxMode(c), mode);
+  }
+});
+
+test("resolveCodexSandboxMode falls back to 'read-only' when sandbox_mode value is invalid (typo guard)", () => {
+  // An unrecognized value (typo) MUST fall back to the safe default rather
+  // than corrupting the SDK call. Mirrors resolveCodexReasoningEffort's
+  // typo-tolerance posture.
+  const c: CriticConfig = {
+    ...CRITIC,
+    model: { id: "gpt-5.5-codex", params: [{ id: "sandbox_mode", value: "danger-mode-bogus" }] },
+  };
+  expect_eq(resolveCodexSandboxMode(c), "read-only");
+});
+
+test("resolveCodexSandboxMode falls back to 'read-only' when sandbox_mode value is a non-string (number/boolean)", () => {
+  for (const value of [1 as number, true as boolean] as const) {
+    const c: CriticConfig = {
+      ...CRITIC,
+      model: { id: "gpt-5.5-codex", params: [{ id: "sandbox_mode", value }] },
+    };
+    expect_eq(resolveCodexSandboxMode(c), "read-only");
+  }
+});
+
+test("review: default behavior unchanged — when sandbox_mode is absent, adapter passes sandboxMode: 'read-only'", async () => {
+  let observedThreadOptions: unknown = null;
+  const mockClient = makeMockClient({});
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => ({
+      startThread: (threadOpts) => {
+        observedThreadOptions = threadOpts;
+        return mockClient.startThread(threadOpts);
+      },
+    }),
+  });
+  await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
+  const opts = observedThreadOptions as Record<string, unknown>;
+  expect_eq(
+    opts["sandboxMode"],
+    "read-only",
+    "default sandbox mode MUST remain 'read-only' for back-compat with existing configs",
+  );
+});
+
+test("review: sandbox_mode='danger-full-access' is threaded into codex.startThread({sandboxMode}) — issue #68", async () => {
+  let observedThreadOptions: unknown = null;
+  const mockClient = makeMockClient({});
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => ({
+      startThread: (threadOpts) => {
+        observedThreadOptions = threadOpts;
+        return mockClient.startThread(threadOpts);
+      },
+    }),
+  });
+  const c: CriticConfig = {
+    ...CRITIC,
+    model: {
+      id: "gpt-5.5-codex",
+      params: [{ id: "sandbox_mode", value: "danger-full-access" }],
+    },
+  };
+  await adapter.review(PACKET, c, { blockingSeverities: ["blocker"] });
+  const opts = observedThreadOptions as Record<string, unknown>;
+  expect_eq(
+    opts["sandboxMode"],
+    "danger-full-access",
+    "adapter MUST pass configured sandbox_mode through to codex.startThread() — closes #68",
+  );
+});
+
+test("review: sandbox_mode='workspace-write' is threaded through (covers the third SandboxMode variant)", async () => {
+  let observedThreadOptions: unknown = null;
+  const mockClient = makeMockClient({});
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => ({
+      startThread: (threadOpts) => {
+        observedThreadOptions = threadOpts;
+        return mockClient.startThread(threadOpts);
+      },
+    }),
+  });
+  const c: CriticConfig = {
+    ...CRITIC,
+    model: {
+      id: "gpt-5.5-codex",
+      params: [{ id: "sandbox_mode", value: "workspace-write" }],
+    },
+  };
+  await adapter.review(PACKET, c, { blockingSeverities: ["blocker"] });
+  const opts = observedThreadOptions as Record<string, unknown>;
+  expect_eq(opts["sandboxMode"], "workspace-write");
+});
+
+test("review: emits sandbox_mode_overridden telemetry when sandbox_mode differs from default", async () => {
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({});
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+  });
+  const c: CriticConfig = {
+    ...CRITIC,
+    model: {
+      id: "gpt-5.5-codex",
+      params: [{ id: "sandbox_mode", value: "danger-full-access" }],
+    },
+  };
+  await adapter.review(PACKET, c, {
+    blockingSeverities: ["blocker"],
+    emit: (e) => events.push(e),
+  });
+  const overrideEvent = events.find((e) => e.event === "sandbox_mode_overridden");
+  expect_truthy(
+    overrideEvent,
+    "expected sandbox_mode_overridden event when value differs from read-only",
+  );
+  expect_eq(overrideEvent!.criticId, "codex-local-chief");
+  expect_eq(overrideEvent!.adapter, "codex-sdk");
+  expect_eq(overrideEvent!.commit, PACKET.commit.sha);
+  expect_eq(
+    overrideEvent!.sandboxMode,
+    "danger-full-access",
+    "telemetry must carry the resolved sandbox mode for audit",
+  );
+});
+
+test("review: does NOT emit sandbox_mode_overridden when sandbox_mode is absent (default path)", async () => {
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({});
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+  });
+  await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker"],
+    emit: (e) => events.push(e),
+  });
+  const overrideEvent = events.find((e) => e.event === "sandbox_mode_overridden");
+  expect_eq(
+    overrideEvent,
+    undefined,
+    "the override event MUST NOT fire on the default path (no operator opt-in)",
+  );
+});
+
+test("review: does NOT emit sandbox_mode_overridden when sandbox_mode is explicitly 'read-only' (matches default)", async () => {
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({});
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+  });
+  const c: CriticConfig = {
+    ...CRITIC,
+    model: {
+      id: "gpt-5.5-codex",
+      params: [{ id: "sandbox_mode", value: "read-only" }],
+    },
+  };
+  await adapter.review(PACKET, c, {
+    blockingSeverities: ["blocker"],
+    emit: (e) => events.push(e),
+  });
+  const overrideEvent = events.find((e) => e.event === "sandbox_mode_overridden");
+  expect_eq(
+    overrideEvent,
+    undefined,
+    "explicit read-only is functionally equivalent to default — no override event",
+  );
+});
+
+test("review: emits sandbox_mode_overridden ONCE per critic run even when retries occur", async () => {
+  // Operators correlate the override against critic_run_started; firing it
+  // per attempt would inflate the audit log and obscure retry behavior.
+  const events: TelemetryEvent[] = [];
+  let attemptCount = 0;
+  const mockClient = makeMockClient({
+    run: async () => {
+      attemptCount++;
+      if (attemptCount < 3) {
+        throw new Error("transient codex upstream error");
+      }
+      return makeTurn({ finalResponse: APPROVED_RESPONSE_JSON });
+    },
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const c: CriticConfig = {
+    ...CRITIC,
+    model: {
+      id: "gpt-5.5-codex",
+      params: [{ id: "sandbox_mode", value: "danger-full-access" }],
+    },
+  };
+  await adapter.review(PACKET, c, {
+    blockingSeverities: ["blocker"],
+    emit: (e) => events.push(e),
+  });
+  const overrideEvents = events.filter((e) => e.event === "sandbox_mode_overridden");
+  expect_eq(overrideEvents.length, 1, "override event MUST be emitted exactly once per run");
+});
+
+test("CodexSandboxMode type alias matches the runtime enum (compile-time pact)", () => {
+  // Just exercise the type to ensure import surfaces compile — runtime
+  // assertion redundantly checks the list shape.
+  const m: CodexSandboxMode = "read-only";
+  expect_truthy((CODEX_SANDBOX_MODES as readonly string[]).includes(m));
 });
