@@ -111,14 +111,34 @@ concurrency:
 
 jobs:
   agent-critic:
-    # IMPORTANT: this job name is the status-check context surfaced to
-    # the ruleset. Must match `required_status_checks.context:
-    # agent-critic` exactly.
-    name: agent-critic
+    # IMPORTANT: this job MUST NOT declare a `name:` field. The surfaced
+    # status-check context is `<caller-job-id> / <callee-job-name>`. The
+    # job-id `agent-critic` is the documented required-context the
+    # ruleset matches; a `name:` override would break the match. See the
+    # symmetric note in `pr-status-check.yml` (issue #27).
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Cycle 331.1 issue #29 — raised from 10m to 20m. Empirically, moderate
+    # diffs land in 4m–10m on the cold-cache CI runner; the prior 10m cap
+    # cancelled runs right at the long-tail (taxpilot2a PR #72 evidence:
+    # 4m25s / 9m59s / 10m18s-canceled). 20m gives the critic-internal
+    # `DF_CRITIC_TIMEOUT_MS` (15m / 900_000 below) enough headroom to
+    # report a verdict — even an errored one — instead of being killed
+    # by the job-level timeout. Critic-internal < job-level is the
+    # invariant: the inner timeout produces a structured `error` result
+    # (degrade-and-pass under min-complete-quorum), the outer is the
+    # hard floor that prevents a wedged runner from burning consumer
+    # minutes.
+    timeout-minutes: 20
     env:
       REQUESTED_VERSION: ${{ inputs.cli-version || 'local' }}
+      # Critic-internal timeout: 15m. Strictly less than the 20m job
+      # timeout above so the CLI gets a chance to abort its own work and
+      # emit a structured verdict before the runner is killed. The CLI's
+      # `runReview()` reads this env, creates an AbortController, and
+      # threads `controller.signal` to every adapter — adapters honor
+      # `options.signal` and surface a `status: "error"` CriticResult
+      # (non-blocking under `required: false` + `min-complete-quorum`).
+      DF_CRITIC_TIMEOUT_MS: '900000'
     steps:
       - uses: actions/checkout@v6
 

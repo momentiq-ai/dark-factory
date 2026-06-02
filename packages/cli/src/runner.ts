@@ -1,3 +1,5 @@
+import { setMaxListeners } from "node:events";
+
 import type { LoadedConfig } from "./policy/config.js";
 import type { AdapterRegistry, CriticReviewOptions } from "./adapters/critic.js";
 import { buildReviewPacket } from "./trusted-surface/rebind.js";
@@ -80,11 +82,76 @@ export interface ReviewRunOutcome {
   acquired: boolean;
 }
 
+// Issue #29 — the EventTarget max-listener cap on the shared AbortSignal.
+//
+// `runReview` fans `reviewOptions.signal` out to N critic adapters via
+// `Promise.all`; each adapter's SDK call (Cursor, Codex, Gemini, Grok, the
+// undici-backed `fetch` inside the OpenAI SDK) attaches one or more abort
+// listeners to that signal. With 4 critics × up-to-3 retry attempts × 1–2
+// SDK-internal listeners each, the count crosses the EventTarget cap that
+// undici primes to `defaultMaxListeners` (10) on first fetch. The 11th
+// listener triggers a `MaxListenersExceededWarning` — informational, but
+// it surfaced right at the workflow's old 10m boundary and read as a flake
+// to operators. Bound the worst case at 4 critics × (3 retries + sleep
+// listener + cursor-cli kill-handler) × 2x safety factor = 64.
+const CRITIC_SIGNAL_MAX_LISTENERS = 64;
+
+// Resolve the AbortSignal `runReview` will thread through to adapters AND
+// quality-gate subprocesses. Precedence:
+//   1. Caller-supplied `options.signal` — the embedding worker (W3) owns
+//      cancellation and may already have its own deadline; we never override
+//      that signal, only adopt it.
+//   2. CLI-internal deadline from `DF_CRITIC_TIMEOUT_MS` — the workflow
+//      wires this env to a value STRICTLY LESS than the job's
+//      `timeout-minutes`, so the CLI aborts its own work and surfaces a
+//      structured `error` CriticResult (degrade-and-pass under
+//      `min-complete-quorum`) instead of being killed by the runner's
+//      job-level timeout (issue #29).
+//   3. Unbounded — older sage3c posture; the workflow's job timeout is
+//      the only deadline.
+//
+// In every branch we call `setMaxListeners(CRITIC_SIGNAL_MAX_LISTENERS,
+// signal)` so the per-critic SDK listener accumulation can never re-trip
+// `MaxListenersExceededWarning`. Returns the `cleanup` thunk the caller
+// MUST invoke in `finally` to clear the internal timer (no-op when no
+// internal timer was created).
+function resolveEffectiveSignal(callerSignal: AbortSignal | undefined): {
+  signal: AbortSignal | undefined;
+  cleanup: () => void;
+} {
+  if (callerSignal !== undefined) {
+    setMaxListeners(CRITIC_SIGNAL_MAX_LISTENERS, callerSignal);
+    return { signal: callerSignal, cleanup: () => {} };
+  }
+  const raw = process.env["DF_CRITIC_TIMEOUT_MS"];
+  if (!raw) return { signal: undefined, cleanup: () => {} };
+  const ms = Number(raw);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    // A non-numeric or non-positive value is operator error; falling back
+    // to "no internal deadline" preserves the prior posture rather than
+    // tripping a confusing parse failure inside the runner's hot path.
+    return { signal: undefined, cleanup: () => {} };
+  }
+  const controller = new AbortController();
+  setMaxListeners(CRITIC_SIGNAL_MAX_LISTENERS, controller.signal);
+  const timer = setTimeout(() => controller.abort(), ms);
+  // `unref` lets Node exit if everything else has settled. The
+  // `cleanup` thunk clears the timer on the success path so the
+  // process doesn't sit waiting for the deadline that already passed.
+  if (typeof timer.unref === "function") timer.unref();
+  return {
+    signal: controller.signal,
+    cleanup: () => clearTimeout(timer),
+  };
+}
+
 export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOutcome> {
   const { registry } = options;
   const cwd = options.cwd ?? options.loaded.repoRoot;
   const ref = options.ref ?? "HEAD";
   const sha = await resolveCommit(ref, cwd);
+  const { signal: effectiveSignal, cleanup: cleanupSignal } =
+    resolveEffectiveSignal(options.signal);
 
   // Self-modification guard across the whole trusted policy surface
   // (config + guidance files + prompt fragments). See `policy-baseline.ts`.
@@ -134,7 +201,7 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
         loaded,
         commit: sha,
         cwd,
-        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
       });
     }
 
@@ -246,7 +313,7 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
     const reviewOptions: CriticReviewOptions = {
       blockingSeverities: loaded.config.aggregation.blockingSeverities,
       diagnosticsDir: adapterDiagnosticsDir,
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
       ...(sink !== undefined ? { emit: (e: TelemetryEvent) => sink.emit(e) } : {}),
     };
 
@@ -411,6 +478,13 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
   } finally {
     signalGuard.uninstall();
     releaseCommitLock(lock.lockPath);
+    // Cancel the DF_CRITIC_TIMEOUT_MS internal-deadline timer (no-op when
+    // the caller supplied their own signal or env was unset). Without
+    // this, an early-return success path leaves a pending setTimeout
+    // until the deadline elapses; `unref()` keeps Node from blocking on
+    // it, but the timer still occupies memory across the rest of the
+    // process lifetime.
+    cleanupSignal();
   }
   // Re-narrow after try/finally — a successful path guarantees these are set.
   if (!artifact || !paths || !packet) {
