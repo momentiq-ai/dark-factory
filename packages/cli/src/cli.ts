@@ -104,6 +104,11 @@ import { cmdMcp } from "./mcp/cli.js";
 import { cmdFlow } from "./commands/flow/index.js";
 import { cmdShow } from "./commands/show.js";
 import { cmdStatus } from "./commands/status.js";
+// Cycle 13 (dark-factory-platform#149) — `df findings --range` surfaces
+// the per-commit iteration-receipt artifacts that the new (default)
+// final-commit-only `df gate-push` semantic leaves un-gated. See
+// src/commands/findings.ts for the rationale.
+import { cmdFindings } from "./commands/findings.js";
 // Cycle 12 Phase 12.2 — agent handoff protocol (v2 — Issue-anchored, native-
 // baton). The four cmd* functions below wrap the verb orchestrators exported
 // from src/handoff/index.ts and route to them at the bottom of main(). v1
@@ -164,6 +169,11 @@ function printHelp(meta: PackageMeta): void {
       "                              (with --json for the structured form).",
       "  df status                   Terse verdict + per-critic status for",
       "                              a commit (with --json for shell pipes).",
+      "  df findings --range BASE..HEAD",
+      "                              Audit-inspect per-commit findings for the",
+      "                              iteration-receipt artifacts the default",
+      "                              final-commit-only `df gate-push` leaves",
+      "                              un-gated (Cycle 13). NOT a gate.",
       "  df gates                    Run configured quality gates and",
       "                              triggered verification routes.",
       "  df stats                    Pretty-print critic call stats + bypass",
@@ -354,14 +364,17 @@ const CYCLE12_SUBCOMMANDS = new Set([
 // authoritative) and we don't pollute the top-level `df` namespace.
 const CYCLE11_SUBCOMMANDS = new Set(["flow"]);
 
-// `df show` / `df status` — CLI mirrors of the df_show_run / df_findings
-// MCP tools. Both routes share the loader + mappers in
+// `df show` / `df status` / `df findings` — CLI artifact-inspection
+// subcommands. `show` + `status` mirror the df_show_run / df_findings MCP
+// tools per-commit (cycle 5); `findings --range <base>..<head>` (Cycle
+// 13, dark-factory-platform#149) walks the iteration-receipt artifacts
+// the new default final-commit-only `df gate-push` semantic leaves
+// un-gated. All three share the loader + mappers in
 // src/lib/show-status-core.ts so the CLI's `--json` output stays
 // byte-equivalent with the MCP tool's structuredContent envelope (cycle 5
 // spec requirement). Registered here so the early --help interception
-// forwards `df show --help` / `df status --help` to the per-subcommand
-// help printers.
-const SHOW_STATUS_SUBCOMMANDS = new Set(["show", "status"]);
+// forwards each `df <cmd> --help` to its per-subcommand help printer.
+const SHOW_STATUS_SUBCOMMANDS = new Set(["show", "status", "findings"]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // pr-status-check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -837,20 +850,78 @@ function hasProfileEntry(
 }
 
 // ----- df gate-push -----
+//
+// Cycle 13 (dark-factory-platform#149) — semantic flip:
+//
+//   DEFAULT MODE: final-commit-only. The HEAD (last) commit of each
+//     push update is the only one whose verdict decides the gate. The
+//     intermediate commits' per-SHA artifacts still exist on disk
+//     (`.git/agent-reviews/<sha>.json`) as iteration receipts and stay
+//     visible via `df findings --range <base>..<head>`, but they do
+//     NOT influence the push outcome. This matches the documented
+//     find-fix-new-commit pattern: commit B fixes commit A's blockers,
+//     B's diff is the cumulative resolved state, B's verdict is what
+//     gates the push.
+//
+//   LEGACY MODE: full-range — gate every commit in the push update,
+//     block on any single commit's blockers. Opt-in via `--full-range`
+//     OR `DF_GATE_FULL_RANGE=1`. Use cases: forensic replay, per-commit
+//     audit (each commit is independently reviewed in a deploy log).
+//
+//   The legacy mode was the implicit default before Cycle 13. It
+//   makes the find-fix-new-commit pattern non-terminating in practice
+//   (any iteration round produces stale intermediate `CHANGES_REQUESTED`
+//   verdicts that block the push and force a squash, which spawns a
+//   fresh full-diff review that surfaces new findings — see
+//   consumer-side dark-factory-platform#149 for the full failure mode).
+//
+// The mode banner — `GATE MODE: final-commit-only (HEAD=<sha>)` or
+// `GATE MODE: full-range (N commits)` — prints once per push update so
+// operators see which semantic is active without needing to remember
+// the env-var / flag state.
+//
+// `--commit SHA --ci` mode is a single-commit replay path (CI cold-
+// path); the legacy/default split does not apply to it (one commit
+// only).
+function isFullRangeRequested(flags: Record<string, string | boolean>): boolean {
+  if (flags["full-range"] === true || flags["full-range"] === "true") {
+    return true;
+  }
+  const env = process.env["DF_GATE_FULL_RANGE"];
+  if (env !== undefined && env !== "" && env !== "0" && env.toLowerCase() !== "false") {
+    return true;
+  }
+  return false;
+}
+
 async function cmdGatePush(rest: string[]): Promise<number> {
   if (rest.includes("--help") || rest.includes("-h")) {
     process.stdout.write(
       [
-        "df gate-push — block a push when prior commits have unresolved blockers.",
+        "df gate-push — gate a push on the local-critic verdict.",
         "",
         "Usage:",
-        "  df gate-push [--profile NAME]                          # local pre-push",
-        "  df gate-push --commit SHA --ci [--profile NAME]        # CI replay",
+        "  df gate-push [--profile NAME]                              # local pre-push",
+        "  df gate-push --full-range [--profile NAME]                 # legacy: gate every commit",
+        "  df gate-push --commit SHA --ci [--profile NAME]            # CI replay (single commit)",
         "",
-        "Designed for .husky/pre-push. Reads git's pre-push protocol on stdin",
-        "and gates each commit in the pushed range against the per-SHA artifact",
-        "written by `df review`. Exit 1 if any commit has unresolved BLOCKER",
-        "findings under the configured aggregation policy.",
+        "Designed for .husky/pre-push. Reads git's pre-push protocol on stdin.",
+        "",
+        "Default mode (Cycle 13 — dark-factory-platform#149):",
+        "  Gates ONLY the HEAD (final) commit of each push update. Intermediate",
+        "  commits' per-SHA artifacts at .git/agent-reviews/<sha>.json are still",
+        "  written (iteration audit), but they DO NOT influence the gate.",
+        "  Inspect them with: `df findings --range <base>..HEAD`.",
+        "",
+        "Legacy mode — opt in via `--full-range` OR `DF_GATE_FULL_RANGE=1`:",
+        "  Gates EVERY commit in the push range; any single commit's blocker",
+        "  blocks the push. Use for forensic replay or per-commit deploy-log",
+        "  audit. Note: this was the implicit default before Cycle 13 and is",
+        "  what produced the find-fix-new-commit termination failure.",
+        "",
+        "Exit code:",
+        "  1 if the gating verdict (HEAD-only or full-range, per mode) blocks.",
+        "  0 otherwise.",
         "",
         "Bypass:",
         "  AGENT_REVIEW_BYPASS=\"<reason>\" git push   # logged to _runs.ndjson",
@@ -900,6 +971,7 @@ async function cmdGatePush(rest: string[]): Promise<number> {
     return result.blocked ? 1 : 0;
   }
 
+  const fullRange = isFullRangeRequested(flags);
   const stdin = await readStdinUtf8FromTtyOrStream();
   const updates = parsePrePushUpdates(stdin);
   if (updates.length === 0) {
@@ -911,19 +983,50 @@ async function cmdGatePush(rest: string[]): Promise<number> {
     if (update.isDelete) continue;
     const commits = await commitsForPushUpdate(update);
     if (commits.length === 0) continue;
-    process.stdout.write(
-      `df gate-push: gating ${commits.length} commit(s) on ${update.localRef} -> ${update.remoteRef}\n`,
-    );
-    for (const sha of commits) {
-      const result = await runCommitGate({
-        loaded,
-        commit: sha,
-        telemetry: sink,
-        profileName,
-      });
-      process.stdout.write(`-- ${sha.slice(0, 12)}\n${summarizeGate(result)}\n`);
-      if (result.blocked) blockedAny = true;
+
+    if (fullRange) {
+      // Legacy mode — gate every commit in the range. Pre-Cycle-13
+      // behavior, kept for forensic replay and per-commit audit
+      // contexts (e.g. production-deploy push where each commit is
+      // independently reviewed in the deploy log).
+      process.stdout.write(
+        `GATE MODE: full-range (${commits.length} commits) — ${update.localRef} -> ${update.remoteRef}\n`,
+      );
+      for (const sha of commits) {
+        const result = await runCommitGate({
+          loaded,
+          commit: sha,
+          telemetry: sink,
+          profileName,
+        });
+        process.stdout.write(`-- ${sha.slice(0, 12)}\n${summarizeGate(result)}\n`);
+        if (result.blocked) blockedAny = true;
+      }
+      continue;
     }
+
+    // Default mode (Cycle 13) — final-commit-only. The last commit in
+    // the range (`commitsForPushUpdate` returns the rev-list reverse,
+    // so HEAD is the last element) is the only one whose verdict
+    // gates the push. Intermediate commits' artifacts are iteration
+    // receipts; inspect them with `df findings --range`.
+    const headSha = commits[commits.length - 1] ?? "";
+    process.stdout.write(
+      `GATE MODE: final-commit-only (HEAD=${headSha.slice(0, 12)}) — ${update.localRef} -> ${update.remoteRef}\n`,
+    );
+    if (commits.length > 1) {
+      process.stdout.write(
+        `  intermediate commits (${commits.length - 1}) are iteration receipts; inspect with: df findings --range ${update.remoteRef === "" ? "<base>" : `${update.remoteSha.slice(0, 12)}..${headSha.slice(0, 12)}`}\n`,
+      );
+    }
+    const result = await runCommitGate({
+      loaded,
+      commit: headSha,
+      telemetry: sink,
+      profileName,
+    });
+    process.stdout.write(`-- ${headSha.slice(0, 12)}\n${summarizeGate(result)}\n`);
+    if (result.blocked) blockedAny = true;
   }
   return blockedAny ? 1 : 0;
 }
@@ -1825,6 +1928,16 @@ async function main(argv: string[]): Promise<number> {
   }
   if (sub === "status") {
     return await cmdStatus(rest, {
+      stdout: (s) => process.stdout.write(s),
+      stderr: (s) => process.stderr.write(s),
+    });
+  }
+  // Cycle 13 (dark-factory-platform#149) — `df findings --range` audit
+  // surface for the iteration-receipt artifacts the new default
+  // final-commit-only `df gate-push` semantic intentionally leaves
+  // un-gated. NOT a gate; opt-in inspection only.
+  if (sub === "findings") {
+    return await cmdFindings(rest, {
       stdout: (s) => process.stdout.write(s),
       stderr: (s) => process.stderr.write(s),
     });
