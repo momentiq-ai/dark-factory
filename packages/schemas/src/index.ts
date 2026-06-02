@@ -336,6 +336,63 @@ export interface QualityGateEvidence {
   gateResults?: Record<string, QualityGateResult>;
 }
 
+// DockerBuildEvidence — structured evidence emitted by the consumer
+// repo's `scripts/check-dockerfile.sh` shim and read by the critic
+// adapters at packet-build time. Closes the verification gap surfaced
+// by `dark-factory-platform#141` (the local + W3 critic sandboxes
+// cannot reach a Docker socket, so the critic literally cannot run
+// `docker build` to validate a Dockerfile-touching PR). The shim runs
+// on the host that already has docker (laptop pre-push or W3 worker)
+// and stamps the build result into `_dockerbuild-evidence.json` under
+// the artifact dir; the critic adapter then receives a
+// <DOCKER_BUILD_EVIDENCE> prompt section that:
+//   - exitCode === 0  → treat the docker build as verified; suppress
+//                       the canonical "I can't run docker build →
+//                       requiresHumanJudgment" finding pattern.
+//   - exitCode !== 0  → treat as a CONFIRMED build failure; emit a
+//                       [blocker] finding citing this evidence.
+// Absence of the evidence file is the status-quo: no change to today's
+// behavior, the adapter falls back to the requiresHumanJudgment path.
+//
+// The shim writer is consumer-side (see DFP issue #141 for the
+// canonical contract); this schema is the cross-process wire format
+// the CLI consumes. Field names match the DFP-side shim spec exactly.
+export interface DockerBuildEvidence {
+  // Schema version of the evidence record. Bump on field rename or
+  // semantic change so a stale shim's older shape can be detected.
+  schemaVersion: string;
+  // Repo-relative path to the Dockerfile that was built (e.g.,
+  // ".devcontainer/Dockerfile"). Used to correlate evidence with the
+  // critic's view of the diff — a finding about an unrelated
+  // Dockerfile is NOT covered by this evidence.
+  dockerfile: string;
+  // Repo-relative build context the shim passed to `docker build`
+  // (e.g., ".devcontainer/"). Carried through so the critic can
+  // report the exact invocation that was verified.
+  context: string;
+  // Process exit code of `docker build`. 0 = build succeeded; non-zero
+  // = build failed. The critic adapter routes on this value: 0 → trust
+  // the evidence and suppress the unverifiability finding; non-zero →
+  // surface as a confirmed blocker.
+  exitCode: number;
+  // Image digest (`sha256:...`) of the successfully-built image. Absent
+  // on build failure. Present on success so the critic can report which
+  // image the evidence verified.
+  imageSha?: string;
+  // Final image size in bytes. Optional; informational only — used in
+  // the prompt context but does not gate the finding decision.
+  imageSize?: number;
+  // Repo-relative path to the captured build log
+  // (e.g., ".git/agent-reviews/_dockerbuild-<hash>.log"). Optional;
+  // useful for the prompt to point operators at the full log if the
+  // critic flags follow-up questions.
+  buildLogPath?: string;
+  // ISO-8601 timestamp the shim wrote the evidence. Used to surface
+  // staleness if the evidence pre-dates the commit's diff (e.g., a
+  // critic re-run hours later against an unrelated Dockerfile change).
+  timestamp: string;
+}
+
 export type ChangedFileStatus = "A" | "M" | "D" | "R" | "T" | "C" | "U" | "X";
 
 export interface ChangedFile {
@@ -411,6 +468,18 @@ export interface ReviewPacket {
   // still appears in compactedDiff but without the synthetic
   // injection).
   parseErrorPaths?: string[];
+  // Closes the verification gap from `dark-factory-platform#141`.
+  // Populated by the packet builder when the consumer's
+  // `scripts/check-dockerfile.sh` shim has stamped evidence into
+  // `<artifactDir>/_dockerbuild-evidence.json`. The reader accepts
+  // both the single-object form (one Dockerfile, the common case) and
+  // the array form (multiple Dockerfiles), normalizing to an array
+  // here. The prompt builder emits a `<DOCKER_BUILD_EVIDENCE>` section
+  // from this field and instructs the critic to suppress the
+  // "I can't run docker build → requiresHumanJudgment" finding pattern
+  // for verified builds, or to surface a [blocker] for confirmed
+  // failures. Field absent (status quo) when no shim has run.
+  dockerBuildEvidence?: DockerBuildEvidence[];
 }
 
 export interface ReviewFinding {

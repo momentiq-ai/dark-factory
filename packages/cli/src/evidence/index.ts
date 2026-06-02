@@ -29,6 +29,17 @@ export {
   type ReadEvidenceResult,
 } from "./quality-gates.js";
 
+// Docker-build evidence — closes the DFP #141 verification gap (critic
+// adapter sandboxes can't reach a Docker socket; the consumer's
+// `scripts/check-dockerfile.sh` shim stamps build results here so the
+// prompt builder can suppress the requiresHumanJudgment finding pattern
+// for verified builds and amplify confirmed failures into [blocker]s).
+export {
+  readDockerBuildEvidence,
+  dockerBuildEvidencePath,
+  DOCKER_BUILD_EVIDENCE_FILENAME,
+} from "./docker-build.js";
+
 // Service #8 — Audit / Compliance Trail (Phase D boundary).
 //
 // `_runs.ndjson` is the structural audit log: every critic run, every
