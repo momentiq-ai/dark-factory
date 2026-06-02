@@ -38,7 +38,7 @@ import { loadAgentReviewConfig } from "../policy/config.js";
 
 import { listAdrDocs, readAdrDoc } from "./adr/parser.js";
 import { listCycleDocs, readCycleDoc } from "./cycle-doc/parser.js";
-import { mapArtifactForFindings } from "./tools/findings.js";
+import { mapArtifactForFindings } from "../lib/show-status-core.js";
 import { readArtifact } from "../report.js";
 import { resolveCommit } from "../git.js";
 

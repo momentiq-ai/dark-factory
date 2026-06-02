@@ -47,11 +47,13 @@ function runDfCli(
   });
 }
 
-describe("Phase F-LOCAL — top-level help lists hook-facing subcommands", () => {
+describe("top-level help lists the local-critic / hook-facing subcommands", () => {
   it("--help mentions all 5 hook subcommands", async () => {
     const r = await runDfCli(["--help"]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("Phase F-LOCAL");
+    // Issue #89 scrubbed the internal "Phase F-LOCAL" framing from user-
+    // facing text; what matters is that each subcommand is listed by
+    // name so operators can find it.
     expect(r.stdout).toContain("df review");
     expect(r.stdout).toContain("df gate-push");
     expect(r.stdout).toContain("df doctor");

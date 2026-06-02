@@ -318,10 +318,13 @@ describe("df CLI — Cycle 12 handoff subcommands (v2 Issue-anchored)", () => {
   // before any gh/git side-effect. Cycle 8 (PR-anchor) wording is gone —
   // the v1 source/tests were deleted at Task 22.
 
-  it("--help lists the Cycle 12 handoff verbs under their own section", async () => {
+  it("--help lists the handoff verbs under their own section", async () => {
     const r = await runDfCli(["--help"]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain("Cycle 12 — agent handoff protocol, v2 Issue-anchored");
+    // Issue #89 scrubbed internal cycle framing ("Cycle 12 — …") from
+    // user-facing text. The contract is: each verb is listed by name,
+    // grouped under a recognizable agent-handoff header.
+    expect(r.stdout).toMatch(/handoff/i);
     expect(r.stdout).toContain("df handoff [issue]");
     expect(r.stdout).toContain("df handoffs");
     expect(r.stdout).toContain("df accept <issue>");

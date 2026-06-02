@@ -47,7 +47,10 @@ import { resolveArtifactDir, telemetryPath } from "../../paths.js";
 import { loadAgentReviewConfig } from "../../policy/config.js";
 import { resolveProfile } from "../../policy/profile.js";
 import { runReview, type ReviewRunOptions, type ReviewRunOutcome } from "../../runner.js";
-import { mapArtifactForFindings, type DfFindingsResult } from "./findings.js";
+import {
+  mapArtifactForFindings,
+  type DfFindingsResult,
+} from "../../lib/show-status-core.js";
 
 const EXPECTED_REVIEW_SECONDS = 60;
 
