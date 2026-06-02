@@ -27,7 +27,7 @@
 //     `subscription` / `api` was pinned by the profile and reports
 //     pass/fail accordingly.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   accessSync,
   constants,
@@ -157,7 +157,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorCheck[]> 
   // index-cache-tree-references-missing-object state a killed-mid-write
   // `git commit` leaves the worktree in. Detect-only — the recovery
   // (`git read-tree HEAD`) is destructive and stays operator-driven.
-  checks.push(probeCacheTree(root));
+  checks.push(await probeCacheTree(root));
 
   // 6. Doppler bootstrap visibility (when caller supplied a BootstrapResult).
   // For the OSS doctor, this is informational — a `no-bootstrap-file` status
@@ -643,23 +643,141 @@ function isPidAlive(pid: number): boolean {
 // has been updated to reference the new tree SHA, but the tree object
 // itself was never finalised before the process was killed.
 //
-// Probe shape: `git fsck` (no flags). When the cache-tree is dangling,
-// fsck emits a line containing the literal substring
-// `invalid sha1 pointer in cache-tree of`. Adjacent bad-repo states
-// (broken HEAD ref, missing blob NOT in cache-tree, dangling orphan
-// objects) emit different error messages that don't match this regex,
-// so the probe is specific without being noisy.
+// Probe shape: `git fsck --no-dangling` with LC_ALL=C / LANG=C, a
+// bounded buffer and a timeout. When the cache-tree is dangling, fsck
+// emits a line containing `invalid sha1 pointer in cache-tree`
+// (git 2.39.x short form) or `invalid sha1 pointer in cache-tree of
+// <path>` (git 2.50.x long form) — the regex accepts both. Adjacent
+// bad-repo states (broken HEAD ref, missing blob NOT in cache-tree,
+// dangling orphan objects) emit different error messages, so the
+// probe is specific without being noisy.
 //
 // Detect-only: the recovery (`git read-tree HEAD`) discards staged
 // work. The operator must decide whether to preserve the staged
 // changes (re-add them after `read-tree`) or accept the loss. The
 // probe surfaces the diagnosis + remediation hint and nothing more.
+//
+// Async: `git fsck` walks the entire object database and can take
+// seconds-to-minutes on large repos. The probe is `async` so it
+// doesn't freeze `runDoctor`'s overall event loop.
 // ---------------------------------------------------------------------------
 
+// Accept BOTH the git-2.39.x short form ("invalid sha1 pointer in
+// cache-tree" with a word boundary) AND the git-2.50.x long form
+// (suffixed with " of <path>"). Earlier revisions required the
+// trailing " of", which silently fail-passed on git 2.39 (Debian 12).
 export const CACHE_TREE_CORRUPTION_REGEX =
-  /invalid sha1 pointer in cache-tree of/;
+  /invalid sha1 pointer in cache-tree(?:\b| of)/;
 
-export function probeCacheTree(repoRoot: string): DoctorCheck {
+const RECOVERY_REMEDIATION =
+  "Run `git read-tree HEAD` in the affected worktree to rebuild the index from HEAD's tree — WARNING: this discards any staged changes; re-add them after recovery if needed.";
+
+// 50 MB stdout/stderr ceiling. Real cache-tree-corruption stderr is
+// O(KB); the ceiling exists to bound runaway fsck output on
+// pathological repos. ENOBUFS-shape overflow is treated as
+// non-passing, NOT silent pass.
+const FSCK_BUFFER_BYTES = 50 * 1024 * 1024;
+// 30 s wall-clock ceiling. fsck on huge repos can run for minutes; the
+// probe is a doctor check, so we'd rather report indeterminate than
+// hold up the rest of the doctor run forever. Overridable via
+// `DF_CACHE_TREE_PROBE_TIMEOUT_MS` for testing the timeout path
+// without making test suites wait 30s.
+function fsckTimeoutMs(): number {
+  const env = process.env["DF_CACHE_TREE_PROBE_TIMEOUT_MS"];
+  if (env !== undefined) {
+    const n = Number(env);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 30_000;
+}
+
+interface FsckResult {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  spawnError?: NodeJS.ErrnoException;
+  overflowed: boolean;
+  timedOut: boolean;
+}
+
+function runGitFsck(repoRoot: string): Promise<FsckResult> {
+  return new Promise<FsckResult>((resolvePromise) => {
+    let settled = false;
+    const settle = (r: FsckResult): void => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(r);
+    };
+    let child;
+    try {
+      child = spawn("git", ["fsck", "--no-dangling"], {
+        cwd: repoRoot,
+        env: { ...process.env, LC_ALL: "C", LANG: "C" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      settle({
+        stdout: "",
+        stderr: "",
+        code: null,
+        signal: null,
+        spawnError: err as NodeJS.ErrnoException,
+        overflowed: false,
+        timedOut: false,
+      });
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let total = 0;
+    let overflowed = false;
+    const onData = (which: "stdout" | "stderr") => (c: Buffer) => {
+      total += c.length;
+      if (total > FSCK_BUFFER_BYTES) {
+        if (!overflowed) {
+          overflowed = true;
+          child.kill("SIGKILL");
+        }
+        return;
+      }
+      if (which === "stdout") stdout += c.toString("utf8");
+      else stderr += c.toString("utf8");
+    };
+    child.stdout?.on("data", onData("stdout"));
+    child.stderr?.on("data", onData("stderr"));
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, fsckTimeoutMs());
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      settle({
+        stdout,
+        stderr,
+        code: null,
+        signal: null,
+        spawnError: err as NodeJS.ErrnoException,
+        overflowed,
+        timedOut,
+      });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      settle({
+        stdout,
+        stderr,
+        code,
+        signal,
+        overflowed,
+        timedOut,
+      });
+    });
+  });
+}
+
+export async function probeCacheTree(repoRoot: string): Promise<DoctorCheck> {
   if (!existsSync(resolve(repoRoot, ".git"))) {
     // `df doctor`'s base-infra checks already cover the
     // "not-a-git-repo" case (artifact_dir_writable + git_core_hookspath
@@ -671,32 +789,16 @@ export function probeCacheTree(repoRoot: string): DoctorCheck {
       detail: `${repoRoot} is not a git working tree — cache-tree probe skipped`,
     };
   }
-  const result = spawnSync("git", ["fsck"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    // fsck output goes to stderr; we don't need stdout but capture it
-    // anyway so the buffer doesn't fill and stall fsck on huge repos.
-  });
-  if (result.error) {
-    // ENOENT (git not on PATH) is genuinely informational — the rest of
-    // `df doctor` (which all shells out to git) will surface that
-    // diagnostic loudly. Don't double-report.
-    return {
-      name: "cache_tree_probe",
-      passed: true,
-      detail: `git fsck not runnable in ${repoRoot}: ${result.error.message}`,
-    };
-  }
-  const stderr = result.stderr ?? "";
-  const stdout = result.stdout ?? "";
-  const combined = `${stdout}\n${stderr}`;
+  const result = await runGitFsck(repoRoot);
+  const combined = `${result.stdout}\n${result.stderr}`;
+
+  // Inspect captured output for the corruption signature FIRST. A
+  // realistic mid-corruption fsck both prints the signature AND exits
+  // non-zero — handle the diagnostic path before the generic
+  // error-reporting paths so the operator sees the actionable line.
   if (CACHE_TREE_CORRUPTION_REGEX.test(combined)) {
-    // Extract the offending SHA(s) for a more actionable detail line.
-    // The fsck error reads: `error: <sha>: invalid sha1 pointer in
-    // cache-tree of <index-path>`. Capture all of them; multiple
-    // corrupt entries are possible after a churny mid-commit kill.
     const matches = combined.matchAll(
-      /([0-9a-f]{40}): invalid sha1 pointer in cache-tree of (\S+)/g,
+      /([0-9a-f]{40}): invalid sha1 pointer in cache-tree(?: of (\S+))?/g,
     );
     const offenders = Array.from(matches).map((m) => ({
       sha: m[1] ?? "(unknown)",
@@ -712,10 +814,57 @@ export function probeCacheTree(repoRoot: string): DoctorCheck {
       name: "cache_tree_probe",
       passed: false,
       detail,
-      remediation:
-        "Run `git read-tree HEAD` in the affected worktree to rebuild the index from HEAD's tree — WARNING: this discards any staged changes; re-add them after recovery if needed.",
+      remediation: RECOVERY_REMEDIATION,
     };
   }
+
+  if (result.overflowed) {
+    return {
+      name: "cache_tree_probe",
+      passed: false,
+      detail: `git fsck output exceeded ${FSCK_BUFFER_BYTES} bytes — cannot determine cache-tree state; output was truncated.`,
+      remediation:
+        "investigate the repo's object database manually (`git fsck --no-dangling 2>&1 | head -50`); cache-tree probe is inconclusive at this output volume",
+    };
+  }
+
+  if (result.timedOut) {
+    return {
+      name: "cache_tree_probe",
+      passed: false,
+      detail: `git fsck exceeded ${fsckTimeoutMs()}ms — cache-tree state indeterminate`,
+      remediation:
+        "run `git fsck --no-dangling` manually; the probe times out on very large repos",
+    };
+  }
+
+  if (result.spawnError) {
+    // ENOENT (git not on PATH) is genuinely informational — the rest of
+    // `df doctor` (which all shells out to git) will surface that
+    // diagnostic loudly. Don't double-report. Other spawn errors
+    // (EACCES, etc.) ARE surfaced because they indicate environment
+    // problems the operator should know about.
+    if (result.spawnError.code === "ENOENT") {
+      return {
+        name: "cache_tree_probe",
+        passed: true,
+        detail: `git fsck not runnable in ${repoRoot}: ${result.spawnError.message}`,
+      };
+    }
+    return {
+      name: "cache_tree_probe",
+      passed: false,
+      detail: `git fsck failed to spawn in ${repoRoot}: ${result.spawnError.message}`,
+      remediation:
+        "verify the git binary is installed, on PATH, and executable from the repository working directory",
+    };
+  }
+
+  // No corruption signature, no overflow, no spawn error. A non-zero
+  // fsck exit (broken ref, missing blob NOT in cache-tree, etc.) is
+  // out-of-scope for THIS probe — `df doctor` covers ref/object
+  // integrity via other surfaces. The cache-tree-specific answer
+  // here is "no cache-tree corruption observed".
   return {
     name: "cache_tree_probe",
     passed: true,
