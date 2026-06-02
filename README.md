@@ -136,15 +136,17 @@ for the full data flows.
 
 ## Reusable workflows
 
-Consumer repos `uses:` these from their own CI:
+Consumer repos `uses:` these from their own CI. A reusable workflow invoked via `uses:` reports the status-check context as `<caller-job-id> / <callee-job-name>`; every dark-factory callee omits a job-level `name:` override so the callee segment defaults to the job id (issue #27). The right column is the EXACT string a consumer ruleset must require — see [CONSUMER-ADOPTION.md §8](docs/CONSUMER-ADOPTION.md#8-make-dark-factory-binding-required-for-enforcement) for the naming contract.
 
-| File | Status-check context | Purpose |
+| File | Consumer status-check context | Purpose |
 |---|---|---|
-| `.github/workflows/agent-critic.yml` | `agent-critic` | Multi-vendor critic quorum (Cursor / Codex / Gemini / Grok) |
-| `.github/workflows/pr-status-check.yml` | `pr-status-check` | Aggregator gate |
-| `.github/workflows/schema-check.yml` | `schema-check` | Builds `@momentiq/dark-factory-schemas` |
-| `.github/workflows/cycle-doc-validation.yml` | `cycle-doc-validation` | Enforces `Cycle:` / `Issue:` PR trailers |
-| `.github/workflows/branch-protection-audit.yml` | `branch-protection-audit` | Drift detector for branch rulesets |
+| `.github/workflows/agent-critic.yml` | `agent-critic / agent-critic` | Multi-vendor critic quorum (Cursor / Codex / Gemini / Grok) |
+| `.github/workflows/pr-status-check.yml` | `pr-status-check / pr-status-check` | Aggregator gate |
+| `.github/workflows/schema-check.yml` | `schema-check / schema-check` | Builds `@momentiq/dark-factory-schemas` |
+| `.github/workflows/cycle-doc-validation.yml` | `cycle-doc-validation / cycle-doc-validation` | Enforces `Cycle:` / `Issue:` PR trailers |
+| `.github/workflows/branch-protection-audit.yml` | `branch-protection-audit / branch-protection-audit` | Drift detector for branch rulesets |
+
+> Dark-factory's own repo invokes these workflows directly (via `pull_request:`, not `uses:`), so the context here is the bare job id (`pr-status-check`, `agent-critic`, etc.) — see `.github/rulesets/main.json`.
 
 ### Consumer wiring
 
