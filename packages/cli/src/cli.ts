@@ -80,7 +80,11 @@ import {
   loadDopplerBootstrapEnv,
   DEFAULT_BOOTSTRAP_ALLOWLIST,
 } from "./doppler-bootstrap.js";
-import { classifyDoctorState, runDoctor } from "./doctor.js";
+import {
+  classifyDoctorState,
+  detectCloudEnv,
+  runDoctor,
+} from "./doctor.js";
 import { resolveProfile } from "./policy/profile.js";
 import {
   commitsForPushUpdate,
@@ -936,17 +940,30 @@ async function cmdDoctor(rest: string[]): Promise<number> {
         "df doctor — verify the environment for hook-facing critic invocation.",
         "",
         "Usage:",
-        "  df doctor [--profile NAME]",
+        "  df doctor [--profile NAME] [--json]",
         "",
         "Checks: node version, hooks dir, hook executable, core.hooksPath,",
-        "artifact dir, doppler bootstrap, per-adapter doctor() (subscription",
-        "auth lives here).",
+        "artifact dir, doppler bootstrap, cloud-env detection, per-adapter",
+        "doctor() (subscription auth lives here; skipped in cloud envs).",
+        "",
+        "Flags:",
+        "  --json                           Emit a machine-readable JSON",
+        "                                   report on stdout instead of the",
+        "                                   human-readable INFO/OK/FAIL lines",
+        "                                   (for consumer-side pre-push hooks",
+        "                                   that fail-fast on auth_pending).",
         "",
         "Environment:",
         "  AGENT_REVIEW_PROFILE=<name>      Profile to validate (default: local)",
         "  DF_DOCTOR_CI=1                   Skip hookspath + doppler CLI checks",
         "  DF_DOCTOR_SKIP_HOOKS=1           Skip git-core-hookspath check",
         "  DF_DOCTOR_SKIP_DOPPLER=1         Skip doppler-cli-on-path check",
+        "",
+        "Cloud-env markers (any-of triggers subscription-auth skip):",
+        "  CODESPACES=true                  GitHub Codespaces",
+        "  REMOTE_CONTAINERS=true           VS Code Dev Containers",
+        "  CLAUDE_CODE_SANDBOX=true         Claude Code web sandbox",
+        "  DEVCONTAINER=true                generic devcontainer images",
         "",
       ].join("\n"),
     );
@@ -981,15 +998,42 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     profileName,
     perCriticChecks: checks,
   });
+  const cloudEnv = detectCloudEnv();
+  const allOk = checks.every((c) => c.passed || c.optional);
+
+  // --json — machine-readable output for consumer-side pre-push hooks
+  // (DFP issue #56). Shape is stable and documented in
+  // packages/schemas/src/index.ts (DoctorReport). Exit code semantics
+  // are the same as the human path: 0 = all required checks passed,
+  // 1 = at least one required check failed.
+  if (flags["json"]) {
+    const report = {
+      version: 1 as const,
+      schema: "df-doctor-report-v1" as const,
+      triage: { state: triage.state, line: triage.line },
+      cloudEnv: {
+        detected: cloudEnv.detected,
+        markers: cloudEnv.markers,
+      },
+      profile: profileName,
+      ok: allOk,
+      checks,
+    };
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return allOk ? 0 : 1;
+  }
+
   process.stdout.write(`${triage.line}\n`);
-  let allOk = true;
   for (const c of checks) {
-    const label = c.passed ? "OK" : c.optional ? "INFO" : "FAIL";
+    const label = c.passed ? (c.optional ? "INFO" : "OK") : c.optional ? "INFO" : "FAIL";
     process.stdout.write(`[${label}] ${c.name}: ${c.detail}\n`);
     if (!c.passed && c.remediation) {
       process.stdout.write(`       fix: ${c.remediation}\n`);
+    } else if (c.passed && c.optional && c.remediation) {
+      // INFO-with-remediation surfaces the cloud-env bypass hint loudly
+      // even though the check itself "passed" (it's informational).
+      process.stdout.write(`       note: ${c.remediation}\n`);
     }
-    if (!c.passed && !c.optional) allOk = false;
   }
   return allOk ? 0 : 1;
 }

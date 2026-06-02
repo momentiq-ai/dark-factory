@@ -684,6 +684,52 @@ export interface DoctorCheck {
   optional?: boolean;
 }
 
+// Consumer issue dark-factory-platform#56 — `df doctor --json` schema.
+// Emitted on stdout when the operator (or a consumer-side pre-push
+// hook) passes `--json`. The shape is intentionally stable so
+// downstream consumers can pin against `schema: "df-doctor-report-v1"`
+// and rely on the field set without re-parsing the human-readable
+// INFO/OK/FAIL block.
+//
+// Shape contract (v1):
+//   - `version: 1` + `schema: "df-doctor-report-v1"` — bump together
+//     for breaking changes; additive fields stay on v1.
+//   - `triage` — the same headline `cmdDoctor` prints (state + line).
+//   - `cloudEnv` — the structured detection result (detected + which
+//     markers fired). Consumer-side pre-push hooks read this BEFORE
+//     reading `triage` so the cloud-env bypass remediation is one
+//     branch upstream of the auth_pending branch.
+//   - `profile` — the resolved profile name (may be undefined when
+//     no `--profile` AND no `AGENT_REVIEW_PROFILE` were supplied).
+//   - `ok` — the same exit-code-equivalent flag (true ⇒ all required
+//     checks passed, identical to `process.exit(0)` from `cmdDoctor`).
+//   - `checks` — the full per-check array `runDoctor` returns, in
+//     emission order, so consumers can render their own UI on top.
+export interface DoctorReportV1 {
+  version: 1;
+  schema: "df-doctor-report-v1";
+  triage: {
+    state: "config_missing" | "auth_pending" | "ok";
+    line: string;
+  };
+  cloudEnv: {
+    detected: boolean;
+    /**
+     * The subset of cloud-env markers whose env values were truthy.
+     * Stable token list (extended in additive bumps; never reordered
+     * — append-only). Current set:
+     *   - `CODESPACES`            (GitHub Codespaces)
+     *   - `REMOTE_CONTAINERS`     (VS Code Dev Containers)
+     *   - `CLAUDE_CODE_SANDBOX`   (Claude Code web sandbox)
+     *   - `DEVCONTAINER`          (generic devcontainer images)
+     */
+    markers: string[];
+  };
+  profile: string | undefined;
+  ok: boolean;
+  checks: DoctorCheck[];
+}
+
 // Cycle 322.1 — SDK status messages stream before the terminal event.
 // Capturing the SDK's own explanation (e.g.,
 // "Upstream model gpt-5.5 returned capacity_exceeded after retry policy

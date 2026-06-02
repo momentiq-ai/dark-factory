@@ -120,7 +120,9 @@ describe("Phase F-LOCAL — df doctor", () => {
     const r = await runDfCli(["doctor", "--help"]);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("df doctor");
-    expect(r.stdout).toContain("per-adapter doctor()");
+    // Banner mentions the per-adapter doctor() probe (string wrapped
+     // across two lines in the formatted banner).
+    expect(r.stdout).toMatch(/per-adapter\s+doctor\(\)/);
     expect(r.stdout).toContain("DF_DOCTOR_CI");
   });
 
@@ -135,6 +137,41 @@ describe("Phase F-LOCAL — df doctor", () => {
     expect([0, 1]).toContain(r.exitCode);
     expect(r.stdout).toContain("node_version");
     expect(r.stdout).toContain("artifact_dir_writable");
+  });
+
+  it("--json emits a stable machine-readable DoctorReportV1", async () => {
+    // Consumer issue dark-factory-platform#56 — `df doctor --json` is
+    // the surface consumer-side pre-push hooks call to fail-fast on
+    // auth_pending before invoking the rest of the gate. The shape is
+    // pinned by `DoctorReportV1` in packages/schemas/src/index.ts.
+    const r = await runDfCli(["doctor", "--json"], { DF_DOCTOR_CI: "1" });
+    expect([0, 1]).toContain(r.exitCode);
+    // First line of stdout must parse as JSON of the documented shape.
+    const parsed: unknown = JSON.parse(r.stdout);
+    expect(parsed).toMatchObject({
+      version: 1,
+      schema: "df-doctor-report-v1",
+      triage: {
+        state: expect.stringMatching(/^(config_missing|auth_pending|ok)$/),
+        line: expect.any(String),
+      },
+      cloudEnv: {
+        detected: expect.any(Boolean),
+        markers: expect.any(Array),
+      },
+      ok: expect.any(Boolean),
+      checks: expect.any(Array),
+    });
+    // `ok` mirrors the exit code (0 ⇒ true, 1 ⇒ false).
+    expect((parsed as { ok: boolean }).ok).toBe(r.exitCode === 0);
+  });
+
+  it("--help mentions --json + the cloud-env markers", async () => {
+    const r = await runDfCli(["doctor", "--help"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("--json");
+    expect(r.stdout).toContain("CODESPACES");
+    expect(r.stdout).toContain("CLAUDE_CODE_SANDBOX");
   });
 });
 
