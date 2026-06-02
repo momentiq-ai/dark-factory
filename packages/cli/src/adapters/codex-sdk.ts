@@ -564,14 +564,25 @@ export const SANDBOX_INIT_FAILURE_CODE = "sandbox_init_failure" as const;
 //     primitive when bwrap is unavailable):
 //       "landlock_create_ruleset: Operation not permitted"
 //
-// Each regex anchors on the tool name + the specific failure verb so
-// arbitrary text mentioning "bwrap" or "namespace" in isolation cannot
-// trigger a false positive.
+// Each regex anchors on the tool name + the specific failure verb AND
+// requires the citation to start at column 0 of a line (multiline `^`).
+// The column-0 anchor is load-bearing: the Codex CLI's
+// `handle_exec_command_end` maps any non-zero `exit_code` to
+// `CommandExecutionStatus = "failed"`, so a legitimate
+// `git diff --exit-code` that finds a diff arrives with
+// `status: "failed"` and diff content in `aggregated_output`. When the
+// PR under review touches this repo's own pattern list, that diff content
+// contains the bwrap citation prefixed by `+` / `-` / context whitespace.
+// Without the line anchor those diff-prefixed occurrences classify as
+// sandbox_init_failure and silently erase real APPROVED /
+// CHANGES_REQUESTED verdicts from quorum (PR #112 round-3 cursor blocker).
+// Real bwrap/landlock stderr always writes the citation at column 0,
+// matching the anchor.
 const SANDBOX_INIT_FAILURE_PATTERNS: readonly RegExp[] = Object.freeze([
-  /bwrap:\s+No permissions to create a new namespace/i,
-  /bwrap:\s+Setting up seccomp failed/i,
-  /bwrap:\s+setting up uid map:\s+Permission denied/i,
-  /landlock_create_ruleset:\s+Operation not permitted/i,
+  /^bwrap:\s+No permissions to create a new namespace/im,
+  /^bwrap:\s+Setting up seccomp failed/im,
+  /^bwrap:\s+setting up uid map:\s+Permission denied/im,
+  /^landlock_create_ruleset:\s+Operation not permitted/im,
 ]) as readonly RegExp[];
 
 /**
@@ -614,19 +625,23 @@ export function detectSandboxInitFailure(text: string): string | null {
  * command_execution items, or `null` if no failed item's output cites a
  * sandbox-init failure.
  *
- * PR #112 round-2 false-positive guard: detection is gated SOLELY on
- * `status === "failed"` — the SDK's explicit signal that it could not
- * run the command (sandbox init failure being the canonical cause; see
- * `CommandExecutionStatus = "in_progress" | "completed" | "failed"` in
- * `@openai/codex-sdk` types). The earlier `exit_code !== 0` branch was
- * removed: `exit_code` is a legitimate control-flow signal (`git diff
- * --exit-code`, `grep -q`, `test`, etc.) and a `status: "completed"`
- * command with non-zero exit can legitimately print stdout containing
- * the literal bwrap citation (e.g., a diff of this very source file's
- * pattern list). Classifying such output as sandbox_init_failure would
- * silently erase real APPROVED / CHANGES_REQUESTED verdicts from
- * quorum. The SDK-thrown-Error path in `runOnce`'s catch block remains
- * the secondary detection point for startup failures that prevent any
+ * PR #112 false-positive guard (rounds 1-3): detection is gated SOLELY
+ * on `status === "failed"` items AND the signature regexes are
+ * line-anchored at column 0 (multiline `^`). Both gates are
+ * load-bearing because the Codex CLI's `handle_exec_command_end` maps
+ * any non-zero `exit_code` to `CommandExecutionStatus = "failed"`
+ * (`completed` only on `exit_code == 0`). So a legitimate `git diff
+ * --exit-code` that finds a diff arrives as `status: "failed",
+ * exit_code: 1` with diff content in `aggregated_output` — and when
+ * the PR under review touches this repo's pattern list, that diff
+ * content contains the bwrap citation prefixed by `+` / `-` / context
+ * whitespace. The line anchor ensures only stderr-shaped occurrences
+ * (citation at column 0, as real bwrap/landlock stderr always writes
+ * them) classify, not diff-prefixed source content. Without the
+ * anchor, real APPROVED / CHANGES_REQUESTED verdicts get silently
+ * erased from quorum on every PR that touches the pattern list. The
+ * SDK-thrown-Error path in `runOnce`'s catch block remains the
+ * secondary detection point for startup failures that prevent any
  * command_execution stream from emitting.
  *
  * Items without an `aggregated_output` string are skipped. Pure
@@ -1057,23 +1072,29 @@ export class CodexSdkAdapter implements CriticAdapter {
     //
     // Failure mode: when the codex CLI's bwrap sandbox cannot allocate a
     // Linux user namespace (e.g., GKE Autopilot without SYS_ADMIN), every
-    // `command_execution` item the model issues to read the diff returns
-    // with the bwrap error citation in its `aggregated_output` AND a
-    // non-zero `exit_code` (the spawned shell exits with the bwrap
-    // error). The model, unable to actually read the diff, fabricates a
-    // `[blocker] contracts` CHANGES_REQUESTED finding citing the bwrap
+    // `command_execution` item the model issues to read the diff arrives
+    // with `status: "failed"` and the bwrap error citation in its
+    // `aggregated_output` (the spawned shell never exec'd because bwrap
+    // init died). The model, unable to actually read the diff, fabricates
+    // a `[blocker] contracts` CHANGES_REQUESTED finding citing the bwrap
     // error as evidence. Other critics in the same quorum APPROVED, but
     // veto-quorum semantics fail-closed on the fabricated verdict.
     //
-    // PR #112 false-positive guard (codex blocker on PR #112):
-    // detection is gated on FAILED command items only. finalResponse is
-    // NOT scanned — a real CHANGES_REQUESTED finding may legitimately
-    // quote the canonical bwrap string in its evidence (e.g., reviewing
-    // source / docs / tests that ship the pattern list), and a
-    // successful diff-read whose stdout contains the string must not
-    // trigger. Startup failures that prevent any command_execution from
-    // emitting are still caught by the SDK-thrown-error path above (see
-    // the catch block's `detectSandboxInitFailure(e.message)` scan).
+    // PR #112 false-positive guard (codex + cursor blockers, rounds 1-3):
+    // detection is gated on `status === "failed"` items only AND the
+    // signature regexes are line-anchored (column 0). Both gates are
+    // load-bearing because the Codex CLI's `handle_exec_command_end`
+    // maps non-zero `exit_code` to `status: "failed"` — so a legitimate
+    // `git diff --exit-code` that finds a diff arrives as `failed` with
+    // diff content (including possible `+`/`-` lines carrying the bwrap
+    // literal verbatim) in `aggregated_output`. The line anchor ensures
+    // only stderr-shaped lines (citation at column 0) classify, not
+    // diff-prefixed source content. finalResponse is also NOT scanned —
+    // a real CHANGES_REQUESTED whose evidence quotes the canonical
+    // citation must pass through. Startup failures that prevent any
+    // command_execution from emitting are caught by the SDK-thrown-error
+    // path above (see the catch block's `detectSandboxInitFailure(e.message)`
+    // scan).
     //
     // Under `min-complete-quorum` with `required: false` on this critic,
     // `status: error` is non-blocking; a `status: complete` +

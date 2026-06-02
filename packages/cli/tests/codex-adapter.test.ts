@@ -1585,18 +1585,37 @@ test("detectSandboxInitFailure matches all four canonical environmental signatur
   }
 });
 
-test("detectSandboxInitFailure returns the matched line trimmed from surrounding noise", () => {
-  // The model frequently embeds the bwrap line inside a multi-line
-  // finding annotation; the detector should return just the matched
-  // line so the error envelope's detail message stays focused.
+test("detectSandboxInitFailure returns the matched line trimmed from surrounding stderr context", () => {
+  // Real bwrap/landlock stderr writes the citation at column 0 of its
+  // own line, possibly surrounded by other stderr lines from the
+  // wrapping shell. The detector returns just the matched line so the
+  // error envelope's detail message stays focused.
   const wrapped =
-    "The attempted read commands failed with the following output:\n" +
-    `   ${BWRAP_NAMESPACE_FAILURE}\n` +
-    "I therefore cannot verify the contracts surface and must reject.\n";
+    "/bin/zsh: starting subprocess\n" +
+    `${BWRAP_NAMESPACE_FAILURE}\n` +
+    "/bin/zsh: subprocess exited with code 1\n";
   expect_eq(
     detectSandboxInitFailure(wrapped),
     BWRAP_NAMESPACE_FAILURE,
     "detector must return the trimmed matched LINE, not the entire blob",
+  );
+});
+
+test("detectSandboxInitFailure REJECTS bwrap citation embedded inside a model-fabricated annotation (indented / wrapped — not column 0)", () => {
+  // PR #112 round-3 conservatism: model-wrapped or indented occurrences
+  // of the bwrap citation are NOT environmental evidence. Real bwrap
+  // stderr writes the citation at column 0; an indented occurrence is
+  // model-fabricated context that the detector MUST NOT classify as
+  // sandbox_init_failure. Otherwise the model can poison the detector
+  // by quoting the citation inside its own annotations.
+  const fabricated =
+    "The attempted read commands failed with the following output:\n" +
+    `   ${BWRAP_NAMESPACE_FAILURE}\n` +
+    "I therefore cannot verify the contracts surface and must reject.\n";
+  expect_eq(
+    detectSandboxInitFailure(fabricated),
+    null,
+    "indented (non-column-0) bwrap citation MUST NOT classify — only real stderr (column 0) matches",
   );
 });
 
@@ -1810,7 +1829,7 @@ test("review: SDK throws Error whose message cites bwrap → adapter classifies 
     run: async () => {
       attemptCount++;
       throw new Error(
-        `codex CLI subprocess died: ${BWRAP_NAMESPACE_FAILURE}\n  at codex_sandbox::init`,
+        `codex CLI subprocess died:\n${BWRAP_NAMESPACE_FAILURE}\n  at codex_sandbox::init`,
       );
     },
   });
@@ -2006,31 +2025,60 @@ test("detectSandboxInitFailureInItems IGNORES in_progress command_execution (no 
   );
 });
 
-test("detectSandboxInitFailureInItems IGNORES git diff --exit-code style commands (exit_code: 1, status: 'completed') whose diff stdout contains the literal bwrap citation (PR #112 round-2 codex blocker)", () => {
-  // A normal `git diff --exit-code` returns 1 when a diff exists while
-  // printing legitimate diff content. The diff under review may add /
-  // remove source lines that include the canonical bwrap citation (this
-  // repo's own pattern-list source / tests are the canonical example).
-  // Round-1 of the fix still gated on `exit_code !== 0`, which let this
-  // case through as a false sandbox_init_failure — silently erasing
-  // valid APPROVED / CHANGES_REQUESTED verdicts from quorum whenever a
-  // reviewer command used a non-zero exit code for expected control flow
-  // while printing source or diff content containing the bwrap literal.
+test("detectSandboxInitFailureInItems IGNORES git diff --exit-code style commands (status: 'failed', exit_code: 1) whose diff stdout contains the literal bwrap citation as a +/- diff line (PR #112 round-3 cursor blocker — production scenario)", () => {
+  // PRODUCTION SCENARIO per `@openai/codex-sdk@0.130.0` types and the
+  // Codex CLI's `handle_exec_command_end` mapping: non-zero `exit_code`
+  // → `CommandExecutionStatus = "failed"` (the SDK only emits "completed"
+  // when `exit_code == 0`). So a real `git diff --exit-code` that finds
+  // a diff arrives as `{ status: "failed", exit_code: 1, ... }` with
+  // diff content in `aggregated_output` — that diff content may include
+  // the canonical bwrap citation as a `+`/`-` line when the PR under
+  // review touches this repo's pattern list. The status-gate alone is
+  // insufficient because the SDK marks legitimate non-zero exits as
+  // "failed"; the regex must additionally line-anchor so diff-prefixed
+  // (`+`/`-`/whitespace) occurrences of the citation do NOT trip
+  // detection. Without the anchor this misclassifies the run as
+  // sandbox_init_failure and silently erases real APPROVED /
+  // CHANGES_REQUESTED verdicts from quorum.
   const items = [
     {
       id: "item_0",
       type: "command_execution",
-      command: "/bin/zsh -lc 'git diff --exit-code origin/main -- packages/cli/src/adapters/codex-sdk.ts'",
+      command: ["git", "diff", "--exit-code", "--", "packages/cli/src/adapters/codex-sdk.ts"],
       aggregated_output:
         `@@ -570,4 +570,4 @@\n+  /${BWRAP_NAMESPACE_FAILURE}/i,\n+  /bwrap:\\s+Setting up seccomp failed/i,\n`,
       exit_code: 1,
-      status: "completed",
+      status: "failed",
     },
   ];
   expect_eq(
     detectSandboxInitFailureInItems(items),
     null,
-    "completed command with non-zero exit_code MUST NOT classify as sandbox_init_failure — exit_code is a legitimate control-flow signal (git diff --exit-code, grep -q, test, etc.) and its stdout can carry source/diff content containing the bwrap literal",
+    "status:'failed' with diff content carrying the bwrap citation as a +/- diff line MUST NOT classify — the regex MUST line-anchor so only stderr-shaped lines (citation at column 0) match",
+  );
+});
+
+test("detectSandboxInitFailureInItems IGNORES source/diff content where bwrap appears as a leading-whitespace (context) line — line-anchor must require column 0", () => {
+  // Context-diff lines (no `+`/`-` prefix, just a leading space) and
+  // indented source occurrences of the bwrap citation likewise must
+  // NOT trip detection. The anchor must reject ANY non-bwrap character
+  // before the citation on its line.
+  const items = [
+    {
+      id: "item_0",
+      type: "command_execution",
+      command: ["grep", "-rn", "bwrap", "packages/cli/src"],
+      aggregated_output:
+        `packages/cli/src/adapters/codex-sdk.ts:571:  /${BWRAP_NAMESPACE_FAILURE}/i,\n` +
+        ` ${BWRAP_NAMESPACE_FAILURE}\n`,
+      exit_code: 1,
+      status: "failed",
+    },
+  ];
+  expect_eq(
+    detectSandboxInitFailureInItems(items),
+    null,
+    "indented / context-prefixed occurrences MUST NOT match the line-anchored regex",
   );
 });
 
