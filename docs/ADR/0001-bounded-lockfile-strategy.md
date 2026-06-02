@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-06-01
 - **Deciders:** DF critic fleet (cursor, codex, gemini, grok). PJ does not adjudicate this ADR — per his explicit directive, critic-fleet review is the gating mechanism for plan vetting.
-- **Scope:** `packages/schemas/src/index.ts` (schema), `packages/cli/src/trusted-surface/rebind.ts` (packet builder), `packages/cli/src/prompt.ts` (prompt rendering), new `packages/cli/src/compact/` module. Out-of-scope: adapters, CLI subcommands, MCP tools, doctor/report, handoff, workflows.
+- **Scope:** `packages/schemas/src/index.ts` (schema), `packages/cli/src/trusted-surface/rebind.ts` (packet builder), `packages/cli/src/prompt.ts` (prompt rendering), new `packages/cli/src/compact/` module, `packages/cli/src/evidence/audit-trail.ts` (one new telemetry event for the compacted-files counter — see § 4 risk mitigation + § 2.5). Out-of-scope: adapters, CLI subcommands, MCP tools, doctor/report, handoff, workflows.
 - **Supersedes:** none
 - **Issue:** [#67](https://github.com/momentiq-ai/dark-factory/issues/67)
 - **Cycle:** 331.1
@@ -100,10 +100,50 @@ documented default) after external-consumer dogfood.
 | Layer | Module | Change |
 |---|---|---|
 | Schema | `packages/schemas/src/index.ts` | New optional `generatedFilePolicy` block on `ContextConfig`; parser branch in `parseAgentReviewConfig`. New optional `compactedDiff` and `parseErrorPaths` fields on `ReviewPacket`; new optional `compactedContent` field on `ChangedFile`. |
-| Compactor | `packages/cli/src/compact/lockfile.ts` (new) | Pure per-lockfile compactor functions, dispatched by glob match. Per-file diff body → `CompactedLockfileDelta` struct → rendered as a stable text stub. Same struct also renders a content-section stub (for `compactedContent` on `ChangedFile`). |
-| Packet builder | `packages/cli/src/trusted-surface/rebind.ts` | When `generatedFilePolicy.mode !== "full"` AND a path matches, walk the unified diff's per-file sections, route lockfile sections through the compactor, splice the rendered stub back in, write the rendered string to `ReviewPacket.compactedDiff`. For matched paths, also write `compactedContent` on the `ChangedFile` and clear `content`. `ReviewPacket.diff` stays byte-budgeted exactly as today (no behavior change there). |
-| Prompt builder | `packages/cli/src/prompt.ts` | When `packet.compactedDiff !== undefined`, the `<diff>` section uses it. For each changed file, the `<file>` block uses `file.compactedContent` when present, else `file.content`. The `[DIFF WAS TRUNCATED]` marker stays scoped to `diffTruncated`; a new `[DF-COMPACT PARSE-ERROR …]` marker fires for `parseErrorPaths` (§ 2.3.4). |
-| Audit / cache | `packages/cli/src/git.ts` (`commitDiff` callers) | Untouched. `diffHash` continues to hash the **pre-truncation `fullDiff`** so cache invalidation is stable across policy toggles AND budget truncation (today's behavior, preserved). |
+| Compactor | `packages/cli/src/compact/lockfile.ts` (new) | Pure per-lockfile compactor functions, dispatched by glob match. Per-file diff body → `CompactedLockfileDelta` struct → rendered as a stable text stub. Same struct also renders a content-section stub (for `compactedContent` on `ChangedFile`). Both renderers honor their own byte caps and emit a `[DF-COMPACT TRUNCATED …]` marker on overflow (§ 2.4 caps). |
+| Packet builder | `packages/cli/src/trusted-surface/rebind.ts` | When **any path** has an effective mode `!== "full"` (per the resolver in § 2.2.1), walk the **untruncated** `fullDiff` from `commitDiff()`, route matched per-file sections through the compactor, splice the rendered stub back in, THEN apply `DEFAULT_DIFF_BUDGET` byte-cap to the result and write to `ReviewPacket.compactedDiff` (capped). For matched paths, also write `compactedContent` on the `ChangedFile` (capped at `MAX_COMPACTED_CONTENT_BYTES`) and clear `content`. `ReviewPacket.diff` continues to hold the truncated-from-`fullDiff` body (today's shape, today's budget) — but `compactedDiff` is what the prompt reads, so compaction runs BEFORE budget truncation and the prompt budget no longer gets eaten by raw lockfile bodies (this is the core fix; see § 2.4). |
+| Prompt builder | `packages/cli/src/prompt.ts` | When `packet.compactedDiff !== undefined`, the `<diff>` section uses it. For each changed file, the `<file>` block uses `file.compactedContent` when present, else `file.content`. The `[DIFF WAS TRUNCATED]` marker stays scoped to `diffTruncated`; a new `[DF-COMPACT PARSE-ERROR …]` marker fires for `parseErrorPaths` (§ 2.3.4); a new `[DF-COMPACT TRUNCATED …]` marker fires when the compacted form itself exceeds its cap (§ 2.4). |
+| Telemetry | `packages/cli/src/evidence/audit-trail.ts` | One new `TelemetryEvent.event` enum value: `"compacted_files"`. Emitted once per `runReview` when the strategy fires; carries `perFileCounts: string` (JSON-stringified `{path: lockfileKind}` map, mirroring the cycle-332 perFileCounts convention) + `findingCount` repurposed as compacted-paths-count for greppability. Without this event, operators cannot detect a glob-miss regression at v1. |
+| Audit / cache | `packages/cli/src/git.ts` (`commitDiff` callers) | Untouched. `diffHash` continues to hash the **pre-truncation, pre-compaction `fullDiff`** so cache invalidation is stable across policy toggles AND budget truncation (today's behavior, preserved). |
+
+#### 2.1.1 Pipeline order (load-bearing — see codex round-2 blocker)
+
+The order of operations matters: compaction must operate on the
+**untruncated** `fullDiff`, then the byte-cap applies. Otherwise a
+large lockfile early in the diff consumes the budget before later
+source-file hunks land in `packet.diff`, and compacting after the cut
+cannot restore those lost source-file hunks (the data is already
+gone). The corrected pipeline:
+
+```
+commitDiff(parent, sha)           # untruncated fullDiff
+   │
+   ├── diffHash = sha256(fullDiff)  # audit hash over untruncated body
+   │
+   ├── packet.diff = truncate(fullDiff, DEFAULT_DIFF_BUDGET)
+   │     # back-compat surface: today's shape, today's budget
+   │     # — present for downstream consumers that already handle truncation
+   │     # — NOT what the prompt reads when compactedDiff is set
+   │
+   └── compactedFullDiff = walkAndCompact(fullDiff, globPolicy)
+         # compaction runs on the UNTRUNCATED fullDiff so lockfile
+         # hunks shrink BEFORE the byte budget bites. Result is the
+         # full diff with matched-lockfile sections replaced by stubs.
+         │
+         └── packet.compactedDiff = truncate(compactedFullDiff,
+                                             DEFAULT_DIFF_BUDGET)
+               # cap applies to the post-compaction view. In the
+               # observed Cycle 7 Phase 7.1 case (5,032 added lines
+               # of package-lock.json ≈ 320 KB), the lockfile section
+               # shrinks to ~2 KB of stub. Source-file hunks that
+               # previously overflowed the 1.5 MB budget now fit.
+```
+
+Same pattern for `ChangedFile.compactedContent`: the compactor reads
+the **untruncated** file content from `gitShowFile()` (already the
+case via `changedFiles()` with `readContent: true`) and renders the
+stub with its own per-file cap; the resulting stub goes into
+`compactedContent` and `file.content` is cleared.
 
 ### 2.2 Config schema sketch — `context.generatedFilePolicy`
 
@@ -215,6 +255,53 @@ when `generatedFilePolicy.globs` is omitted):
   it for ≥ 1 week without regression. That promotion is a separate
   ADR amendment + version bump and is NOT part of this ADR's
   acceptance.
+
+#### 2.2.1 Effective-mode resolution per path
+
+The packet builder must compute the **effective mode** for every
+matched path, because overrides can compose non-trivially with the
+top-level mode (e.g., `mode: "full"` + an override that opts ONE
+specific lockfile into `compact`). The resolver is:
+
+```
+function effectiveMode(path, policy):
+  # 1. Check overrides in declaration order; earliest match wins.
+  for override in (policy.overrides ?? []):
+      if matchGlob(path, override.glob):
+          return override.mode
+
+  # 2. Otherwise, if the path matches any glob in the effective
+  #    globs list, return the policy-level mode.
+  effectiveGlobs = policy.globs ?? DEFAULT_GENERATED_LOCKFILE_GLOBS
+  for glob in effectiveGlobs:
+      if matchGlob(path, glob):
+          return policy.mode
+
+  # 3. Unmatched path. Effective mode is implicit "full" — no
+  #    compaction occurs for this path.
+  return "full"
+```
+
+Key properties:
+
+- **Override precedence is strictly per-path.** An override of
+  `mode: "compact"` on `**/services/event-ingest/package-lock.json`
+  fires for that one file even when `policy.mode === "full"`. This
+  matches the documented use case "opt one specific file into compact
+  while leaving the default at full."
+- **The packet builder triggers compaction whenever ANY path has
+  effective mode `!== "full"`.** Concretely, the "should we walk the
+  diff and emit `compactedDiff`?" question becomes
+  `someChangedFile(file => effectiveMode(file.path, policy) !== "full")`,
+  NOT `policy.mode !== "full"`. This is the fix for the codex
+  round-2 contracts finding: the top-level mode guard would have
+  silently no-op'd the documented override contract.
+- **The `omit` effective mode is honored per-path.** A path with
+  effective mode `omit` renders the omit-marker stub regardless of
+  the top-level mode (and the per-file `compactedContent` follows
+  the same rule).
+- **Unmatched paths are unaffected.** The diff section for an
+  unmatched changed file is copied through verbatim from `fullDiff`.
 
 ### 2.3 Compaction format spec
 
@@ -367,7 +454,32 @@ cannot silently hide a dependency injection. The supply-chain audit
 signal is preserved-by-default, with an explicit opt-out for the small
 set of operators who knowingly accept the trade-off.
 
-### 2.4 Diff surfaces — explicit field contract
+### 2.4 Diff surfaces — explicit field contract + byte caps
+
+#### 2.4.1 Byte caps on the compacted surfaces
+
+A bounded strategy needs an explicit upper bound on every
+prompt-rendered surface, otherwise a sufficiently large dependency
+graph reintroduces overflow through the new `compactedContent` field
+(codex round-2 performance blocker). The caps are CLI-side constants
+exported alongside the default-globs constant so consumers can
+inspect them:
+
+| Constant | Value (v1) | Applies to | Rationale |
+|---|---|---|---|
+| `DEFAULT_DIFF_BUDGET` | 1,500,000 bytes | `packet.diff` AND `packet.compactedDiff` (post-compaction cap) | Today's value; unchanged. After compaction shrinks lockfile sections, this cap rarely fires in the observed Cycle 7 case (5,032 lines → ~2 KB stub). |
+| `MAX_COMPACTED_DIFF_BYTES` | 250,000 bytes | `packet.compactedDiff` (an EARLIER cap than `DEFAULT_DIFF_BUDGET`) | Even after compaction, a diff with hundreds of compacted lockfiles (mono-repo scenario) could still exceed the model context window. 250KB ≈ 60K tokens, leaving headroom below the smallest critic context window (gpt-5.5-nano: ~100K tokens). When this cap is hit, the diff is truncated and the `[DF-COMPACT TRUNCATED — N more lockfile sections elided]` marker fires inline at the truncation point. |
+| `MAX_COMPACTED_CONTENT_BYTES` | 50,000 bytes | each `ChangedFile.compactedContent` | A single lockfile with 5,000+ packages (rare but possible for a workspace root in a large monorepo) renders a packages-after stub that could itself be 100KB+. 50KB per file is a soft ceiling; when exceeded, the stub truncates the `packages-after:` list with a `[DF-COMPACT TRUNCATED — N more packages elided]` marker and `content-sha256` still hashes the full content so audit recovery remains possible. |
+
+The numbers above are starting points; PR 2 verifies them against
+real fixture diffs. If empirical data on the Cycle 7 lockfile shows
+the 250KB / 50KB caps fire spuriously on legitimate diffs, PR 2 may
+raise them (with the new values documented inline in the same
+constant block). Per the cycle-doc verifiability rule, the values
+that actually ship in PR 2 are the values that pass the test plan in
+§ 5.2 — those tests assert exact-byte equality against fixture
+inputs, so a value-change requires a deliberate test-fixture
+re-baseline.
 
 After this change, the review packet exposes:
 
@@ -383,25 +495,28 @@ After this change, the review packet exposes:
   uncompacted** `fullDiff` returned by `commitDiff`. This is the
   cache-invalidation key; it is stable across policy toggles AND
   across budget truncation. Compaction never affects `diffHash`.
-- **`ReviewPacket.compactedDiff`** — optional. Present only when
-  `generatedFilePolicy.mode !== "full"` AND at least one matched
-  lockfile is present in the diff. When present, the prompt builder
-  uses this string for the `<diff>` section instead of `packet.diff`.
-  Built FROM `packet.diff` (post-budget-truncation), so compaction
-  operates on the same byte-budgeted view critics already see. If a
-  matched lockfile happens to be entirely past the truncation
-  boundary, the compactor still operates on whatever portion of its
-  diff section landed in the budgeted string, and the parse-error
-  branch (§ 2.3.4) fires if the truncation cut mid-package.
+- **`ReviewPacket.compactedDiff`** — optional. Present only when at
+  least one matched path has an effective mode `!== "full"` (§ 2.2.1)
+  AND that path appears in the diff. When present, the prompt
+  builder uses this string for the `<diff>` section instead of
+  `packet.diff`. Built FROM the **untruncated** `fullDiff` returned
+  by `commitDiff()` (§ 2.1.1 pipeline order), with the post-compaction
+  result then byte-capped at `MAX_COMPACTED_DIFF_BYTES` (or
+  `DEFAULT_DIFF_BUDGET`, whichever fires first — see § 2.4.1 caps).
+  This is the load-bearing fix from the codex round-2 contracts
+  blocker: compaction operates on the untruncated body so source-file
+  hunks that previously overflowed the per-packet budget now fit
+  after lockfile sections collapse to stubs.
 - **`ReviewPacket.diffTruncated`** — unchanged. Mutually compatible
   with `compactedDiff` being present (a diff can be both truncated AND
   have a compacted lockfile section).
 - **`ChangedFile.compactedContent`** — optional. Present only for
-  matched lockfile paths under `mode !== "full"`. When present, the
-  prompt's `<file>` block uses this stub instead of `file.content`,
-  AND `file.content` is cleared on the packet (so a downstream consumer
-  that JSON-stringifies the packet doesn't accidentally serialize both
-  forms).
+  paths whose effective mode (§ 2.2.1) is `!== "full"`. When present,
+  the prompt's `<file>` block uses this stub instead of `file.content`,
+  AND `file.content` is cleared on the packet (so a downstream
+  consumer that JSON-stringifies the packet doesn't accidentally
+  serialize both forms). The stub itself is byte-capped at
+  `MAX_COMPACTED_CONTENT_BYTES` (§ 2.4.1).
 - **`ReviewPacket.parseErrorPaths`** — optional (§ 2.3.4). Present
   only when at least one matched lockfile failed extractor parsing
   AND the policy mode is the default `"refuse-and-block"`.
@@ -421,6 +536,41 @@ const contentForPrompt = file.compactedContent ?? file.content ?? "";
 
 No adapter needs a code change; the compaction is transparent to the
 adapter surface.
+
+### 2.5 Observability — v1 telemetry surface
+
+Codex flagged that the round-1 risk table referenced a doctor
+subcommand warning even though `doctor.ts` is out-of-scope per § 1.
+The v1 observability is narrower: one new telemetry event in the
+existing `_runs.ndjson` audit log, emitted by the packet builder via
+the runner's `TelemetrySink`.
+
+New event in `TelemetryEvent.event` union:
+
+- **`compacted_files`** — emitted once per `runReview()` invocation
+  when the strategy fires (at least one path has effective mode
+  `!== "full"` AND the compaction step ran). Payload uses the
+  existing `TelemetryEvent` field shape:
+  - `findingCount`: count of paths the compactor processed
+    (re-use of the existing field for greppability; semantically
+    "compacted-paths-count" here)
+  - `perFileCounts`: JSON-stringified `{ path: lockfileKind }` map
+    (mirrors the cycle-332 `perFileCounts` convention — flat
+    stringification keeps NDJSON greppable; values are the kind
+    enum, not byte counts, since the byte-count question is
+    answered by `findingCount` + the stub format).
+  - `commit`: the SHA under review (existing field).
+
+Operators detect a glob-miss regression by grepping `_runs.ndjson`
+for `event=compacted_files` and confirming the expected paths
+appear in `perFileCounts`. A missing-path-count outside an expected
+window (e.g., a PR known to touch a lockfile but the event lists
+zero paths) is the actionable signal.
+
+A richer observability story (doctor warnings, per-extractor parse
+error counters, dashboarding) is a follow-up and is OUT of v1 scope.
+The risk-table mitigation in § 4 is now sized to what v1 actually
+ships: a single telemetry counter, not a doctor warning.
 
 ## 3. Alternatives considered
 
@@ -489,7 +639,7 @@ CLI uses `DEFAULT_GENERATED_LOCKFILE_GLOBS`. Operators wanting
 "defaults plus extras" must glob both explicitly.
 
 ### 3.8 Diff-only compaction (leave the `<file>` content block alone)
-— rejected (codex finding)
+— rejected (codex round-1 finding)
 
 The original draft scoped compaction to the `<diff>` section only,
 overlooking that `context.includeFullChangedFiles: true` causes the
@@ -502,12 +652,47 @@ lockfiles get `compactedContent` set on the `ChangedFile`, and
 form. The integration test plan (§ 5.2 #7) explicitly asserts the raw
 lockfile body appears in NEITHER section.
 
+### 3.9 Compact-after-truncate (operate on the already-budgeted
+`packet.diff`) — rejected (codex round-2 finding)
+
+The round-1 draft of this ADR specified that compaction operates on
+`packet.diff` (the already-byte-truncated string). Codex flagged that
+this defeats the strategy: if a large lockfile early in the diff
+consumes the budget before later source files land, compacting the
+already-truncated string cannot restore those source files. § 2.1.1
+reverses the order: compaction operates on the **untruncated**
+`fullDiff` from `commitDiff()`, then the budget cap applies to the
+post-compaction view. The cycle 7 case (lockfile = ~320 KB raw, ~2 KB
+stub) demonstrates the win: source-file hunks that previously
+overflowed now fit.
+
+### 3.10 No explicit cap on `compactedContent` (rely on the natural
+size of post-commit lockfile state) — rejected (codex round-2 finding)
+
+The round-1 draft defined the content-section stub
+(`packages-after:` list) with no upper bound. Codex correctly
+identified that a repo with thousands of dependencies still produces a
+huge stub. § 2.4.1 adds explicit byte caps (`MAX_COMPACTED_DIFF_BYTES`
+and `MAX_COMPACTED_CONTENT_BYTES`) with overflow markers, and the
+test plan (§ 5.2 #10) asserts they fire when expected.
+
+### 3.11 Doctor-warning mitigation for glob-miss regressions —
+rejected (codex round-2 observability finding)
+
+The round-1 draft referenced a Doctor subcommand warning that would
+fire on suspected glob misses. § 1 marks doctor/report out of scope,
+making the round-1 mitigation hand-wavy. § 2.5 reverses: the v1
+observability is one telemetry event (`compacted_files`) on
+`_runs.ndjson`, scoped to what audit-trail.ts can ship in PR 2. A
+follow-up cycle may extend doctor with the same signal once doctor.ts
+returns to scope.
+
 ## 4. Risks
 
 | Risk | Likelihood | Severity | Mitigation |
 |---|---|---|---|
 | Compactor misreads a lockfile entry → critic gets wrong package-delta info | Medium (first ship of per-format extractors) | High (could mask a malicious dep injection) | (a) Refuse-and-block is the default on parse errors (§ 2.3.4); critics see the parse-error stub AND a top-of-diff marker AND the synthetic `parseErrorPaths` array; (b) `patch-sha256` / `content-sha256` in the stub lets a later auditor recover the original; (c) `ReviewPacket.diff` retains the budget-truncated body so a follow-up critic pass with `mode: "full"` can re-verify (within budget). |
-| Glob match too narrow → real lockfile slips through and overflow returns | Low (default globs cover npm/pnpm/yarn) | High (regression to current state) | Telemetry: emit a `compacted_files` telemetry counter on each review run (per-path) so operators see the strategy firing. Doctor subcommand surfaces "no compaction expected but diff exceeds 100KB" as an info-level warning. |
+| Glob match too narrow → real lockfile slips through and overflow returns | Low (default globs cover npm/pnpm/yarn) | High (regression to current state) | Telemetry: emit a `compacted_files` event on each `runReview` where the strategy fires (§ 2.5). Operators grep `_runs.ndjson` for the event + `perFileCounts` payload to confirm expected paths were compacted. Doctor warnings are explicitly OUT of v1 scope (codex round-2 observability finding); the v1 mitigation is the audit-log event only. |
 | Compactor's stub format collides with a critic's existing finding shape | Low | Medium | Sentinel `[DF-COMPACT v1 <kind>]` / `[DF-COMPACT end]` brackets; format version-tagged. |
 | `diffHash` keys the cache off the **pre-truncation full diff** but the prompt uses compactedDiff → cache hits that no longer correspond to the body shown to the critic | Low (compaction is purely a derived view) | Low | The cache key is the *review input*, which is bounded by `diffHash` + critic id + content hashes of the changed files (cycle 332 finding cache). A second derived view doesn't change the input identity. Cycle 332 finding-cache's `configHash` already covers config-shape changes — when `generatedFilePolicy` toggles, `configHash` shifts and the cache invalidates. Integration test in § 5.2 #8 verifies. |
 | `includeFullChangedFiles: true` re-injects the lockfile body outside the `<diff>` section | High (this is the symptom codex flagged) | High | The strategy also applies to `ChangedFile.compactedContent` (§ 2.1, § 2.4, § 3.8). Tests in § 5.2 #7 specifically assert that for a matched lockfile, neither the `<diff>` section nor the `<file>` block contains the raw lockfile body. |
@@ -575,11 +760,45 @@ Fixture-driven `vitest` tests in `packages/cli/tests/compact/`:
    - duplicate override `glob` rejects
    - valid `onParseError` values both parse
    - omitted `onParseError` preserved as `undefined`
+10. **`compacted-diff-cap-truncates`** — feed a synthetic fullDiff
+    containing multiple lockfile sections whose combined compacted
+    form exceeds `MAX_COMPACTED_DIFF_BYTES`; assert truncation marker
+    `[DF-COMPACT TRUNCATED — N more lockfile sections elided]`
+    appears and the rendered length is ≤ the cap.
+11. **`compacted-content-cap-truncates`** — feed a synthetic lockfile
+    with 5,000 packages whose `packages-after:` stub exceeds
+    `MAX_COMPACTED_CONTENT_BYTES`; assert the `[DF-COMPACT TRUNCATED
+    — N more packages elided]` marker fires inside the stub and the
+    rendered content length is ≤ the cap. Assert `content-sha256` is
+    over the FULL pre-truncation content (audit recoverability).
+12. **`pipeline-order-untruncated-fulldiff`** — feed a synthetic
+    fullDiff whose first per-file section is a large lockfile
+    (~600 KB) and whose later per-file section is a source-code change
+    (~50 KB). With `mode: "full"` (no compaction), `packet.diff`
+    truncates the source-code change. With `mode: "compact"`,
+    `packet.compactedDiff` contains the lockfile stub AND the full
+    source-code change (because compaction runs BEFORE the budget
+    cap). This test is the codex round-2 contracts blocker's specific
+    assertion.
+13. **`effective-mode-override-fires-under-mode-full`** — config has
+    `mode: "full"` but `overrides: [{glob: "...package-lock.json",
+    mode: "compact"}]`. Assert that compaction still fires for the
+    matched path (the resolver returns `compact` for that file) AND
+    that other matched-glob files in the default list are NOT
+    compacted (their effective mode resolves to `full`). This is the
+    codex round-2 high finding's specific assertion.
+14. **`telemetry-compacted-files-event`** — assert that
+    `runReview()` emits the new `compacted_files` event with
+    `findingCount > 0` and a non-empty `perFileCounts` JSON string
+    when at least one matched path goes through compaction; assert
+    the event is NOT emitted when no path matches.
 
 Fixture diffs are captured from real `npm install` / `pnpm install` /
 `yarn install` runs against synthetic package.json files committed
 under `packages/cli/tests/compact/fixtures/`. The fixtures are checked
-in (small — under 50 KB combined); the test harness reads them
+in (small — under 50 KB combined for unit fixtures; the large
+synthetic fixtures for tests 10-12 are generated in-test from a small
+seed to keep the repo footprint tight); the test harness reads them
 verbatim, no shell-out.
 
 ### 5.3 Test strategy
