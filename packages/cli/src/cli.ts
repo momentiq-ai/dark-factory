@@ -102,6 +102,8 @@ import { cmdMcp } from "./mcp/cli.js";
 // Assessor's records from momentiq-ai/df-assessments. See
 // docs/roadmap/cycles/cycle11-flow-assessor-surfacing-and-tools.md.
 import { cmdFlow } from "./commands/flow/index.js";
+import { cmdShow } from "./commands/show.js";
+import { cmdStatus } from "./commands/status.js";
 // Cycle 12 Phase 12.2 — agent handoff protocol (v2 — Issue-anchored, native-
 // baton). The four cmd* functions below wrap the verb orchestrators exported
 // from src/handoff/index.ts and route to them at the bottom of main(). v1
@@ -152,58 +154,61 @@ function printHelp(meta: PackageMeta): void {
       "  df --version              Print version and exit",
       "  df --help                 Print this help and exit",
       "",
-      "Subcommands (Phase C — services #5/#7/#9):",
-      "  df validate-cycle-doc       Validate a PR's Cycle:/Issue:/ProjectItem: trailers",
-      "  df audit-branch-protection  Detect drift between spec.yaml and live GH ruleset",
-      "  df sync-trackers            Reconcile GitHub tracker issues with cycle docs",
-      "  df attribute-pr             Write PR's Cycle: trailer into project board's Cycle Ref field",
+      "Local critic workflow:",
+      "  df review                   Run the local critic against a commit",
+      "                              (subscription auth — Cursor / Codex /",
+      "                              Claude logins, NOT pay-per-token keys).",
+      "  df gate-push                Pre-push gate — block a push when a",
+      "                              prior commit has unresolved blockers.",
+      "  df show                     Render the per-commit review artifact",
+      "                              (with --json for the structured form).",
+      "  df status                   Terse verdict + per-critic status for",
+      "                              a commit (with --json for shell pipes).",
+      "  df gates                    Run configured quality gates and",
+      "                              triggered verification routes.",
+      "  df stats                    Pretty-print critic call stats + bypass",
+      "                              audit (alias for `df audit stats`).",
+      "  df doctor                   Verify env: node, hooks, artifact dir,",
+      "                              per-adapter auth.",
       "",
-      "Subcommands (Phase D — services #6/#8):",
-      "  df audit stats              Summarize the _runs.ndjson audit trail (service #8)",
-      "  df admit-pr                 Classify a PR as plan vs code (service #6)",
+      "CI / reusable-workflow gates:",
+      "  df status-check             Sentinel aggregator (PR Status Check).",
+      "                              Exits 0 — merge queue is the real",
+      "                              aggregator.",
+      "  df critic                   Real Critic Orchestrator wiring (agent-",
+      "                              critic gate). Loads .agent-review/",
+      "                              config.json, runs configured vendor",
+      "                              adapters via runReview, writes aggregate",
+      "                              verdict to .git/agent-reviews/<sha>.",
+      "                              Degrades-and-passes on any error.",
       "",
-      "Subcommands (Phase F — reusable-workflow gates, dogfood-wired):",
-      "  df status-check             Sentinel aggregator (PR Status Check gate).",
-      "                              Exits 0 — merge queue is the real aggregator.",
-      "  df critic                   Real Critic Orchestrator wiring (agent-critic",
-      "                              gate). Loads .agent-review/config.json, runs",
-      "                              the 4 vendor adapters via runReview, writes",
-      "                              aggregate verdict to .git/agent-reviews/<sha>.",
-      "                              Degrades-and-passes on any error (exit 0).",
+      "Cycle-doc + project services:",
+      "  df validate-cycle-doc       Validate a PR's Cycle:/Issue:/",
+      "                              ProjectItem: trailers.",
+      "  df audit-branch-protection  Detect drift between spec.yaml and the",
+      "                              live GitHub ruleset.",
+      "  df sync-trackers            Reconcile GitHub tracker issues with",
+      "                              cycle docs.",
+      "  df attribute-pr             Write PR's Cycle: trailer into the",
+      "                              project board's Cycle Ref field.",
+      "  df audit stats              Summarize the _runs.ndjson audit trail.",
+      "  df admit-pr                 Classify a PR as plan vs code.",
       "",
-      "Subcommands (Phase F-LOCAL — hook-facing CLI, subscription cost model):",
-      "  df review                   Background-friendly local critic invocation",
-      "                              for .husky/post-commit. Honors profile auth",
-      "                              (chatgpt/composer/subscription) so Cursor +",
-      "                              Codex + Claude SUBSCRIPTIONS are consumed,",
-      "                              NOT pay-per-token API keys.",
-      "  df gate-push                Read pre-push stdin + gate every commit in",
-      "                              the pushed range. CI mode: --commit SHA --ci.",
-      "                              Honors AGENT_REVIEW_BYPASS for emergencies.",
-      "  df doctor                   Verify env: node, hooks, hookPath, artifact",
-      "                              dir, Doppler bootstrap, per-adapter auth.",
-      "  df gates                    Run configured `requiredQualityGates` and",
-      "                              triggered verification routes. No LLM calls.",
-      "  df stats                    Pretty-print critic call stats + bypass audit.",
-      "                              Alias for `df audit stats`. No LLM calls.",
-      "",
-      "Subcommands (Phase G — agentic MCP surface, cycle5):",
+      "Agentic surface (MCP server):",
       "  df mcp                      Start the local stdio Model Context Protocol",
       "                              server. Exposes the CLI surface to any MCP-",
-      "                              speaking agent (Claude Code, Cursor, Codex,",
-      "                              Gemini) as a structured tool + resource +",
-      "                              prompt catalog. Run `df mcp --help` for the",
+      "                              speaking agent as a structured tool + resource",
+      "                              + prompt catalog. Run `df mcp --help` for the",
       "                              .mcp.json wiring snippet.",
       "",
-      "Subcommands (Cycle 11 — PR Flow Assessor surfacing):",
-      "  df flow                     Surface the PR Flow Assessor's records",
-      "                              from momentiq-ai/df-assessments. Six",
-      "                              sub-subcommands: show / agent / patterns /",
-      "                              cost / trends / rollup. Each carries",
-      "                              --json. Run `df flow --help` for the list,",
-      "                              `df flow <sub> --help` for per-sub flags.",
+      "PR Flow Assessor surfacing:",
+      "  df flow                     Surface the PR Flow Assessor's records.",
+      "                              Six sub-subcommands: show / agent /",
+      "                              patterns / cost / trends / rollup.",
+      "                              Each carries --json. Run `df flow",
+      "                              --help` for the list.",
       "",
-      "Subcommands (Cycle 12 — agent handoff protocol, v2 Issue-anchored):",
+      "Agent handoff protocol (v2 Issue-anchored):",
       "  df handoff [issue]          Put a work-stream on the handoff stack:",
       "    [--link <ref>]...           upsert the marker-bounded rehydration",
       "    [--unlink <ref>]...         note (read from stdin) as the dedicated",
@@ -214,7 +219,7 @@ function printHelp(meta: PackageMeta): void {
       "  df handoffs                 List the stack of handed-off Issues (open,",
       "                              labeled `handoff`, unassigned).",
       "  df accept <issue>           Claim a handoff Issue (assign you), rehydrate,",
-      "                              then close it (Commitment 10).",
+      "                              then close it.",
       "  df rehydrate [issue]        Read-only catch-up on a handoff Issue's note —",
       "                              derives LIVE state first, changes no ownership.",
       "                              No-arg: 2-tier (open+@me → closed+@me ≤7d).",
@@ -223,42 +228,25 @@ function printHelp(meta: PackageMeta): void {
       "  The local hook path (review/gate-push) consumes Cursor / Codex / Claude",
       "  SUBSCRIPTIONS via the developer's existing CLI logins. Vendor API keys",
       "  (CURSOR_API_KEY / CODEX_API_KEY / GEMINI_API_KEY / XAI_API_KEY) are the",
-      "  CI cold-path fallback only. Profile `auth` pins (e.g. `chatgpt` on the",
-      "  codex critic) enforce subscription-only with no env-presence fallback",
-      "  (cycle 322.7 issue #2103).",
+      "  CI cold-path fallback only.",
       "",
-      "Each Phase C subcommand passes its remaining argv through to the bundled",
-      "Python script verbatim; run `df <subcommand> --help` for full flags.",
-      "Phase D subcommands parse flags directly — see `df audit --help` and",
-      "`df admit-pr --help`. Phase F's `df critic` accepts --ref/--config/--cwd",
-      "(see `df critic --help`); status-check accepts no flags. Both subcommands",
-      "exit 0 even on failure so the reusable workflows do not block the merge",
-      "queue on a single vendor flake — vendor errors register in the artifact",
-      "as `status=error` and the configured min-complete-quorum policy decides",
-      "the aggregate verdict.",
+      "Each subcommand carries its own `--help` for full flag documentation.",
+      "Critic and status-check exit 0 even on failure so the reusable workflows",
+      "do not block the merge queue on a single vendor flake — vendor errors",
+      "register in the artifact as `status=error` and the configured aggregation",
+      "policy (min-complete-quorum, block-if-any) decides the aggregate verdict.",
       "",
       "System requirements:",
       "  Node.js >=20",
       "  python3 (>=3.11)",
-      "  gh CLI (authenticated) for service #5/#7/#9 GitHub API calls",
+      "  gh CLI (authenticated) for project/cycle-doc GitHub API calls",
       "  git on PATH",
       "",
       "Library usage today:",
       "  import { runReview, evaluateCommitGate, buildReviewPacket }",
       `    from \"${name}\";`,
       "",
-      "Status: 0.1.0-alpha.6 — Phase F-LOCAL ports sage3c's hook-facing CLI",
-      "        subcommands (review/gate-push/doctor/gates/stats) so consumer",
-      "        repos can wire .husky hooks to the subscription-auth local",
-      "        critic path. Also: Phase B-PUBLISH-pkg fixes CLI loadability",
-      "        under `npm install --ignore-scripts` for all non-`df critic`",
-      "        subcommands. Phase F wires the real Critic Orchestrator and",
-      "        dogfoods dark-factory on its own PRs. Reusable workflows from",
-      "        Phase E now invoke real critic logic. The substrate validates",
-      "        itself end-to-end. Pure-TS port of #5/#7/#9 tracked as Phase",
-      "        C-PORT follow-up.",
-      "",
-      "Docs:   https://github.com/momentiq-ai/dark-factory",
+      `Version: ${version}. Docs: https://github.com/momentiq-ai/dark-factory`,
       "",
     ].join("\n"),
   );
@@ -270,11 +258,9 @@ function printVersion(meta: PackageMeta): void {
 
 function notImplemented(sub: string): number {
   process.stderr.write(
-    `df: subcommand "${sub}" is not implemented in this alpha build.\n` +
-      `    Phase B/C/D ship services as library + Python-wrapped subcommands;\n` +
-      `    Phase E added reusable workflow stubs (status-check, critic);\n` +
-      `    Phase F upgraded both to real implementations;\n` +
-      `    "${sub}" lands in Phase G or later (see \`df --help\`).\n`,
+    `df: subcommand "${sub}" is not implemented in this build.\n` +
+      `    Run \`df --help\` for the list of available subcommands.\n` +
+      `    Track / request at: https://github.com/momentiq-ai/dark-factory/issues\n`,
   );
   return 2;
 }
@@ -367,6 +353,14 @@ const CYCLE12_SUBCOMMANDS = new Set([
 // not at the top level, so the surface stays grouped (`df flow --help` is
 // authoritative) and we don't pollute the top-level `df` namespace.
 const CYCLE11_SUBCOMMANDS = new Set(["flow"]);
+
+// `df show` / `df status` — CLI mirrors of the df_show_run / df_findings
+// MCP tools. Both routes share the loader in commands/show-status-core.ts
+// so the CLI's `--json` output stays byte-equivalent with the MCP tool's
+// structuredContent envelope (cycle 5 spec requirement). Registered here
+// so the early --help interception forwards `df show --help` / `df status
+// --help` to the per-subcommand help printers.
+const SHOW_STATUS_SUBCOMMANDS = new Set(["show", "status"]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // PR Status Check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -1702,7 +1696,8 @@ async function main(argv: string[]): Promise<number> {
       !PHASE_F_LOCAL_SUBCOMMANDS.has(sub0) &&
       !PHASE_G_SUBCOMMANDS.has(sub0) &&
       !CYCLE12_SUBCOMMANDS.has(sub0) &&
-      !CYCLE11_SUBCOMMANDS.has(sub0)
+      !CYCLE11_SUBCOMMANDS.has(sub0) &&
+      !SHOW_STATUS_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -1773,6 +1768,20 @@ async function main(argv: string[]): Promise<number> {
       stdout: (s) => process.stdout.write(s),
       stderr: (s) => process.stderr.write(s),
       parseFlags,
+    });
+  }
+  // `df show` / `df status` — CLI mirrors of the df_show_run / df_findings
+  // MCP tools. See commands/show-status-core.ts for the shared backend.
+  if (sub === "show") {
+    return await cmdShow(rest, {
+      stdout: (s) => process.stdout.write(s),
+      stderr: (s) => process.stderr.write(s),
+    });
+  }
+  if (sub === "status") {
+    return await cmdStatus(rest, {
+      stdout: (s) => process.stdout.write(s),
+      stderr: (s) => process.stderr.write(s),
     });
   }
   return notImplemented(sub);

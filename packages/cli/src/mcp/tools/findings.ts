@@ -41,9 +41,7 @@ import type {
   ReviewFinding,
 } from "@momentiq/dark-factory-schemas";
 
-import { loadAgentReviewConfig } from "../../policy/config.js";
-import { readArtifact } from "../../report.js";
-import { resolveCommit } from "../../git.js";
+import { loadForCommit } from "../../commands/show-status-core.js";
 
 export interface RegisterFindingsToolsOptions {
   /**
@@ -98,54 +96,6 @@ export function mapArtifactForFindings(artifact: ReviewArtifact): DfFindingsResu
     commit: artifact.commit,
     critics: artifact.criticResults.map(mapCriticForSpec),
   };
-}
-
-interface LoadOutcome {
-  readonly artifact: ReviewArtifact | null;
-  readonly resolvedSha: string | null;
-  readonly error?: string;
-}
-
-async function loadForCommit(
-  cwd: string,
-  commit: string,
-): Promise<LoadOutcome> {
-  let loaded;
-  try {
-    loaded = await loadAgentReviewConfig({ cwd });
-  } catch (err) {
-    return {
-      artifact: null,
-      resolvedSha: null,
-      error: `failed to load .agent-review/config.json: ${(err as Error).message}`,
-    };
-  }
-
-  let sha: string;
-  try {
-    sha = await resolveCommit(commit, cwd);
-  } catch (err) {
-    return {
-      artifact: null,
-      resolvedSha: null,
-      error: `failed to resolve commit "${commit}" via git rev-parse: ${
-        (err as Error).message
-      }`,
-    };
-  }
-
-  const artifact = await readArtifact(loaded, sha);
-  if (!artifact) {
-    return {
-      artifact: null,
-      resolvedSha: sha,
-      error: `no review artifact found for ${sha}; run \`df review --commit ${sha.slice(
-        0,
-        12,
-      )}\` first or check that .git/agent-reviews/${sha}.json exists.`,
-    };
-  }
-  return { artifact, resolvedSha: sha };
 }
 
 function renderFindingsMarkdown(
