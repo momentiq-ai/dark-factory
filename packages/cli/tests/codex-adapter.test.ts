@@ -1627,6 +1627,8 @@ test("detectSandboxInitFailureInItems scans command_execution.aggregated_output 
   // The bwrap failure surfaces in the `aggregated_output` of every
   // command_execution item the model issues. The detector walks the
   // turn's items[] and returns the first matching citation found.
+  // Failure items use `status: "failed"` — the SDK's explicit signal
+  // that it could not run the command (see PR #112 round-2 guard).
   const items = [
     { id: "item_0", type: "agent_message", text: "let me read the diff" },
     {
@@ -1634,16 +1636,14 @@ test("detectSandboxInitFailureInItems scans command_execution.aggregated_output 
       type: "command_execution",
       command: "/bin/zsh -lc 'git diff HEAD~1'",
       aggregated_output: BWRAP_NAMESPACE_FAILURE,
-      exit_code: 1,
-      status: "completed",
+      status: "failed",
     },
     {
       id: "item_2",
       type: "command_execution",
       command: "/bin/zsh -lc 'cat README.md'",
       aggregated_output: BWRAP_NAMESPACE_FAILURE,
-      exit_code: 1,
-      status: "completed",
+      status: "failed",
     },
   ];
   expect_eq(detectSandboxInitFailureInItems(items), BWRAP_NAMESPACE_FAILURE);
@@ -1679,13 +1679,13 @@ test("detectSandboxInitFailureInItems skips malformed items (defense in depth)",
 
 test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with FAILED command items → adapter degrades to status:error (issue #109)", async () => {
   // This is the canonical issue #109 scenario: a hosted W3 worker's
-  // bwrap sandbox fails at startup, every diff-read attempt returns the
-  // bwrap citation in stderr (non-zero exit_code), and the model
-  // fabricates a "blocker" finding citing the unread diff. The adapter
-  // MUST detect the environmental failure FROM THE FAILED COMMAND
-  // ITEMS (not from finalResponse alone, per PR #112 codex blocker —
-  // see PR #112 tests below) and emit status:error so the quorum
-  // aggregator can degrade per policy.
+  // bwrap sandbox fails at startup, every diff-read attempt comes back
+  // with `status: "failed"` and the bwrap citation in aggregated_output,
+  // and the model fabricates a "blocker" finding citing the unread diff.
+  // The adapter MUST detect the environmental failure FROM THE FAILED
+  // COMMAND ITEMS (not from finalResponse alone, per PR #112 codex
+  // blocker — see PR #112 tests below) and emit status:error so the
+  // quorum aggregator can degrade per policy.
   const fabricatedFindingJson = JSON.stringify({
     status: "complete",
     verdict: "CHANGES_REQUESTED",
@@ -1717,8 +1717,7 @@ test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with F
             type: "command_execution",
             command: "/bin/zsh -lc 'git diff HEAD~1'",
             aggregated_output: BWRAP_NAMESPACE_FAILURE,
-            exit_code: 1,
-            status: "completed",
+            status: "failed",
           },
         ],
       }),
@@ -1780,8 +1779,7 @@ test("review: bwrap citation in command_execution.aggregated_output → adapter 
             type: "command_execution",
             command: "/bin/zsh -lc 'git diff'",
             aggregated_output: BWRAP_NAMESPACE_FAILURE,
-            exit_code: 1,
-            status: "completed",
+            status: "failed",
           },
         ],
       }),
@@ -1951,12 +1949,18 @@ test("SANDBOX_INIT_FAILURE_CODE is the literal 'sandbox_init_failure' (operator-
 // fixture, source comments, docs) and (b) a model's real CHANGES_REQUESTED
 // finding that quotes the canonical citation in its `evidence` block.
 //
-// Conservatism contract: an environmental sandbox-init failure is signaled
-// by a FAILED command (non-zero `exit_code` or `status: "failed"`) whose
-// captured output cites the failure. Successful stdout and model
-// finalResponse text are NOT primary detection signals — the SDK-thrown-
-// error path (see runOnce's catch block) still catches startup failures
-// that prevent any command_execution stream from emitting.
+// Conservatism contract (PR #112 round-2 tightening): an environmental
+// sandbox-init failure is signaled SOLELY by a command_execution item
+// with `status: "failed"` whose captured output cites the failure. The
+// `exit_code !== 0` branch was removed in round 2: a `git diff
+// --exit-code` (or any command that uses non-zero exit for expected
+// control flow) returns 1 with diff content in stdout, and that diff
+// content can legitimately include the bwrap literal (e.g., reviewing
+// this very source file's pattern list). Successful stdout, non-zero
+// exit with `status: "completed"`, and model finalResponse text are NOT
+// detection signals — the SDK-thrown-error path (see runOnce's catch
+// block) still catches startup failures that prevent any
+// command_execution stream from emitting.
 
 test("detectSandboxInitFailureInItems IGNORES successful command_execution whose stdout contains the literal bwrap string", () => {
   // A `git diff HEAD~1 -- packages/cli/src/adapters/codex-sdk.ts`
@@ -2002,24 +2006,31 @@ test("detectSandboxInitFailureInItems IGNORES in_progress command_execution (no 
   );
 });
 
-test("detectSandboxInitFailureInItems DETECTS bwrap citation when command_execution failed (exit_code non-zero)", () => {
-  // Positive baseline preserved by the fix: a failed command (non-zero
-  // exit_code) whose captured stderr cites the bwrap failure IS classified
-  // as sandbox_init_failure.
+test("detectSandboxInitFailureInItems IGNORES git diff --exit-code style commands (exit_code: 1, status: 'completed') whose diff stdout contains the literal bwrap citation (PR #112 round-2 codex blocker)", () => {
+  // A normal `git diff --exit-code` returns 1 when a diff exists while
+  // printing legitimate diff content. The diff under review may add /
+  // remove source lines that include the canonical bwrap citation (this
+  // repo's own pattern-list source / tests are the canonical example).
+  // Round-1 of the fix still gated on `exit_code !== 0`, which let this
+  // case through as a false sandbox_init_failure — silently erasing
+  // valid APPROVED / CHANGES_REQUESTED verdicts from quorum whenever a
+  // reviewer command used a non-zero exit code for expected control flow
+  // while printing source or diff content containing the bwrap literal.
   const items = [
     {
       id: "item_0",
       type: "command_execution",
-      command: "/bin/zsh -lc 'git diff HEAD~1'",
-      aggregated_output: BWRAP_NAMESPACE_FAILURE,
+      command: "/bin/zsh -lc 'git diff --exit-code origin/main -- packages/cli/src/adapters/codex-sdk.ts'",
+      aggregated_output:
+        `@@ -570,4 +570,4 @@\n+  /${BWRAP_NAMESPACE_FAILURE}/i,\n+  /bwrap:\\s+Setting up seccomp failed/i,\n`,
       exit_code: 1,
       status: "completed",
     },
   ];
   expect_eq(
     detectSandboxInitFailureInItems(items),
-    BWRAP_NAMESPACE_FAILURE,
-    "failed command (exit_code !== 0) with bwrap stderr MUST classify",
+    null,
+    "completed command with non-zero exit_code MUST NOT classify as sandbox_init_failure — exit_code is a legitimate control-flow signal (git diff --exit-code, grep -q, test, etc.) and its stdout can carry source/diff content containing the bwrap literal",
   );
 });
 

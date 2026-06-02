@@ -610,19 +610,24 @@ export function detectSandboxInitFailure(text: string): string | null {
  * CHANGES_REQUESTED finding citing the failure as a "blocker"; this
  * scan catches the failure before the fabricated finding is admitted.
  *
- * Returns the FIRST matching line found across FAILED command_execution
- * items, or `null` if no failed item's output cites a sandbox-init
- * failure.
+ * Returns the FIRST matching line found across `status: "failed"`
+ * command_execution items, or `null` if no failed item's output cites a
+ * sandbox-init failure.
  *
- * PR #112 false-positive guard: only FAILED commands are inspected. A
- * command is "failed" when either `exit_code` is a non-zero number OR
- * `status === "failed"` (the SDK marks the item failed when it could not
- * even exec the command — no exit_code is set in that case). Successful
- * commands (`exit_code === 0`) and in-progress items (no terminal
- * exit_code yet) are skipped — their stdout can legitimately contain the
- * literal bwrap citation (e.g., a `git diff` of source / docs / tests
- * that ship the canonical pattern list) and misclassifying it would
- * silently erase real APPROVED / CHANGES_REQUESTED verdicts from quorum.
+ * PR #112 round-2 false-positive guard: detection is gated SOLELY on
+ * `status === "failed"` — the SDK's explicit signal that it could not
+ * run the command (sandbox init failure being the canonical cause; see
+ * `CommandExecutionStatus = "in_progress" | "completed" | "failed"` in
+ * `@openai/codex-sdk` types). The earlier `exit_code !== 0` branch was
+ * removed: `exit_code` is a legitimate control-flow signal (`git diff
+ * --exit-code`, `grep -q`, `test`, etc.) and a `status: "completed"`
+ * command with non-zero exit can legitimately print stdout containing
+ * the literal bwrap citation (e.g., a diff of this very source file's
+ * pattern list). Classifying such output as sandbox_init_failure would
+ * silently erase real APPROVED / CHANGES_REQUESTED verdicts from
+ * quorum. The SDK-thrown-Error path in `runOnce`'s catch block remains
+ * the secondary detection point for startup failures that prevent any
+ * command_execution stream from emitting.
  *
  * Items without an `aggregated_output` string are skipped. Pure
  * function — exported for direct unit testing.
@@ -632,12 +637,7 @@ export function detectSandboxInitFailureInItems(items: readonly unknown[]): stri
     if (!item || typeof item !== "object") continue;
     const obj = item as Record<string, unknown>;
     if (obj["type"] !== "command_execution") continue;
-    const exitCode = obj["exit_code"];
-    const status = obj["status"];
-    const failed =
-      (typeof exitCode === "number" && exitCode !== 0) ||
-      status === "failed";
-    if (!failed) continue;
+    if (obj["status"] !== "failed") continue;
     const output = obj["aggregated_output"];
     if (typeof output !== "string") continue;
     const match = detectSandboxInitFailure(output);
