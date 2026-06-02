@@ -4,14 +4,12 @@
 // 4 verb orchestrators to the MCP server per spec §9.
 //
 // Signature change from Cycle 8 v1 (deleted at Task 22): `pr` → `issue`.
-// Each tool's description carries an "Issue-anchored; PR-arg removed"
-// deprecation note (stays for one alpha cycle per spec §9 OQ-12.5, then
-// removed). The note deliberately omits a specific version number because
-// release-please's `versioning-strategy: prerelease` computes the actual
-// bumped version from the conventional-commit history on merge — it could
-// land as 0.6.0-alpha.10 or 0.7.0-alpha.0 depending on its rules, and a
-// hardcoded prediction would either be wrong or need a follow-up edit
-// after the release PR computes the real number.
+// Phase 12.2 shipped a one-alpha-cycle "Issue-anchored; PR-arg removed"
+// deprecation note in each tool description per spec §9 OQ-12.5; the
+// package is now at 1.0.0 (past the time-gate) and the note has been
+// dropped (issue #72). The companion df.handoff / df.rehydrate MCP
+// PROMPTS in ../prompts.ts were updated in the same change to mirror the
+// v2 Issue-anchored tool shape (issue #79).
 //
 // Each tool returns BOTH:
 //   - structuredContent: the typed RunXResult / RehydrateData shape so
@@ -62,8 +60,6 @@ export interface RegisterHandoffToolsOptions {
   readonly _clock?: Clock;
 }
 
-const DEPRECATION_NOTE = " Issue-anchored; PR-arg removed.";
-
 export function registerHandoffTools(
   server: McpServer,
   opts: RegisterHandoffToolsOptions = {},
@@ -91,8 +87,7 @@ export function registerHandoffTools(
         "(open on the stack). Auto-creates a new issue if none is supplied " +
         "or none is owned by @me. Scrubs the note for secret-shaped " +
         "content first and REFUSES on a match (setup steps yes, secrets " +
-        "never)." +
-        DEPRECATION_NOTE,
+        "never).",
       annotations: {
         // Writes the issue body + label + (optionally) creates a new
         // issue. Reaches the GitHub API (openWorldHint:true). Not
@@ -188,8 +183,7 @@ export function registerHandoffTools(
         "Take the baton on a handoff issue: validate, strict-rehydrate, " +
         "assign @me, verify, then close (Commitment 10). Atomic ordering — " +
         "read-only work precedes all mutations; any failure leaves the " +
-        "issue open + unassigned on the stack." +
-        DEPRECATION_NOTE,
+        "issue open + unassigned on the stack.",
       annotations: {
         // Writes the assignee + closes the issue (Commitment 10) via
         // the GitHub API. Not destructive (the issue can be reopened
@@ -228,8 +222,7 @@ export function registerHandoffTools(
         "linked work item's status + prints the rehydration note. No " +
         "ownership change. No-arg resolves via 2-tier (open+@me first, " +
         "then closed+@me within 7d). Works on open AND closed issues " +
-        "(closed = forensic catch-up)." +
-        DEPRECATION_NOTE,
+        "(closed = forensic catch-up).",
       annotations: {
         // Pure read of the GitHub API — no mutations to issue/PR
         // state. openWorldHint:true because it hits the GitHub API.
@@ -267,8 +260,7 @@ export function registerHandoffTools(
       description:
         "List the handoff stack (open + handoff-labeled + unassigned). " +
         "Per-repo (gh issue list is repo-scoped; cross-repo aggregation " +
-        "is deferred to OQ-12.3)." +
-        DEPRECATION_NOTE,
+        "is deferred to OQ-12.3).",
       annotations: {
         // Pure list query (open + handoff-labeled + unassigned) over
         // the GitHub API. No mutations.
