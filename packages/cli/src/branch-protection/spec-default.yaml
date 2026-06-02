@@ -65,11 +65,11 @@ branches:
       strict_required_status_checks_policy: true   # branch must be up to date with `main` before merging
       do_not_enforce_on_create: false
       contexts:
-        - context: "PR Status Check"
+        - context: "pr-status-check"
           status: required
           source: "github_actions"
           integration_id: 15368
-          rationale: "Aggregator check; rolls up the per-job results from .github/workflows/pr.yml. Required since Cycle 312."
+          rationale: "Aggregator check; rolls up the per-job results from .github/workflows/pr.yml. Required since Cycle 312. Context equals the workflow job id — `.github/workflows/pr-status-check.yml` deliberately omits a `name:` override so direct pull_request runs emit `pr-status-check` (issue #27)."
         - context: "schema-check"
           status: required
           source: "github_actions"

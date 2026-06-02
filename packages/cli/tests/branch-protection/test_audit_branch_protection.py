@@ -44,7 +44,7 @@ def _minimal_spec(**overrides):
                 "required_status_checks": {
                     "strict_required_status_checks_policy": True,
                     "contexts": [
-                        {"context": "PR Status Check", "status": "required"},
+                        {"context": "pr-status-check", "status": "required"},
                         {"context": "schema-check", "status": "required"},
                     ],
                 },
@@ -81,7 +81,7 @@ def _minimal_live(**overrides):
             "parameters": {
                 "strict_required_status_checks_policy": True,
                 "required_status_checks": [
-                    {"context": "PR Status Check"},
+                    {"context": "pr-status-check"},
                     {"context": "schema-check"},
                 ],
             },
@@ -126,7 +126,7 @@ def test_audit_missing_required_status_check_flagged():
                 "type": "required_status_checks",
                 "parameters": {
                     "strict_required_status_checks_policy": True,
-                    "required_status_checks": [{"context": "PR Status Check"}],
+                    "required_status_checks": [{"context": "pr-status-check"}],
                     # schema-check is missing from live
                 },
             },
@@ -295,7 +295,7 @@ branches:
   main:
     required_status_checks:
       contexts:
-        - context: "PR Status Check"
+        - context: "pr-status-check"
           status: required
 forbidden_bypasses:
   - kind: repo_variable
@@ -314,7 +314,7 @@ forbidden_bypasses:
                 {
                     "type": "required_status_checks",
                     "parameters": {
-                        "required_status_checks": [{"context": "PR Status Check"}]
+                        "required_status_checks": [{"context": "pr-status-check"}]
                     },
                 }
             ],
@@ -350,7 +350,7 @@ branches:
   main:
     required_status_checks:
       contexts:
-        - context: "PR Status Check"
+        - context: "pr-status-check"
           status: required
 forbidden_bypasses:
   - kind: repo_variable
@@ -368,7 +368,7 @@ forbidden_bypasses:
                 {
                     "type": "required_status_checks",
                     "parameters": {
-                        "required_status_checks": [{"context": "PR Status Check"}]
+                        "required_status_checks": [{"context": "pr-status-check"}]
                     },
                 }
             ],
@@ -397,7 +397,7 @@ def test_audit_real_spec_yaml_parses_cleanly():
     main = spec["branches"]["main"]
     assert "required_status_checks" in main
     contexts = main["required_status_checks"]["contexts"]
-    assert any(c.get("context") == "PR Status Check" for c in contexts)
+    assert any(c.get("context") == "pr-status-check" for c in contexts)
     assert any(c.get("context") == "agent-critic" for c in contexts)
     assert any(c.get("context") == "cycle-doc-validation" for c in contexts)
 

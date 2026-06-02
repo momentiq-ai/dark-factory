@@ -1,6 +1,6 @@
-# PR Status Check — reusable workflow shape (cycle 331.1 Phase E).
+# pr-status-check — reusable workflow shape (cycle 331.1 Phase E).
 #
-# This is the no-op aggregator gate. It satisfies the `PR Status Check`
+# This is the no-op aggregator gate. It satisfies the `pr-status-check`
 # required-status-check context in dark-factory's own main1 ruleset
 # (id 16808560) and is published as a reusable workflow for consumers
 # (sage3c / cerebe-platform / external repos) to invoke from their own
@@ -47,7 +47,7 @@
 # it, per
 # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
 
-name: PR Status Check
+name: pr-status-check
 
 on:
   pull_request:
@@ -84,11 +84,14 @@ concurrency:
 
 jobs:
   pr-status-check:
-    # IMPORTANT: this job name is the status-check context surfaced to the
-    # ruleset. It MUST match the ruleset's `required_status_checks` context
-    # exactly. Renaming this changes the context and breaks the ruleset
-    # match.
-    name: PR Status Check
+    # IMPORTANT: this job MUST NOT declare a `name:` field. The surfaced
+    # status-check context is `<caller-job-id> / <callee-job-name>`. With a
+    # `name:` override, the context becomes `pr-status-check / <override>`,
+    # which mismatches every consumer ruleset that requires the documented
+    # `pr-status-check / pr-status-check` context and permanently blocks
+    # merges (issue #27 — alien8d/lyra#166 evidence). Leaving `name:`
+    # off makes the context default to the job id (`pr-status-check`),
+    # producing the documented `pr-status-check / pr-status-check` match.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -181,11 +184,11 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "## PR Status Check Summary"
+            echo "## pr-status-check Summary"
             echo ""
             if [[ "$JOB_STATUS" == "success" ]]; then
-              echo "PR Status Check stub passed (Phase E no-op aggregator)."
+              echo "pr-status-check stub passed (Phase E no-op aggregator)."
             else
-              echo "PR Status Check stub failed — investigate workspace install or build."
+              echo "pr-status-check stub failed — investigate workspace install or build."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

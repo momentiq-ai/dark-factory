@@ -281,7 +281,7 @@ jobs:
       # CI_BOT_PRIVATE_KEY: ${{ secrets.CI_BOT_PRIVATE_KEY }}
 ```
 
-**Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. The `agent-critic.yml` reusable workflow's internal job is named `agent-critic`, so a caller job declared as `agent-critic:` (as above) emits the context **`agent-critic / agent-critic`**. Likewise `cycle-doc-validation:` → `cycle-doc-validation / cycle-doc-validation`, and `pr-status-check:` → `pr-status-check / PR Status Check` (the callee job's `name:` is `PR Status Check`, not its id). This is the EXACT string your ruleset must require in §8 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §8 below to make the check binding.
+**Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. Every dark-factory reusable workflow deliberately omits a job-level `name:` override so the callee segment defaults to the job id, giving consumers a uniform `<id> / <id>` contract: `agent-critic:` → **`agent-critic / agent-critic`**, `cycle-doc-validation:` → **`cycle-doc-validation / cycle-doc-validation`**, and `pr-status-check:` → **`pr-status-check / pr-status-check`** (issue #27 — a prior `name: "PR Status Check"` override broke the contract and permanently blocked merges). This is the EXACT string your ruleset must require in §8 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §8 below to make the check binding.
 
 See [taxpilot2a's dark-factory-pr.yml](https://github.com/momentiq-ai/taxpilot2a/blob/main/.github/workflows/dark-factory-pr.yml) for a working production example pinned to a real commit SHA.
 
@@ -399,7 +399,7 @@ Requiring a context that never reports leaves every PR **blocked forever** waiti
 | `cycle-doc-validation / cycle-doc-validation` | **YES** | Spec-Driven Traceability is mandatory for consumers (§5). The validator reliably reports on every consumer PR. |
 | `branch-protection-audit / branch-protection-audit` | No | Usually wired with `gate-enabled: 'false'` (§6) → it's a documented no-op pass. Requiring a no-op check adds no safety. Require it only once you flip `gate-enabled: 'true'` and provision its App token. |
 | `schema-check / *` | No | The dark-factory `schema-check` workflow validates `@momentiq/dark-factory-schemas` specifically; for your own OpenAPI / JSON Schema drift you typically wire your own `schema-check`. Don't require dark-factory's unless your CI actually runs it and it reports. |
-| `pr-status-check / PR Status Check` | Optional | A no-op sentinel aggregator (always exits 0). Requiring it only proves the Dark Factory PR workflow ran; it carries no quality signal. Add it if you want a liveness assertion. |
+| `pr-status-check / pr-status-check` | Optional | A no-op sentinel aggregator (always exits 0). Requiring it only proves the Dark Factory PR workflow ran; it carries no quality signal. Add it if you want a liveness assertion. |
 
 The minimum binding configuration is just **`agent-critic / agent-critic`**. The JSON above also requires `cycle-doc-validation / cycle-doc-validation` because traceability is mandatory for consumers; drop that line if your repo genuinely doesn't run the cycle-doc validator yet.
 
@@ -427,7 +427,7 @@ Fix every red row before opening your first PR.
 
 **b. First PR.** Open a no-op PR that touches `docs/CONSUMER-ADOPTION.md` or similar low-risk file. Expect:
 
-- `pr-status-check / PR Status Check` → PASS (sentinel).
+- `pr-status-check / pr-status-check` → PASS (sentinel).
 - `cycle-doc-validation / cycle-doc-validation` → PASS (with a valid `Cycle: 1` or `Issue: #<N>` trailer).
 - `agent-critic / agent-critic` → PASS or advisory findings (degrade-and-pass under min-complete-quorum).
 - `branch-protection-audit / branch-protection-audit` → PASS with `gate-enabled: 'false'`.
