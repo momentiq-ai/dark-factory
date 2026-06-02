@@ -108,6 +108,11 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
     );
   }
 
+  // Issue #105 — signal-killed processes bypass `finally` and orphan the
+  // lock. The guard wires SIGTERM/SIGINT to release-then-exit; uninstall
+  // in `finally` so the listeners don't leak across programmatic re-runs.
+  const signalGuard = installSignalLockGuard(lock.lockPath);
+
   // Wrap EVERYTHING after lock acquisition in try/finally so the lock is
   // always released — even on early failures from runQualityGates,
   // buildReviewPacket, writePending, or any critic promise rejection.
@@ -404,6 +409,7 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
     });
     throw err;
   } finally {
+    signalGuard.uninstall();
     releaseCommitLock(lock.lockPath);
   }
   // Re-narrow after try/finally — a successful path guarantees these are set.
@@ -645,5 +651,49 @@ async function safeParent(sha: string, cwd: string): Promise<string> {
 
 function emit(sink: TelemetrySink | undefined, event: TelemetryEvent): void {
   if (sink) sink.emit(event);
+}
+
+// Issue #105 — wrap the per-SHA `releaseCommitLock` flow with signal
+// handlers so a SIGTERM/SIGINT-killed `df review` process still removes
+// the lock file. The existing `try/finally` only fires for graceful
+// errors; a signal kill bypasses it and orphans
+// `.git/agent-reviews/<sha>.lock`, permanently blocking re-runs.
+//
+// `uninstall()` must be called in `finally` so the lock-release listener
+// is dropped on graceful exit — without it, every programmatic re-run
+// (e.g. a test suite invoking `runReview` repeatedly) accumulates listeners
+// and eventually trips MaxListenersExceededWarning. The uninstall path is
+// careful to restore only OUR listener (not whatever else the host has
+// wired up).
+//
+// Exit codes follow POSIX convention `128 + signal_number`:
+// SIGINT (2) → 130, SIGTERM (15) → 143.
+export interface SignalLockGuard {
+  uninstall(): void;
+}
+
+const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 } as const;
+type GuardedSignal = keyof typeof SIGNAL_EXIT_CODES;
+
+export function installSignalLockGuard(lockPath: string): SignalLockGuard {
+  const handlers: { [S in GuardedSignal]?: NodeJS.SignalsListener } = {};
+  const install = (sig: GuardedSignal): void => {
+    const handler: NodeJS.SignalsListener = () => {
+      releaseCommitLock(lockPath);
+      process.exit(SIGNAL_EXIT_CODES[sig]);
+    };
+    handlers[sig] = handler;
+    process.on(sig, handler);
+  };
+  install("SIGTERM");
+  install("SIGINT");
+  return {
+    uninstall(): void {
+      for (const sig of Object.keys(handlers) as GuardedSignal[]) {
+        const h = handlers[sig];
+        if (h) process.removeListener(sig, h);
+      }
+    },
+  };
 }
 
