@@ -21,6 +21,7 @@ import {
   CURSOR_API_KEY_ENV,
   CURSOR_CLI_ADAPTER_ID,
   CURSOR_CLI_AUTH_CHATGPT,
+  CURSOR_CLI_NO_SANDBOX_ENV,
   CURSOR_CLI_PERMANENT_SUBTYPES,
   CursorCliAdapter,
   buildCursorCliArgs,
@@ -29,8 +30,10 @@ import {
   extractInitEvent,
   extractResultEnvelope,
   isPermanentResultSubtype,
+  normalizeStatusVerdict,
   resolveAuthOrFail,
   resolveCursorCliModelId,
+  shouldDisableCursorCliSandbox,
   type CursorCliRunOutcome,
 } from "../src/adapters/cursor-cli.js";
 import type {
@@ -259,6 +262,38 @@ test("buildCursorCliArgs: order is fixed and includes --trust + --sandbox enable
   ]);
 });
 
+// Issue #91 — `--sandbox` is unavailable on macOS workstations without App
+// Sandbox entitlements (every commit errors with `code=no_terminal_result`).
+// Operators opt out via `CURSOR_CLI_NO_SANDBOX=1`; default behavior is
+// unchanged.
+test("buildCursorCliArgs: { sandbox: false } omits --sandbox enabled (issue #91 opt-out)", () => {
+  expect_deep(buildCursorCliArgs("composer-2.5", { sandbox: false }), [
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--trust",
+    "--model",
+    "composer-2.5",
+  ]);
+});
+
+test("buildCursorCliArgs: { sandbox: true } is equivalent to no opts (default)", () => {
+  expect_deep(
+    buildCursorCliArgs("composer-2.5", { sandbox: true }),
+    buildCursorCliArgs("composer-2.5"),
+  );
+});
+
+test("shouldDisableCursorCliSandbox: CURSOR_CLI_NO_SANDBOX=1 → true", () => {
+  expect_eq(shouldDisableCursorCliSandbox({ CURSOR_CLI_NO_SANDBOX: "1" }), true);
+});
+
+test("shouldDisableCursorCliSandbox: unset or '0' → false (default-on)", () => {
+  expect_eq(shouldDisableCursorCliSandbox({}), false);
+  expect_eq(shouldDisableCursorCliSandbox({ CURSOR_CLI_NO_SANDBOX: "" }), false);
+  expect_eq(shouldDisableCursorCliSandbox({ CURSOR_CLI_NO_SANDBOX: "0" }), false);
+});
+
 test("buildSubscriptionEnv: strips CURSOR_API_KEY from base env", () => {
   const env = buildSubscriptionEnv({
     CURSOR_API_KEY: "leaked-key",
@@ -336,6 +371,62 @@ test("extractResultEnvelope: extracts is_error, subtype, result, usage on result
   expect_eq(env!.durationMs, 1000);
   expect_eq(env!.usageInputTokens, 100);
   expect_eq(env!.usageOutputTokens, 50);
+});
+
+// Issue #70 — cursor-cli's underlying model frequently emits the verdict
+// value (`APPROVED` / `CHANGES_REQUESTED`) in the `status` field where the
+// schema requires a lifecycle state (`pending|running|complete|error`).
+// codex-sdk avoids this via the SDK's `outputSchema` parameter; cursor-cli
+// has no equivalent, so the adapter normalizes on receipt.
+test("normalizeStatusVerdict: status='APPROVED' → status='complete' + verdict='APPROVED'", () => {
+  const out = normalizeStatusVerdict({
+    status: "APPROVED",
+    requiresHumanJudgment: false,
+    summary: "ok",
+    findings: [],
+  }) as Record<string, unknown>;
+  expect_eq(out["status"], "complete");
+  expect_eq(out["verdict"], "APPROVED");
+});
+
+test("normalizeStatusVerdict: status='CHANGES_REQUESTED' → status='complete' + verdict='CHANGES_REQUESTED'", () => {
+  const out = normalizeStatusVerdict({
+    status: "CHANGES_REQUESTED",
+    requiresHumanJudgment: false,
+    summary: "needs work",
+    findings: [],
+  }) as Record<string, unknown>;
+  expect_eq(out["status"], "complete");
+  expect_eq(out["verdict"], "CHANGES_REQUESTED");
+});
+
+test("normalizeStatusVerdict: verdict-in-status does NOT clobber a present-and-valid verdict", () => {
+  const out = normalizeStatusVerdict({
+    status: "APPROVED",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: true,
+    summary: "explicit verdict wins",
+    findings: [],
+  }) as Record<string, unknown>;
+  expect_eq(out["status"], "complete");
+  expect_eq(out["verdict"], "CHANGES_REQUESTED");
+});
+
+test("normalizeStatusVerdict: lifecycle status passes through unchanged", () => {
+  const input = {
+    status: "complete",
+    verdict: "APPROVED",
+    requiresHumanJudgment: false,
+    summary: "already correct",
+    findings: [],
+  };
+  expect_deep(normalizeStatusVerdict(input), input);
+});
+
+test("normalizeStatusVerdict: non-object input passes through unchanged", () => {
+  expect_eq(normalizeStatusVerdict(null), null);
+  expect_eq(normalizeStatusVerdict("string"), "string");
+  expect_eq(normalizeStatusVerdict(42), 42);
 });
 
 test("isPermanentResultSubtype: known permanent subtypes return true", () => {
@@ -445,6 +536,97 @@ test("review: stream-json with success result → CriticResult APPROVED", async 
   expect_eq(finished!.tokensIn, 1500);
   expect_eq(finished!.tokensOut, 280);
   expect_eq(finished!.retryCount, 0);
+});
+
+// Issue #70 — round-trip regression test. Before the fix, a model emitting
+// `status: "APPROVED"` (verdict-in-status) tripped schema validation and the
+// run came back as `status=error`; now the adapter normalizes and the
+// run completes with the correct lifecycle + verdict split.
+test("review: model emits status='APPROVED' (verdict-in-status) → normalized to complete + APPROVED (issue #70)", async () => {
+  const verdictInStatusJson = JSON.stringify({
+    status: "APPROVED",
+    requiresHumanJudgment: false,
+    summary: "looks good",
+    findings: [],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const { runner } = makeRunner({
+    outcome: { events: buildSuccessEvents({ resultText: verdictInStatusJson }) },
+  });
+  const adapter = new CursorCliAdapter({ runCursorAgentCli: runner });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.verdict, "APPROVED");
+});
+
+test("review: model emits status='CHANGES_REQUESTED' → normalized + verdict preserved (issue #70)", async () => {
+  const verdictInStatusJson = JSON.stringify({
+    status: "CHANGES_REQUESTED",
+    requiresHumanJudgment: false,
+    summary: "needs fixes",
+    findings: [
+      {
+        severity: "high",
+        category: "tests",
+        file: "src/x.ts",
+        evidence: "missing coverage",
+        impact: "regression risk",
+        requiredFix: "add a test",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "medium",
+  });
+  const { runner } = makeRunner({
+    outcome: { events: buildSuccessEvents({ resultText: verdictInStatusJson }) },
+  });
+  const adapter = new CursorCliAdapter({ runCursorAgentCli: runner });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.verdict, "CHANGES_REQUESTED");
+});
+
+// Issue #91 — env-var opt-out skips `--sandbox enabled` so macOS workstations
+// without App Sandbox entitlements don't fail every commit with
+// `code=no_terminal_result`. Default behavior (sandbox on) is unchanged.
+test("review: CURSOR_CLI_NO_SANDBOX=1 omits --sandbox/enabled from CLI args (issue #91)", async () => {
+  let observedCliArgs: readonly string[] = [];
+  const { runner } = makeRunner({
+    capture: (a) => {
+      observedCliArgs = a.cliArgs;
+    },
+  });
+  const adapter = new CursorCliAdapter({
+    runCursorAgentCli: runner,
+    baseEnv: { [CURSOR_CLI_NO_SANDBOX_ENV]: "1", PATH: "/usr/bin" },
+  });
+  await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
+  expect_eq(observedCliArgs.includes("--sandbox"), false);
+  expect_eq(observedCliArgs.includes("enabled"), false);
+  // The rest of the headless+trust shape is still present.
+  expect_eq(observedCliArgs.includes("--print"), true);
+  expect_eq(observedCliArgs.includes("--trust"), true);
+});
+
+test("review: default (no CURSOR_CLI_NO_SANDBOX) keeps --sandbox enabled (issue #91 default)", async () => {
+  let observedCliArgs: readonly string[] = [];
+  const { runner } = makeRunner({
+    capture: (a) => {
+      observedCliArgs = a.cliArgs;
+    },
+  });
+  const adapter = new CursorCliAdapter({
+    runCursorAgentCli: runner,
+    baseEnv: { PATH: "/usr/bin" },
+  });
+  await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
+  expect_eq(observedCliArgs.includes("--sandbox"), true);
+  expect_eq(observedCliArgs.includes("enabled"), true);
 });
 
 test("review: fast=true critic → --model arg gets -fast suffix", async () => {

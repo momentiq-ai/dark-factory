@@ -132,6 +132,14 @@ export const CURSOR_CLI_BINARY = "cursor-agent";
 // Stripped from subprocess env when auth="chatgpt" so subscription auth
 // can't be silently overridden by a stray Doppler-leaked key.
 export const CURSOR_API_KEY_ENV = "CURSOR_API_KEY";
+// Issue #91 — opt-out env var for operators on macOS workstations without
+// App Sandbox entitlements (every commit otherwise errors with
+// `code=no_terminal_result` because the CLI itself refuses to start in
+// sandbox mode). When set to "1", the adapter omits `--sandbox enabled`
+// and lets `cursor-agent` honor its user-level configuration (managed via
+// `cursor-agent sandbox disable`). Default-off — sandbox stays on for
+// everyone else, defense in depth preserved.
+export const CURSOR_CLI_NO_SANDBOX_ENV = "CURSOR_CLI_NO_SANDBOX";
 
 // Issue #28 — this adapter is subscription-only. The CLI itself supports
 // `--api-key` / `CURSOR_API_KEY` (verified in `cursor-agent --help`), but
@@ -305,6 +313,57 @@ export const CURSOR_CLI_PERMANENT_SUBTYPES: ReadonlySet<string> = new Set([
 export function isPermanentResultSubtype(subtype: string | null): boolean {
   if (subtype === null) return false;
   return CURSOR_CLI_PERMANENT_SUBTYPES.has(subtype);
+}
+
+/**
+ * Issue #70 — normalize the model's emitted JSON when it shoves a verdict
+ * value (`APPROVED` / `CHANGES_REQUESTED`) into the `status` field where
+ * the schema requires a lifecycle state (`pending|running|complete|error`).
+ *
+ * codex-sdk sidesteps this by passing `outputSchema` to the SDK so the
+ * model is schema-constrained at the API boundary. cursor-cli has no
+ * equivalent — the CLI is a subprocess wrapper without SDK-side structured
+ * output — so the only correct place to re-shape is here, after the
+ * subprocess has exited cleanly (which is itself the "lifecycle=complete"
+ * signal) and before strict `parseCriticResult` validation.
+ *
+ * Rules:
+ *   - If `status` already names a valid lifecycle state, the object is
+ *     returned unchanged (lifecycle takes precedence — never silently
+ *     overwrite a model that got it right).
+ *   - If `status` is one of the verdict tokens, set `status: "complete"`.
+ *     Also populate `verdict` IFF the field is not already a valid
+ *     verdict — an explicit `verdict` always wins over the verdict-
+ *     in-status shape (the codex-sdk shape).
+ *   - Non-object inputs pass through unchanged so the caller's downstream
+ *     parser handles the type error with its own diagnostics.
+ *
+ * Pure function — no side effects, no env reads — to keep the test
+ * surface narrow.
+ */
+const VERDICT_TOKENS: ReadonlySet<string> = new Set(["APPROVED", "CHANGES_REQUESTED"]);
+const LIFECYCLE_STATUSES: ReadonlySet<string> = new Set([
+  "pending",
+  "running",
+  "complete",
+  "error",
+]);
+
+export function normalizeStatusVerdict(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const obj = raw as Record<string, unknown>;
+  const status = obj["status"];
+  if (typeof status !== "string") return raw;
+  if (LIFECYCLE_STATUSES.has(status)) return raw;
+  if (!VERDICT_TOKENS.has(status)) return raw;
+  const existingVerdict = obj["verdict"];
+  const hasValidVerdict =
+    typeof existingVerdict === "string" && VERDICT_TOKENS.has(existingVerdict);
+  return {
+    ...obj,
+    status: "complete",
+    ...(hasValidVerdict ? {} : { verdict: status }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +633,9 @@ export function resolveAuthOrFail(
  *                                     writes even if the model attempts
  *                                     one (defense in depth against
  *                                     untrusted diff content).
+ *                                     Omitted when `opts.sandbox === false`
+ *                                     (issue #91 opt-out for macOS hosts
+ *                                     without App Sandbox entitlements).
  *   --model <id>                      Resolved by resolveCursorCliModelId.
  *
  * The prompt itself is NOT an argv member — it's piped via stdin to
@@ -581,17 +643,33 @@ export function resolveAuthOrFail(
  * review packets with full changed files (config caps
  * `maxChangedFileBytes: 200000`).
  */
-export function buildCursorCliArgs(modelId: string): string[] {
-  return [
-    "--print",
-    "--output-format",
-    "stream-json",
-    "--trust",
-    "--sandbox",
-    "enabled",
-    "--model",
-    modelId,
-  ];
+export function buildCursorCliArgs(
+  modelId: string,
+  opts: { sandbox?: boolean } = {},
+): string[] {
+  const sandbox = opts.sandbox ?? true;
+  const args: string[] = ["--print", "--output-format", "stream-json", "--trust"];
+  if (sandbox) {
+    args.push("--sandbox", "enabled");
+  }
+  args.push("--model", modelId);
+  return args;
+}
+
+/**
+ * Issue #91 — env-var opt-out for the `--sandbox enabled` flag. On macOS
+ * workstations without App Sandbox entitlements the CLI itself errors
+ * with `code=no_terminal_result` ("Sandbox mode is enabled but not
+ * available on this system"), making every local critic run hard-fail.
+ * `CURSOR_CLI_NO_SANDBOX=1` tells the adapter to omit the flag so the
+ * CLI honors its user-level configuration (manageable via
+ * `cursor-agent sandbox disable`). Default-off — exactly "1" opts out;
+ * unset / empty / "0" / anything else leaves the sandbox engaged.
+ */
+export function shouldDisableCursorCliSandbox(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env[CURSOR_CLI_NO_SANDBOX_ENV] === "1";
 }
 
 /**
@@ -737,8 +815,11 @@ export class CursorCliAdapter implements CriticAdapter {
     }
 
     const binaryPath = this.options.binaryPath ?? CURSOR_CLI_BINARY;
-    const env = buildSubscriptionEnv(this.options.baseEnv ?? process.env);
-    const cliArgs = buildCursorCliArgs(modelId);
+    const baseEnv = this.options.baseEnv ?? process.env;
+    const env = buildSubscriptionEnv(baseEnv);
+    const cliArgs = buildCursorCliArgs(modelId, {
+      sandbox: !shouldDisableCursorCliSandbox(baseEnv),
+    });
 
     let outcome: CursorCliRunOutcome;
     try {
@@ -1050,7 +1131,13 @@ export class CursorCliAdapter implements CriticAdapter {
 
     let result: CriticResult;
     try {
-      const normalized = normalizeCriticEcho(parseOutcome.value);
+      // Issue #70 — model frequently emits the verdict value in `status`;
+      // re-shape BEFORE the validation-block normalizer + adapter-metadata
+      // merge so downstream `parseCriticResult` sees the schema-correct
+      // lifecycle/verdict split. Subprocess exited cleanly (we reached
+      // this branch) — that IS the lifecycle=complete signal.
+      const statusFixed = normalizeStatusVerdict(parseOutcome.value);
+      const normalized = normalizeCriticEcho(statusFixed);
       const enriched = mergeAdapterMetadata(normalized, {
         critic,
         ...(sessionId !== null ? { runId: sessionId } : {}),
