@@ -520,6 +520,147 @@ export function extractCodexErrorCode(err: unknown): string | null {
   return null;
 }
 
+// Issue #109 — environmental sandbox-init failure code surfaced on the
+// CriticError envelope when the underlying codex CLI's sandbox primitive
+// (bwrap, landlock) cannot initialize. Distinct from upstream / auth /
+// quota codes; min-complete-quorum treats `status: error` (regardless of
+// code) as "this critic produced no evidence — degrade per policy".
+// Naming the code lets operators grep `_runs.ndjson` for
+// `errorCode=sandbox_init_failure` separate from generic transport
+// errors so the hosted W3 worker's container-OOM / GKE-Autopilot
+// posture failures stay distinguishable from upstream OpenAI outages.
+export const SANDBOX_INIT_FAILURE_CODE = "sandbox_init_failure" as const;
+
+// Issue #109 — known environmental sandbox-init failure signatures.
+// CONSERVATIVE LIST: every entry here MUST be a citation-backed
+// environmental error that the codex CLI emits when its sandbox layer
+// cannot initialize, NOT a generic runtime failure mode.
+//
+// Adding a new signature requires:
+//   1. A real captured failure citation (paste the literal stderr line
+//      into the comment that introduces the regex).
+//   2. The regex must NOT match arbitrary diff content the model might
+//      copy into a finding (e.g., a diff that happens to contain the
+//      word "namespace" must not trip detection).
+//
+// The conservatism matters: classifying arbitrary stderr as
+// environmental would silently swallow real findings. Operators rely on
+// `status: complete` + a CHANGES_REQUESTED verdict as the gate's
+// fail-closed signal; misclassifying a real finding as a sandbox-init
+// failure would let real bugs through.
+//
+// Citations:
+//   - bwrap user-namespace allocation refusal (issue #109, PR #102):
+//       "bwrap: No permissions to create a new namespace"
+//     Observed on GKE Autopilot pods that lack SYS_ADMIN (the security
+//     profile rejects `clone(CLONE_NEWUSER)`).
+//   - bwrap seccomp setup refusal (same kernel-side cause, different
+//     bwrap codepath):
+//       "bwrap: Setting up seccomp failed"
+//   - bwrap mount-namespace refusal (different syscall but same
+//     unprivileged-user-namespace root cause):
+//       "bwrap: setting up uid map: Permission denied"
+//   - landlock ruleset creation refusal (codex's secondary sandbox
+//     primitive when bwrap is unavailable):
+//       "landlock_create_ruleset: Operation not permitted"
+//
+// Each regex anchors on the tool name + the specific failure verb AND
+// requires the citation to start at column 0 of a line (multiline `^`).
+// The column-0 anchor is load-bearing: the Codex CLI's
+// `handle_exec_command_end` maps any non-zero `exit_code` to
+// `CommandExecutionStatus = "failed"`, so a legitimate
+// `git diff --exit-code` that finds a diff arrives with
+// `status: "failed"` and diff content in `aggregated_output`. When the
+// PR under review touches this repo's own pattern list, that diff content
+// contains the bwrap citation prefixed by `+` / `-` / context whitespace.
+// Without the line anchor those diff-prefixed occurrences classify as
+// sandbox_init_failure and silently erase real APPROVED /
+// CHANGES_REQUESTED verdicts from quorum (PR #112 round-3 cursor blocker).
+// Real bwrap/landlock stderr always writes the citation at column 0,
+// matching the anchor.
+const SANDBOX_INIT_FAILURE_PATTERNS: readonly RegExp[] = Object.freeze([
+  /^bwrap:\s+No permissions to create a new namespace/im,
+  /^bwrap:\s+Setting up seccomp failed/im,
+  /^bwrap:\s+setting up uid map:\s+Permission denied/im,
+  /^landlock_create_ruleset:\s+Operation not permitted/im,
+]) as readonly RegExp[];
+
+/**
+ * Issue #109 — scan a string for known environmental sandbox-init
+ * failure signatures. Returns the FIRST matching substring (trimmed to
+ * the matched line) so the error envelope's detail message carries the
+ * actual citation, or `null` if no pattern matches.
+ *
+ * Pure function — exported for direct unit testing. The conservative
+ * pattern list lives in {@link SANDBOX_INIT_FAILURE_PATTERNS} (see the
+ * comment there for the "what counts as environmental" contract).
+ */
+export function detectSandboxInitFailure(text: string): string | null {
+  if (!text) return null;
+  for (const pattern of SANDBOX_INIT_FAILURE_PATTERNS) {
+    const match = pattern.exec(text);
+    if (!match) continue;
+    // Anchor on the matched substring's line so the detail carries the
+    // citation literally without the surrounding 50 KB of fabricated
+    // finding text the model wrapped around it.
+    const idx = match.index;
+    const lineStart = text.lastIndexOf("\n", idx) + 1;
+    const lineEndRaw = text.indexOf("\n", idx);
+    const lineEnd = lineEndRaw === -1 ? text.length : lineEndRaw;
+    return text.slice(lineStart, lineEnd).trim();
+  }
+  return null;
+}
+
+/**
+ * Issue #109 — scan a Codex turn's `items[]` for command_execution
+ * outputs whose `aggregated_output` cites a known sandbox-init failure.
+ * The codex CLI's bwrap wrapper writes its initialization error to the
+ * spawned command's stderr, which the SDK surfaces in the item's
+ * `aggregated_output` field. The model then frequently fabricates a
+ * CHANGES_REQUESTED finding citing the failure as a "blocker"; this
+ * scan catches the failure before the fabricated finding is admitted.
+ *
+ * Returns the FIRST matching line found across `status: "failed"`
+ * command_execution items, or `null` if no failed item's output cites a
+ * sandbox-init failure.
+ *
+ * PR #112 false-positive guard (rounds 1-3): detection is gated SOLELY
+ * on `status === "failed"` items AND the signature regexes are
+ * line-anchored at column 0 (multiline `^`). Both gates are
+ * load-bearing because the Codex CLI's `handle_exec_command_end` maps
+ * any non-zero `exit_code` to `CommandExecutionStatus = "failed"`
+ * (`completed` only on `exit_code == 0`). So a legitimate `git diff
+ * --exit-code` that finds a diff arrives as `status: "failed",
+ * exit_code: 1` with diff content in `aggregated_output` — and when
+ * the PR under review touches this repo's pattern list, that diff
+ * content contains the bwrap citation prefixed by `+` / `-` / context
+ * whitespace. The line anchor ensures only stderr-shaped occurrences
+ * (citation at column 0, as real bwrap/landlock stderr always writes
+ * them) classify, not diff-prefixed source content. Without the
+ * anchor, real APPROVED / CHANGES_REQUESTED verdicts get silently
+ * erased from quorum on every PR that touches the pattern list. The
+ * SDK-thrown-Error path in `runOnce`'s catch block remains the
+ * secondary detection point for startup failures that prevent any
+ * command_execution stream from emitting.
+ *
+ * Items without an `aggregated_output` string are skipped. Pure
+ * function — exported for direct unit testing.
+ */
+export function detectSandboxInitFailureInItems(items: readonly unknown[]): string | null {
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    if (obj["type"] !== "command_execution") continue;
+    if (obj["status"] !== "failed") continue;
+    const output = obj["aggregated_output"];
+    if (typeof output !== "string") continue;
+    const match = detectSandboxInitFailure(output);
+    if (match !== null) return match;
+  }
+  return null;
+}
+
 /**
  * Issue #2103 — strict auth resolver. Validates `critic.auth` against
  * the codex adapter vocabulary ({@link CODEX_AUTH_MODES}) and surfaces
@@ -842,6 +983,44 @@ export class CodexSdkAdapter implements CriticAdapter {
     } catch (err) {
       const e = err as Error;
       const codeStr = extractCodexErrorCode(err);
+      // Issue #109 — when the codex CLI's sandbox primitive (bwrap,
+      // landlock) cannot initialize, the thrown Error's message
+      // typically carries the literal failure citation from the
+      // wrapped subprocess. Detect FIRST so we classify these as
+      // permanent + non-retryable + emit a distinct error code
+      // (`sandbox_init_failure`) instead of letting the generic
+      // transport_error path retry into the same failure 3x.
+      const sandboxCitation = detectSandboxInitFailure(e.message);
+      if (sandboxCitation !== null) {
+        options.emit?.({
+          ts: new Date().toISOString(),
+          event: "critic_run_error",
+          commit: packet.commit.sha,
+          criticId: critic.id,
+          adapter: this.id,
+          model: critic.model.id,
+          durationMs: Date.now() - startMs,
+          error: e.message,
+          status: "run_failure_permanent",
+          retryCount: attemptIdx,
+          errorCode: SANDBOX_INIT_FAILURE_CODE,
+          ...(thread.id !== null ? { runId: thread.id } : {}),
+        });
+        return {
+          kind: "permanent_failure",
+          errorCode: SANDBOX_INIT_FAILURE_CODE,
+          statusMessage: null,
+          result: buildErrorResult({
+            critic,
+            message:
+              `codex SDK sandbox-init failure (${SANDBOX_INIT_FAILURE_CODE}): ${sandboxCitation}`,
+            retryable: false,
+            code: SANDBOX_INIT_FAILURE_CODE,
+            retryCount: attemptIdx,
+            ...(thread.id !== null ? { runId: thread.id } : {}),
+          }),
+        };
+      }
       // Permanent codes are the same classification used by the Cursor
       // adapter: auth/quota/policy failures where retrying wastes
       // budget AND can mask the real fault.
@@ -883,6 +1062,78 @@ export class CodexSdkAdapter implements CriticAdapter {
         message: `codex SDK run failed: ${e.message}`,
         runId: thread.id,
         agentId: null,
+      };
+    }
+
+    // Issue #109 — scan the executed-command items for known environmental
+    // sandbox-init failure signatures (bwrap user namespace, landlock
+    // ruleset, etc.) BEFORE the parse path admits the model's fabricated
+    // CHANGES_REQUESTED verdict.
+    //
+    // Failure mode: when the codex CLI's bwrap sandbox cannot allocate a
+    // Linux user namespace (e.g., GKE Autopilot without SYS_ADMIN), every
+    // `command_execution` item the model issues to read the diff arrives
+    // with `status: "failed"` and the bwrap error citation in its
+    // `aggregated_output` (the spawned shell never exec'd because bwrap
+    // init died). The model, unable to actually read the diff, fabricates
+    // a `[blocker] contracts` CHANGES_REQUESTED finding citing the bwrap
+    // error as evidence. Other critics in the same quorum APPROVED, but
+    // veto-quorum semantics fail-closed on the fabricated verdict.
+    //
+    // PR #112 false-positive guard (codex + cursor blockers, rounds 1-3):
+    // detection is gated on `status === "failed"` items only AND the
+    // signature regexes are line-anchored (column 0). Both gates are
+    // load-bearing because the Codex CLI's `handle_exec_command_end`
+    // maps non-zero `exit_code` to `status: "failed"` — so a legitimate
+    // `git diff --exit-code` that finds a diff arrives as `failed` with
+    // diff content (including possible `+`/`-` lines carrying the bwrap
+    // literal verbatim) in `aggregated_output`. The line anchor ensures
+    // only stderr-shaped lines (citation at column 0) classify, not
+    // diff-prefixed source content. finalResponse is also NOT scanned —
+    // a real CHANGES_REQUESTED whose evidence quotes the canonical
+    // citation must pass through. Startup failures that prevent any
+    // command_execution from emitting are caught by the SDK-thrown-error
+    // path above (see the catch block's `detectSandboxInitFailure(e.message)`
+    // scan).
+    //
+    // Under `min-complete-quorum` with `required: false` on this critic,
+    // `status: error` is non-blocking; a `status: complete` +
+    // CHANGES_REQUESTED that doesn't reflect a real code issue blocks the
+    // merge queue. Degrade to error so the quorum aggregator can route
+    // around the failure (per docs/CONSUMER-ADOPTION.md's missing-key
+    // degrade-and-pass posture, extended to environmental failures).
+    const sandboxCitation = detectSandboxInitFailureInItems(turn.items);
+    if (sandboxCitation !== null) {
+      options.emit?.({
+        ts: new Date().toISOString(),
+        event: "critic_run_error",
+        commit: packet.commit.sha,
+        criticId: critic.id,
+        adapter: this.id,
+        model: critic.model.id,
+        durationMs: Date.now() - startMs,
+        error: `sandbox-init failure cited in command_execution: ${sandboxCitation}`,
+        status: "run_failure_permanent",
+        retryCount: attemptIdx,
+        errorCode: SANDBOX_INIT_FAILURE_CODE,
+        ...(thread.id !== null ? { runId: thread.id } : {}),
+      });
+      return {
+        kind: "permanent_failure",
+        errorCode: SANDBOX_INIT_FAILURE_CODE,
+        statusMessage: null,
+        result: buildErrorResult({
+          critic,
+          message:
+            `codex sandbox-init failure (${SANDBOX_INIT_FAILURE_CODE}) cited in command_execution: ` +
+            `${sandboxCitation}. The CLI's underlying sandbox primitive could not initialize, ` +
+            `so the model could not read the diff. Any verdict in this run is fabricated from ` +
+            `the unread diff and is discarded; routing as status:error so quorum can degrade.`,
+          retryable: false,
+          code: SANDBOX_INIT_FAILURE_CODE,
+          retryCount: attemptIdx,
+          ...(thread.id !== null ? { runId: thread.id } : {}),
+        }),
       };
     }
 

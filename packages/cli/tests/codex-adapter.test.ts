@@ -34,6 +34,9 @@ import {
   CODEX_SDK_ADAPTER_ID,
   CodexSdkAdapter,
   DEFAULT_SANDBOX_MODE,
+  SANDBOX_INIT_FAILURE_CODE,
+  detectSandboxInitFailure,
+  detectSandboxInitFailureInItems,
   resolveCodexSandboxMode,
   type CodexClient,
   type CodexSandboxMode,
@@ -1530,4 +1533,662 @@ test("CodexSandboxMode type alias matches the runtime enum (compile-time pact)",
   // assertion redundantly checks the list shape.
   const m: CodexSandboxMode = "read-only";
   expect_truthy((CODEX_SANDBOX_MODES as readonly string[]).includes(m));
+});
+
+// ---------------------------------------------------------------------------
+// Issue #109 — sandbox-init failure detection + degrade to status:error
+//
+// When the codex CLI's underlying sandbox primitive (bwrap, landlock)
+// cannot initialize (e.g., GKE Autopilot without SYS_ADMIN, container
+// OOM, etc.), every shell command the model executes returns with the
+// environmental error citation in its `aggregated_output`. The model,
+// unable to actually read the diff, fabricates a `[blocker] contracts`
+// CHANGES_REQUESTED finding citing the failure. Other critics in the
+// same quorum APPROVED — but veto-quorum semantics fail-closed on the
+// codex's bogus verdict.
+//
+// Fix: detect environmental sandbox-init failures and emit
+// `status: error` (with the failure detail) instead of `status: complete`
+// with the fake finding. Under `min-complete-quorum` with
+// `required: false` on codex, `error` is non-blocking; fake
+// CHANGES_REQUESTED blocks the merge queue.
+//
+// Detection is CONSERVATIVE — only KNOWN environmental error signatures
+// match (see SANDBOX_INIT_FAILURE_PATTERNS in src/adapters/codex-sdk.ts).
+// Arbitrary stderr does NOT classify as environmental — that would
+// silently swallow real findings.
+
+const BWRAP_NAMESPACE_FAILURE = "bwrap: No permissions to create a new namespace";
+const BWRAP_SECCOMP_FAILURE = "bwrap: Setting up seccomp failed";
+const BWRAP_UID_FAILURE = "bwrap: setting up uid map: Permission denied";
+const LANDLOCK_FAILURE = "landlock_create_ruleset: Operation not permitted";
+
+test("detectSandboxInitFailure matches the canonical bwrap namespace citation", () => {
+  expect_eq(
+    detectSandboxInitFailure(BWRAP_NAMESPACE_FAILURE),
+    BWRAP_NAMESPACE_FAILURE,
+    "the bwrap namespace failure from issue #109 must trigger detection",
+  );
+});
+
+test("detectSandboxInitFailure matches all four canonical environmental signatures", () => {
+  for (const citation of [
+    BWRAP_NAMESPACE_FAILURE,
+    BWRAP_SECCOMP_FAILURE,
+    BWRAP_UID_FAILURE,
+    LANDLOCK_FAILURE,
+  ]) {
+    expect_truthy(
+      detectSandboxInitFailure(citation),
+      `expected detection for: ${citation}`,
+    );
+  }
+});
+
+test("detectSandboxInitFailure returns the matched line trimmed from surrounding stderr context", () => {
+  // Real bwrap/landlock stderr writes the citation at column 0 of its
+  // own line, possibly surrounded by other stderr lines from the
+  // wrapping shell. The detector returns just the matched line so the
+  // error envelope's detail message stays focused.
+  const wrapped =
+    "/bin/zsh: starting subprocess\n" +
+    `${BWRAP_NAMESPACE_FAILURE}\n` +
+    "/bin/zsh: subprocess exited with code 1\n";
+  expect_eq(
+    detectSandboxInitFailure(wrapped),
+    BWRAP_NAMESPACE_FAILURE,
+    "detector must return the trimmed matched LINE, not the entire blob",
+  );
+});
+
+test("detectSandboxInitFailure REJECTS bwrap citation embedded inside a model-fabricated annotation (indented / wrapped — not column 0)", () => {
+  // PR #112 round-3 conservatism: model-wrapped or indented occurrences
+  // of the bwrap citation are NOT environmental evidence. Real bwrap
+  // stderr writes the citation at column 0; an indented occurrence is
+  // model-fabricated context that the detector MUST NOT classify as
+  // sandbox_init_failure. Otherwise the model can poison the detector
+  // by quoting the citation inside its own annotations.
+  const fabricated =
+    "The attempted read commands failed with the following output:\n" +
+    `   ${BWRAP_NAMESPACE_FAILURE}\n` +
+    "I therefore cannot verify the contracts surface and must reject.\n";
+  expect_eq(
+    detectSandboxInitFailure(fabricated),
+    null,
+    "indented (non-column-0) bwrap citation MUST NOT classify — only real stderr (column 0) matches",
+  );
+});
+
+test("detectSandboxInitFailure returns null on benign text that mentions 'bwrap' or 'namespace' incidentally", () => {
+  // Anchored regexes — arbitrary diff content that happens to mention
+  // 'namespace' or 'bwrap' in passing must NOT trip detection. Real
+  // findings citing K8s namespaces, TypeScript namespaces, bwrap config
+  // discussions, etc. must pass through as legitimate findings.
+  for (const benign of [
+    "The K8s namespace `prod-1` does not exist.",
+    "Consider extracting this into a TypeScript namespace.",
+    "The new bwrap config requires CAP_SYS_ADMIN.",
+    "ENOENT spawn bwrap — install bubblewrap first.",
+    "Operation not permitted on /etc/shadow",
+    "Permission denied reading /var/log/secure",
+    "",
+    "ok",
+  ]) {
+    expect_eq(
+      detectSandboxInitFailure(benign),
+      null,
+      `benign text should NOT match: ${benign}`,
+    );
+  }
+});
+
+test("detectSandboxInitFailureInItems scans command_execution.aggregated_output across items", () => {
+  // The bwrap failure surfaces in the `aggregated_output` of every
+  // command_execution item the model issues. The detector walks the
+  // turn's items[] and returns the first matching citation found.
+  // Failure items use `status: "failed"` — the SDK's explicit signal
+  // that it could not run the command (see PR #112 round-2 guard).
+  const items = [
+    { id: "item_0", type: "agent_message", text: "let me read the diff" },
+    {
+      id: "item_1",
+      type: "command_execution",
+      command: "/bin/zsh -lc 'git diff HEAD~1'",
+      aggregated_output: BWRAP_NAMESPACE_FAILURE,
+      status: "failed",
+    },
+    {
+      id: "item_2",
+      type: "command_execution",
+      command: "/bin/zsh -lc 'cat README.md'",
+      aggregated_output: BWRAP_NAMESPACE_FAILURE,
+      status: "failed",
+    },
+  ];
+  expect_eq(detectSandboxInitFailureInItems(items), BWRAP_NAMESPACE_FAILURE);
+});
+
+test("detectSandboxInitFailureInItems returns null when no command_execution item cites a failure", () => {
+  const items = [
+    { id: "item_0", type: "agent_message", text: "approved" },
+    {
+      id: "item_1",
+      type: "command_execution",
+      command: "/bin/zsh -lc 'git diff HEAD~1'",
+      aggregated_output: "+ added line\n- removed line\n",
+      exit_code: 0,
+      status: "completed",
+    },
+  ];
+  expect_eq(detectSandboxInitFailureInItems(items), null);
+});
+
+test("detectSandboxInitFailureInItems skips malformed items (defense in depth)", () => {
+  // Items with unexpected shapes (null, missing fields, non-string
+  // aggregated_output) must not crash the detector.
+  const items = [
+    null,
+    "stringy",
+    { type: "command_execution" }, // missing aggregated_output
+    { type: "command_execution", aggregated_output: 42 }, // wrong type
+    { type: "other_type", aggregated_output: BWRAP_NAMESPACE_FAILURE }, // wrong type
+  ];
+  expect_eq(detectSandboxInitFailureInItems(items as unknown[]), null);
+});
+
+test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with FAILED command items → adapter degrades to status:error (issue #109)", async () => {
+  // This is the canonical issue #109 scenario: a hosted W3 worker's
+  // bwrap sandbox fails at startup, every diff-read attempt comes back
+  // with `status: "failed"` and the bwrap citation in aggregated_output,
+  // and the model fabricates a "blocker" finding citing the unread diff.
+  // The adapter MUST detect the environmental failure FROM THE FAILED
+  // COMMAND ITEMS (not from finalResponse alone, per PR #112 codex
+  // blocker — see PR #112 tests below) and emit status:error so the
+  // quorum aggregator can degrade per policy.
+  const fabricatedFindingJson = JSON.stringify({
+    status: "complete",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: false,
+    summary: "Cannot verify contracts — diff is unreadable.",
+    findings: [
+      {
+        severity: "blocker",
+        category: "contracts",
+        file: "README.md",
+        line: 138,
+        evidence:
+          `the attempted read commands failed with \`${BWRAP_NAMESPACE_FAILURE}\``,
+        impact: "cannot verify the contracts surface",
+        requiredFix: "rerun in an environment with a working sandbox",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: fabricatedFindingJson,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff HEAD~1'",
+            aggregated_output: BWRAP_NAMESPACE_FAILURE,
+            status: "failed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
+  });
+  expect_eq(
+    result.status,
+    "error",
+    "MUST degrade to status:error instead of admitting the fabricated CHANGES_REQUESTED",
+  );
+  expect_eq(result.verdict, undefined, "no verdict on error path");
+  expect_eq(result.findings.length, 0, "no findings on error path");
+  expect_eq(
+    result.error?.code,
+    SANDBOX_INIT_FAILURE_CODE,
+    "error envelope MUST carry the sandbox_init_failure code so operators can grep _runs.ndjson",
+  );
+  expect_eq(
+    result.error?.retryable,
+    false,
+    "sandbox init failure is environmental — retrying inside the same broken container wastes budget",
+  );
+  expect_match(
+    result.error?.message ?? "",
+    /bwrap: No permissions to create a new namespace/,
+    "error detail MUST cite the literal environmental error so operators can debug the container",
+  );
+  const errEvent = events.find(
+    (e) => e.event === "critic_run_error" && e.errorCode === SANDBOX_INIT_FAILURE_CODE,
+  );
+  expect_truthy(
+    errEvent,
+    "telemetry MUST emit a critic_run_error tagged sandbox_init_failure for runbook grep",
+  );
+});
+
+test("review: bwrap citation in command_execution.aggregated_output → adapter degrades to status:error even if finalResponse looks clean", async () => {
+  // Stronger variant of the issue #109 scenario: the model might emit
+  // a syntactically-clean JSON envelope (e.g., approved-looking final
+  // response after partial recovery) while the underlying tool calls
+  // returned bwrap citations in their outputs. The item scan is the
+  // primary detection point — if any command the model issued failed
+  // with a sandbox-init citation, the entire run cannot be trusted.
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: APPROVED_RESPONSE_JSON,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff'",
+            aggregated_output: BWRAP_NAMESPACE_FAILURE,
+            status: "failed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "error");
+  expect_eq(result.error?.code, SANDBOX_INIT_FAILURE_CODE);
+  expect_match(result.error?.message ?? "", /command_execution/);
+});
+
+test("review: SDK throws Error whose message cites bwrap → adapter classifies as permanent sandbox_init_failure (no retries)", async () => {
+  // Alternative failure shape: the SDK itself raises an Error with the
+  // bwrap citation in `.message` (e.g., subprocess startup detects the
+  // bwrap failure before any command_execution stream is emitted). The
+  // adapter must classify as permanent + non-retryable + tag the
+  // sandbox_init_failure code — NOT retry into the same broken
+  // container 3x and waste 20s of budget.
+  let attemptCount = 0;
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({
+    run: async () => {
+      attemptCount++;
+      throw new Error(
+        `codex CLI subprocess died:\n${BWRAP_NAMESPACE_FAILURE}\n  at codex_sandbox::init`,
+      );
+    },
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
+  });
+  expect_eq(result.status, "error");
+  expect_eq(result.error?.code, SANDBOX_INIT_FAILURE_CODE);
+  expect_eq(result.error?.retryable, false);
+  expect_eq(
+    attemptCount,
+    1,
+    "sandbox_init_failure is permanent — no retries against the same broken container",
+  );
+  const errEvent = events.find(
+    (e) => e.event === "critic_run_error" && e.errorCode === SANDBOX_INIT_FAILURE_CODE,
+  );
+  expect_truthy(errEvent, "telemetry must tag the sandbox_init_failure code");
+});
+
+test("review: real CHANGES_REQUESTED with normal output → status:complete + verdict preserved (negative test — no false positives)", async () => {
+  // The conservatism guarantee: a real CHANGES_REQUESTED with a real
+  // finding that happens to mention environmental words (namespace,
+  // permission, etc.) MUST flow through to status:complete with the
+  // verdict intact. Misclassifying a real finding as a sandbox-init
+  // failure would let real bugs through — strictly worse than the
+  // pre-fix behavior.
+  const realFindingJson = JSON.stringify({
+    status: "complete",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: false,
+    summary: "Real finding: undefined namespace prefix in K8s config.",
+    findings: [
+      {
+        severity: "blocker",
+        category: "config",
+        file: "deploy/prod.yaml",
+        line: 42,
+        evidence:
+          "namespace `prod-1` referenced but not declared; container will be denied permission",
+        impact: "deploy will fail",
+        requiredFix: "add the namespace declaration",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: realFindingJson,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'cat deploy/prod.yaml'",
+            aggregated_output: "namespace: prod-1\n",
+            exit_code: 0,
+            status: "completed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(
+    result.status,
+    "complete",
+    "real CHANGES_REQUESTED must NOT be misclassified as environmental",
+  );
+  expect_eq(result.verdict, "CHANGES_REQUESTED");
+  expect_eq(result.findings.length, 1);
+  expect_eq(result.findings[0]?.severity, "blocker");
+});
+
+test("review: APPROVED with clean output → status:complete (negative test — happy path unaffected)", async () => {
+  // Sanity baseline: an APPROVED response with no bwrap citations
+  // anywhere must remain status:complete with the verdict intact. This
+  // protects against regressions where the detector accidentally
+  // triggers on benign input.
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: APPROVED_RESPONSE_JSON,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff'",
+            aggregated_output: "+ added line\n",
+            exit_code: 0,
+            status: "completed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.verdict, "APPROVED");
+});
+
+test("SANDBOX_INIT_FAILURE_CODE is the literal 'sandbox_init_failure' (operator-facing contract)", () => {
+  // Operators grep _runs.ndjson for `errorCode=sandbox_init_failure`
+  // to distinguish container/sandbox failures from upstream OpenAI
+  // outages. The literal value is part of the operator contract —
+  // changing it requires a coordinated rename in any runbook that
+  // greps for it.
+  expect_eq(SANDBOX_INIT_FAILURE_CODE, "sandbox_init_failure");
+});
+
+// ---------------------------------------------------------------------------
+// PR #112 — false-positive hardening per codex blocker on PR #112.
+//
+// Original PR #112 scanned `aggregated_output` of every command_execution
+// item AND `turn.finalResponse` for the canonical bwrap/landlock strings
+// without gating on command success or distinguishing diff content from
+// stderr. That misclassifies (a) a successful `git diff` / `cat` / `rg`
+// whose stdout contains the literal sandbox citation (e.g., this very test
+// fixture, source comments, docs) and (b) a model's real CHANGES_REQUESTED
+// finding that quotes the canonical citation in its `evidence` block.
+//
+// Conservatism contract (PR #112 round-2 tightening): an environmental
+// sandbox-init failure is signaled SOLELY by a command_execution item
+// with `status: "failed"` whose captured output cites the failure. The
+// `exit_code !== 0` branch was removed in round 2: a `git diff
+// --exit-code` (or any command that uses non-zero exit for expected
+// control flow) returns 1 with diff content in stdout, and that diff
+// content can legitimately include the bwrap literal (e.g., reviewing
+// this very source file's pattern list). Successful stdout, non-zero
+// exit with `status: "completed"`, and model finalResponse text are NOT
+// detection signals — the SDK-thrown-error path (see runOnce's catch
+// block) still catches startup failures that prevent any
+// command_execution stream from emitting.
+
+test("detectSandboxInitFailureInItems IGNORES successful command_execution whose stdout contains the literal bwrap string", () => {
+  // A `git diff HEAD~1 -- packages/cli/src/adapters/codex-sdk.ts`
+  // succeeds (exit_code 0) and prints the source's literal bwrap citation
+  // in its stdout (because the pattern list lives in that file). Under
+  // the original logic this was misclassified as sandbox_init_failure,
+  // erasing real APPROVED / CHANGES_REQUESTED verdicts from quorum.
+  const items = [
+    {
+      id: "item_0",
+      type: "command_execution",
+      command: "/bin/zsh -lc 'git diff HEAD~1 -- packages/cli/src/adapters/codex-sdk.ts'",
+      aggregated_output: `+  /${BWRAP_NAMESPACE_FAILURE}/i,\n+  /bwrap:\\s+Setting up seccomp failed/i,\n`,
+      exit_code: 0,
+      status: "completed",
+    },
+  ];
+  expect_eq(
+    detectSandboxInitFailureInItems(items),
+    null,
+    "successful command stdout MUST NOT classify as sandbox_init_failure even when it contains the literal citation",
+  );
+});
+
+test("detectSandboxInitFailureInItems IGNORES in_progress command_execution (no exit_code yet) whose partial output contains the bwrap string", () => {
+  // The SDK emits in_progress events as a command streams; partial
+  // stdout containing the citation cannot be classified as a failure
+  // until the command exits. Only the terminal exit_code matters.
+  const items = [
+    {
+      id: "item_0",
+      type: "command_execution",
+      command: "/bin/zsh -lc 'cat docs/CONSUMER-ADOPTION.md'",
+      aggregated_output: `Issue #109 — bwrap citation: ${BWRAP_NAMESPACE_FAILURE}\n`,
+      exit_code: null,
+      status: "in_progress",
+    },
+  ];
+  expect_eq(
+    detectSandboxInitFailureInItems(items),
+    null,
+    "in_progress command MUST NOT classify until the terminal exit_code arrives",
+  );
+});
+
+test("detectSandboxInitFailureInItems IGNORES git diff --exit-code style commands (status: 'failed', exit_code: 1) whose diff stdout contains the literal bwrap citation as a +/- diff line (PR #112 round-3 cursor blocker — production scenario)", () => {
+  // PRODUCTION SCENARIO per `@openai/codex-sdk@0.130.0` types and the
+  // Codex CLI's `handle_exec_command_end` mapping: non-zero `exit_code`
+  // → `CommandExecutionStatus = "failed"` (the SDK only emits "completed"
+  // when `exit_code == 0`). So a real `git diff --exit-code` that finds
+  // a diff arrives as `{ status: "failed", exit_code: 1, ... }` with
+  // diff content in `aggregated_output` — that diff content may include
+  // the canonical bwrap citation as a `+`/`-` line when the PR under
+  // review touches this repo's pattern list. The status-gate alone is
+  // insufficient because the SDK marks legitimate non-zero exits as
+  // "failed"; the regex must additionally line-anchor so diff-prefixed
+  // (`+`/`-`/whitespace) occurrences of the citation do NOT trip
+  // detection. Without the anchor this misclassifies the run as
+  // sandbox_init_failure and silently erases real APPROVED /
+  // CHANGES_REQUESTED verdicts from quorum.
+  const items = [
+    {
+      id: "item_0",
+      type: "command_execution",
+      command: ["git", "diff", "--exit-code", "--", "packages/cli/src/adapters/codex-sdk.ts"],
+      aggregated_output:
+        `@@ -570,4 +570,4 @@\n+  /${BWRAP_NAMESPACE_FAILURE}/i,\n+  /bwrap:\\s+Setting up seccomp failed/i,\n`,
+      exit_code: 1,
+      status: "failed",
+    },
+  ];
+  expect_eq(
+    detectSandboxInitFailureInItems(items),
+    null,
+    "status:'failed' with diff content carrying the bwrap citation as a +/- diff line MUST NOT classify — the regex MUST line-anchor so only stderr-shaped lines (citation at column 0) match",
+  );
+});
+
+test("detectSandboxInitFailureInItems IGNORES source/diff content where bwrap appears as a leading-whitespace (context) line — line-anchor must require column 0", () => {
+  // Context-diff lines (no `+`/`-` prefix, just a leading space) and
+  // indented source occurrences of the bwrap citation likewise must
+  // NOT trip detection. The anchor must reject ANY non-bwrap character
+  // before the citation on its line.
+  const items = [
+    {
+      id: "item_0",
+      type: "command_execution",
+      command: ["grep", "-rn", "bwrap", "packages/cli/src"],
+      aggregated_output:
+        `packages/cli/src/adapters/codex-sdk.ts:571:  /${BWRAP_NAMESPACE_FAILURE}/i,\n` +
+        ` ${BWRAP_NAMESPACE_FAILURE}\n`,
+      exit_code: 1,
+      status: "failed",
+    },
+  ];
+  expect_eq(
+    detectSandboxInitFailureInItems(items),
+    null,
+    "indented / context-prefixed occurrences MUST NOT match the line-anchored regex",
+  );
+});
+
+test("detectSandboxInitFailureInItems DETECTS bwrap citation when command_execution status is 'failed' (SDK could not run it)", () => {
+  // Alternative failure shape: the SDK marks the item `status: "failed"`
+  // (it never even ran the command — e.g., bwrap startup died before
+  // exec). No `exit_code` is set in this case. The status field must also
+  // gate detection so this path is still caught.
+  const items = [
+    {
+      id: "item_0",
+      type: "command_execution",
+      command: "/bin/zsh -lc 'cat README.md'",
+      aggregated_output: BWRAP_NAMESPACE_FAILURE,
+      status: "failed",
+    },
+  ];
+  expect_eq(
+    detectSandboxInitFailureInItems(items),
+    BWRAP_NAMESPACE_FAILURE,
+    "status:'failed' command MUST classify even without exit_code",
+  );
+});
+
+test("review: real CHANGES_REQUESTED finding whose evidence QUOTES the canonical bwrap string → status:complete + verdict preserved (PR #112 codex blocker)", async () => {
+  // A model's legitimate finding may quote the canonical citation
+  // verbatim — e.g., reviewing source / docs / tests that ship the
+  // pattern list, or a reviewer commenting on issue #109 itself.
+  // finalResponse is NOT a sandbox-init detection signal: an APPROVED
+  // or CHANGES_REQUESTED verdict from the model with bwrap-quoting
+  // evidence MUST pass through unchanged.
+  const findingQuotingBwrapJson = JSON.stringify({
+    status: "complete",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: false,
+    summary: "Source includes the canonical bwrap citation in a regex literal — verified intentional.",
+    findings: [
+      {
+        severity: "blocker",
+        category: "naming",
+        file: "packages/cli/src/adapters/codex-sdk.ts",
+        line: 571,
+        evidence: `regex literal at line 571: /${BWRAP_NAMESPACE_FAILURE}/i — verify intent`,
+        impact: "no functional impact; pattern list is correctly anchored",
+        requiredFix: "no action required; this is the canonical reference list per #109",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: findingQuotingBwrapJson,
+        // No command_execution items — model produced the finding from
+        // the supplied diff text alone (the common case under read-only
+        // sandbox where the diff is in the prompt).
+        items: [],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(
+    result.status,
+    "complete",
+    "finalResponse is NOT a sandbox-init signal — a real finding quoting bwrap MUST pass through",
+  );
+  expect_eq(result.verdict, "CHANGES_REQUESTED", "verdict preserved");
+  expect_eq(result.findings.length, 1, "finding preserved");
+  expect_eq(result.findings[0]?.severity, "blocker");
+});
+
+test("review: successful diff-reading command whose stdout CONTAINS the literal bwrap citation → status:complete + verdict preserved (PR #112 codex blocker)", async () => {
+  // The PR diff under review adds the literal bwrap string in source
+  // and tests. A successful `git diff` of that PR returns the literal
+  // string in stdout (exit_code 0). The original logic falsely
+  // classified this as sandbox_init_failure, erasing real verdicts.
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: APPROVED_RESPONSE_JSON,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff origin/main -- packages/cli/src/adapters/codex-sdk.ts'",
+            aggregated_output:
+              `@@ -570,4 +570,4 @@\n+  /${BWRAP_NAMESPACE_FAILURE}/i,\n+  /bwrap:\\s+Setting up seccomp failed/i,\n`,
+            exit_code: 0,
+            status: "completed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+  });
+  expect_eq(
+    result.status,
+    "complete",
+    "successful diff stdout MUST NOT degrade the run — that erases real APPROVED verdicts from quorum",
+  );
+  expect_eq(result.verdict, "APPROVED");
 });
