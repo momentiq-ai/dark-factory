@@ -72,7 +72,7 @@ import {
 // path). Phase B-PUBLISH-pkg (cycle 331.1, alpha.5): see
 // https://github.com/momentiq-ai/dark-factory/pull/<this-pr>.
 import { loadAgentReviewConfig, type LoadedConfig } from "./policy/config.js";
-import { buildCriticReport } from "./report.js";
+import { buildCriticReport, buildZeroEvidenceDiagnostic } from "./report.js";
 import { runReview, runCommitGate } from "./runner.js";
 import { resolveArtifactDir, telemetryPath } from "./paths.js";
 // Phase F-LOCAL — hook-facing subcommand support.
@@ -80,7 +80,7 @@ import {
   loadDopplerBootstrapEnv,
   DEFAULT_BOOTSTRAP_ALLOWLIST,
 } from "./doppler-bootstrap.js";
-import { runDoctor } from "./doctor.js";
+import { classifyDoctorState, runDoctor } from "./doctor.js";
 import { resolveProfile } from "./policy/profile.js";
 import {
   commitsForPushUpdate,
@@ -791,6 +791,23 @@ async function cmdReview(rest: string[]): Promise<number> {
       telemetry: sink,
       profileName,
     });
+    // Issue #51 — loud post-completion diagnostic for zero-evidence
+    // reviews. When every critic errored (no completed verdicts), the
+    // gate will silently block at push time and operators reach for
+    // AGENT_REVIEW_BYPASS as the workaround. Surface the failure here
+    // so the operator sees it at commit time, with a specific
+    // remediation per critic and a pointer to the artifact JSON for
+    // deeper triage. The helper is pure (no I/O); the only side effect
+    // is the stderr write below.
+    const configHasProfiles = hasProfileEntry(loaded.config, profileName);
+    const diagnostic = buildZeroEvidenceDiagnostic(
+      outcome.artifact,
+      outcome.paths.jsonPath,
+      { configHasProfiles },
+    );
+    if (diagnostic.isZeroEvidence) {
+      process.stderr.write(diagnostic.stderr);
+    }
     if (foreground) {
       process.stdout.write(
         `df review: ${outcome.artifact.gateVerdict ?? "complete"} for ${outcome.artifact.commit.slice(0, 12)}\n`,
@@ -805,6 +822,23 @@ async function cmdReview(rest: string[]): Promise<number> {
     process.stderr.write(`df review failed: ${(err as Error).message}\n`);
     return 1;
   }
+}
+
+// Issue #51 — the post-completion diagnostic needs to know whether
+// the loaded config has the requested profile so it can prepend a
+// "add 'profiles' to .agent-review/config.json" remediation when the
+// seed config is the broken sage-blueprint shape (`profiles: {}`).
+// Returns `true` when both a profiles map exists AND the requested
+// name is present; `false` otherwise. (Back-compat configs with no
+// profiles map AT ALL also return `false`, which is the correct
+// signal — the diagnostic surfaces the seed remediation in both
+// cases.)
+function hasProfileEntry(
+  config: LoadedConfig["config"],
+  profileName: string,
+): boolean {
+  if (!config.profiles) return false;
+  return config.profiles[profileName] !== undefined;
 }
 
 // ----- df gate-push -----
@@ -943,6 +977,16 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     bootstrap,
     profileName,
   });
+  // Issue #51 — surface the 3-state triage classification FIRST, before
+  // the per-check INFO/OK/FAIL block. The headline tells the operator
+  // whether they're in config_missing / auth_pending / ok before they
+  // have to parse per-critic noise.
+  const triage = classifyDoctorState({
+    config: loaded.config,
+    profileName,
+    perCriticChecks: checks,
+  });
+  process.stdout.write(`${triage.line}\n`);
   let allOk = true;
   for (const c of checks) {
     const label = c.passed ? "OK" : c.optional ? "INFO" : "FAIL";

@@ -401,6 +401,185 @@ export function buildCriticReport(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Issue #51 — loud post-completion diagnostic for zero-evidence reviews.
+//
+// When `df review` finishes with 0/N critics producing evidence (every
+// critic errored), the user must see the failure mode IMMEDIATELY at
+// post-commit time, not at push time. Without this, the bypass mechanism
+// becomes the path of least resistance (the audit-trail shows the same
+// "env-config blocker" reason accumulating on every push).
+//
+// `buildZeroEvidenceDiagnostic` is the pure helper behind the stderr block
+// `cmdReview` writes after `runReview` returns. It:
+//
+//   1. Detects the zero-evidence state (completedCount === 0 AND
+//      totalCount > 0). Zero-critic configs (empty profile) are a
+//      different failure mode handled at config-load time.
+//   2. Classifies each critic's error by inspecting `error.code` first,
+//      then falling back to a regex match against `error.message`.
+//      Classifications: `no_auth_codex_unpinned`, `no_auth_env_missing`,
+//      `transport_error`, `schema_violation`, or `unknown`.
+//   3. Maps each classification to a SPECIFIC remediation hint. When
+//      classification fails, falls back to a generic "run df doctor"
+//      pointer so the operator still has somewhere to go.
+//   4. Always cites the artifact JSON path so the operator can dig
+//      deeper.
+//
+// Pure: no I/O, no env reads, no time dependence. Returns the formatted
+// stderr block as a string + the `isZeroEvidence` boolean so the caller
+// (post-completion code path in cli.ts) can decide whether to write
+// anything at all.
+// ---------------------------------------------------------------------------
+
+export interface ZeroEvidenceDiagnostic {
+  /**
+   * True when completedCount === 0 AND totalCount > 0. The caller writes
+   * `stderr` to process.stderr when this is true and skips otherwise.
+   */
+  isZeroEvidence: boolean;
+  /**
+   * The formatted stderr block, including the leading "df: review
+   * COMPLETED..." headline, per-critic remediation lines, and the
+   * "details:" footer. Empty string when `isZeroEvidence` is false.
+   */
+  stderr: string;
+}
+
+export interface ZeroEvidenceOptions {
+  /**
+   * Hint from the caller that the loaded config has no `profiles` block
+   * (or the requested profile name is missing from it). When false, the
+   * diagnostic surfaces a top-line remediation pointing the operator at
+   * `.agent-review/config.json`. When undefined, no top-line config hint
+   * is added — only per-critic hints are emitted.
+   */
+  configHasProfiles?: boolean;
+}
+
+type ZeroEvidenceClass =
+  | "no_auth_codex_unpinned"
+  | "no_auth_env_missing"
+  | "transport_error"
+  | "schema_violation"
+  | "unknown";
+
+interface ClassifiedCritic {
+  criticId: string;
+  classification: ZeroEvidenceClass;
+  remediation: string;
+}
+
+export function buildZeroEvidenceDiagnostic(
+  artifact: ReviewArtifact,
+  jsonPath: string,
+  options: ZeroEvidenceOptions = {},
+): ZeroEvidenceDiagnostic {
+  const results = artifact.criticResults;
+  const totalCount = results.length;
+  const completedCount = results.filter((r) => r.status === "complete").length;
+  const isZeroEvidence = totalCount > 0 && completedCount === 0;
+  if (!isZeroEvidence) {
+    return { isZeroEvidence, stderr: "" };
+  }
+
+  const classified = results.map((r) => classifyCritic(r));
+
+  const lines: string[] = [
+    `df: review COMPLETED with 0/${totalCount} critics producing evidence — gate will block at push time.`,
+    `df: fix one of:`,
+  ];
+
+  // Top-line config remediation when the caller signaled the profiles
+  // block is missing entirely (sage-blueprint seed bug shape).
+  if (options.configHasProfiles === false) {
+    lines.push(
+      `df:   - add a 'profiles' block to .agent-review/config.json (mirror sage3c's pattern; see docs/CONSUMER-ADOPTION.md)`,
+    );
+  }
+
+  // Per-critic remediation hints. Use a Set to dedupe identical hints
+  // (e.g., two critics from the same family both missing the same env).
+  const emittedHints = new Set<string>();
+  for (const c of classified) {
+    const hint = `df:   - ${c.criticId}: ${c.remediation}`;
+    if (emittedHints.has(hint)) continue;
+    emittedHints.add(hint);
+    lines.push(hint);
+  }
+
+  lines.push(`df: details: ${jsonPath}`);
+
+  return {
+    isZeroEvidence,
+    stderr: `${lines.join("\n")}\n`,
+  };
+}
+
+function classifyCritic(result: CriticResult): ClassifiedCritic {
+  const message = result.error?.message ?? "";
+  const code = result.error?.code ?? "";
+
+  // Codex "no auth source pinned" — the documented failure when the
+  // profile lacks the per-critic `auth` entry. The codex-sdk adapter
+  // raises this with a stable message prefix.
+  if (/no auth source pinned/i.test(message)) {
+    return {
+      criticId: result.criticId,
+      classification: "no_auth_codex_unpinned",
+      remediation:
+        `pin profiles.<name>.auth["${result.criticId}"] to "chatgpt" (and run \`codex login\`) or "api" (and set CODEX_API_KEY)`,
+    };
+  }
+
+  // Env-var-missing — the cursor/gemini/grok/codex API-key paths use a
+  // stable "<KEY> is not set" message in their auth probes.
+  const envMatch = message.match(/([A-Z][A-Z0-9_]*_API_KEY|[A-Z][A-Z0-9_]*_TOKEN)\s+is\s+not\s+set/);
+  if (envMatch && envMatch[1]) {
+    const envName = envMatch[1];
+    return {
+      criticId: result.criticId,
+      classification: "no_auth_env_missing",
+      remediation: `export ${envName}=... (or add it to your Doppler scope)`,
+    };
+  }
+
+  // Transport / capacity errors — these surface as SDK error codes
+  // (`rate_limited`, `capacity_exceeded`, `timeout`, `service_unavailable`).
+  if (
+    /^(rate_limited|capacity_exceeded|timeout|service_unavailable|server_error|unavailable)$/i.test(
+      code,
+    ) ||
+    /capacity_exceeded|rate.?limit|service unavailable/i.test(message)
+  ) {
+    return {
+      criticId: result.criticId,
+      classification: "transport_error",
+      remediation: `transport/rate-limit error — retry the commit; if persistent, check vendor status`,
+    };
+  }
+
+  // Schema violations — adapter returned data that doesn't match the
+  // expected schema (typically after a vendor model bump).
+  if (
+    /^(schema_violation|invalid_response|malformed_response)$/i.test(code) ||
+    /schema_violation|malformed verdict|malformed response/i.test(message)
+  ) {
+    return {
+      criticId: result.criticId,
+      classification: "schema_violation",
+      remediation: `schema violation — upgrade the @momentiq/dark-factory-cli adapter version`,
+    };
+  }
+
+  // Generic fallback — point the operator at `df doctor` for triage.
+  return {
+    criticId: result.criticId,
+    classification: "unknown",
+    remediation: `unclassified error — run \`df doctor --profile <name>\` for per-critic triage`,
+  };
+}
+
 export interface WriteResult {
   jsonPath: string;
   // null when markdown render or write failed; the JSON is still authoritative.

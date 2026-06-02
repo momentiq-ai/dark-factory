@@ -39,7 +39,10 @@ import {
   applyProfileAuth,
   resolveProfileWithConfig,
 } from "./policy/profile.js";
-import type { DoctorCheck } from "@momentiq/dark-factory-schemas";
+import type {
+  AgentReviewConfig,
+  DoctorCheck,
+} from "@momentiq/dark-factory-schemas";
 
 const HOOK_FILES = ["post-commit", "pre-push"] as const;
 
@@ -372,4 +375,137 @@ function canCreateDir(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #51 — `df doctor` 3-state triage classification.
+//
+// `cmdDoctor` today emits a flat list of per-check INFO/OK/FAIL lines.
+// When the underlying state is "no profiles block at all" or "profile
+// missing", the headline failure is buried under per-critic noise.
+// `classifyDoctorState` distinguishes three top-level states the
+// caller renders FIRST, before the per-check block:
+//
+//   1. `config_missing`      — no `profiles` block, OR named profile
+//                              missing from `profiles`. ALWAYS takes
+//                              precedence over per-critic auth signals
+//                              because the missing profile is the more
+//                              actionable diagnosis.
+//   2. `auth_pending`        — config + named profile are OK, but one
+//                              or more REQUIRED critics' auth checks
+//                              failed. Optional critics (tagged
+//                              `optional: true` by `runDoctor`) and
+//                              base-infra checks (node, hooks, doppler)
+//                              are intentionally excluded so a
+//                              shadow-mode critic doesn't downgrade
+//                              the state.
+//   3. `ok`                  — everything that COULD be checked passed.
+//                              This is the "config + auth both OK"
+//                              terminal state.
+//
+// Pure: takes only the loaded config, the resolved profile name, and
+// the per-check DoctorChecks array already collected by `runDoctor`. No
+// I/O, no env reads, no time dependence. Unit tests stub the
+// per-check array directly.
+// ---------------------------------------------------------------------------
+
+export type DoctorTriageState =
+  | "config_missing"
+  | "auth_pending"
+  | "ok";
+
+export interface ClassifyDoctorStateOptions {
+  config: AgentReviewConfig;
+  /**
+   * The resolved profile name the CLI used. `undefined` means the
+   * caller invoked `df doctor` without `--profile` AND no
+   * `AGENT_REVIEW_PROFILE` was set — only meaningful in back-compat
+   * configs that have no `profiles` map at all.
+   */
+  profileName: string | undefined;
+  /**
+   * The per-check DoctorCheck array `runDoctor` returns. The
+   * classifier inspects only the per-critic auth checks
+   * (`<criticId>.<probe>` names) — base-infra checks are intentionally
+   * ignored so a missing node binary doesn't masquerade as a
+   * subscription-auth failure.
+   */
+  perCriticChecks: readonly DoctorCheck[];
+}
+
+export interface DoctorTriageResult {
+  state: DoctorTriageState;
+  /**
+   * Single-line headline (no embedded newlines). Format: `[<TAG>] ...`
+   * where TAG is one of `CONFIG`, `AUTH`, `OK`. The bracketed prefix
+   * makes the line greppable AND distinguishes it from the per-check
+   * `[OK]/[INFO]/[FAIL]` lines `cmdDoctor` emits underneath.
+   */
+  line: string;
+}
+
+export function classifyDoctorState(
+  options: ClassifyDoctorStateOptions,
+): DoctorTriageResult {
+  const { config, profileName, perCriticChecks } = options;
+
+  // (1) config_missing — checked FIRST. A missing profiles block (or a
+  // typo'd profile name) is the most actionable diagnosis; the
+  // per-critic auth checks are moot until the profile is resolvable.
+  if (profileName !== undefined) {
+    if (!config.profiles) {
+      return {
+        state: "config_missing",
+        line: `[CONFIG] config_missing: .agent-review/config.json has no 'profiles' block (requested profile: "${profileName}"). Add a 'profiles' map; mirror sage3c's pattern.`,
+      };
+    }
+    if (!config.profiles[profileName]) {
+      const available = Object.keys(config.profiles);
+      const availableStr = available.length > 0 ? available.join(", ") : "(none)";
+      return {
+        state: "config_missing",
+        line: `[CONFIG] config_missing: profile "${profileName}" not found in .agent-review/config.json profiles map (available: ${availableStr}).`,
+      };
+    }
+  }
+
+  // (2) auth_pending — config + profile both resolved. Walk the
+  // per-critic checks: a failing check whose name starts with
+  // `<criticId>.` AND is not flagged `optional: true` means a REQUIRED
+  // critic's auth/credentials probe failed.
+  const failingCriticAuth = perCriticChecks.filter((c) => {
+    if (c.passed) return false;
+    if (c.optional) return false;
+    return isCriticAuthCheckName(c.name);
+  });
+  if (failingCriticAuth.length > 0) {
+    const criticIds = uniq(
+      failingCriticAuth.map((c) => c.name.split(".")[0] ?? c.name),
+    );
+    return {
+      state: "auth_pending",
+      line: `[AUTH] auth_pending: config OK but workstation auth pending for ${criticIds.join(", ")} — run \`df doctor --profile <name>\` for per-critic remediation.`,
+    };
+  }
+
+  // (3) ok — everything passed. Surface a clear all-clear line so an
+  // operator who runs `df doctor` after fixing the failure sees an
+  // explicit success signal.
+  return {
+    state: "ok",
+    line: `[OK] config + auth both OK${profileName !== undefined ? ` (profile: "${profileName}")` : ""}.`,
+  };
+}
+
+function isCriticAuthCheckName(name: string): boolean {
+  // `runDoctor` namespaces per-critic checks as `<criticId>.<probe>`.
+  // Base-infra checks (`node_version`, `hook_post-commit`,
+  // `artifact_dir_writable`, `doppler_*`, `git_core_hookspath`) have
+  // no `.` in the first half of the name. Treat any name containing
+  // a `.` as a per-critic check.
+  return name.includes(".");
+}
+
+function uniq<T>(values: T[]): T[] {
+  return Array.from(new Set(values));
 }
