@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.3.0...dark-factory-schemas-v0.4.0) (2026-06-02)
+
+
+### Features
+
+* **adapters/codex-sdk:** expose sandbox_mode for trusted-container contexts ([#98](https://github.com/momentiq-ai/dark-factory/issues/98)) ([ada1ab2](https://github.com/momentiq-ai/dark-factory/commit/ada1ab2982670734bb7e5e2f6c9fb078c43482bc)), closes [#68](https://github.com/momentiq-ai/dark-factory/issues/68)
+* **cli:** bounded lockfile strategy for review-packet ([#104](https://github.com/momentiq-ai/dark-factory/issues/104)) ([891ff30](https://github.com/momentiq-ai/dark-factory/commit/891ff303e12324566254eb04fba84a69da6129ed)), closes [#67](https://github.com/momentiq-ai/dark-factory/issues/67)
+
 ## [0.3.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.2.0...dark-factory-schemas-v0.3.0) (2026-05-31)
 
 

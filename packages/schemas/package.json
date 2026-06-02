@@ -1,6 +1,6 @@
 {
   "name": "@momentiq/dark-factory-schemas",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Dark Factory schemas — TypeScript types and JSON Schemas for darkfactory.yaml, evidence, and cycle-doc trailers",
   "license": "Apache-2.0",
   "type": "module",
