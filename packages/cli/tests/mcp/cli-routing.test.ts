@@ -151,6 +151,8 @@ describe("df CLI — Phase G (cycle5 MCP) subcommand wiring", () => {
       "df_review",
       "df_review_status",
       "df_show_run",
+      "df_skills_install",
+      "df_skills_list",
       "df_stats",
     ]);
   });

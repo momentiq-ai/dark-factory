@@ -1,6 +1,6 @@
 {
   "name": "@momentiq/dark-factory-cli",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Dark Factory OSS CLI — multi-vendor adversarial critic orchestration (Cursor, Codex, Gemini, Grok) with min-complete-quorum aggregation and trusted-surface rebind",
   "license": "Apache-2.0",
   "type": "module",
@@ -42,6 +42,10 @@
     "./cycle-tracker-sync": {
       "types": "./dist/cycle-tracker-sync/index.d.ts",
       "import": "./dist/cycle-tracker-sync/index.js"
+    },
+    "./skills": {
+      "types": "./dist/skills/index.d.ts",
+      "import": "./dist/skills/index.js"
     }
   },
   "bin": {
@@ -49,6 +53,7 @@
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
     "LICENSE"
   ],

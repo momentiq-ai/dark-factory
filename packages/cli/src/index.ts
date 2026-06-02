@@ -183,5 +183,33 @@ export {
   type GateRunOptions,
 } from "./runner.js";
 
+// DFP #192 — bundled-skill installer (df skills install / df_skills_install).
+// Public API for downstream callers that want to render the templates
+// programmatically (e.g. a future `df init` flow that runs install --all).
+export {
+  installSkill,
+  listBundledSkills,
+  resolveSkillsRoot,
+  KNOWN_SKILLS,
+  loadDarkFactoryConfig,
+  resolveSkillOverrides,
+  enabledSkillNames,
+  DarkFactoryConfigSchema,
+  CONFIG_FILENAME,
+  renderTemplateBody,
+  extractReferencedVariables,
+  type InstallOptions,
+  type InstallResult,
+  type InstalledFile,
+  type ListedSkill,
+  type DarkFactoryConfig,
+  type LoadedDarkFactoryConfig,
+  type SkillManifest,
+  type SkillVariableDef,
+  type RenderResult,
+  type RenderTemplateOptions,
+  type VariableOverride,
+} from "./skills/index.js";
+
 // Re-export schemas for ergonomic single-import.
 export * from "@momentiq/dark-factory-schemas";
