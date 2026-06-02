@@ -1,0 +1,29 @@
+diff --git a/package-lock.json b/package-lock.json
+index abc123..def456 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -50,16 +50,21 @@
+     "node_modules/foo": {
+-      "version": "1.2.3",
++      "version": "1.2.4",
+       "resolved": "https://registry.npmjs.org/foo/-/foo-1.2.4.tgz",
+-      "integrity": "sha512-OLDFOOHASH==",
++      "integrity": "sha512-NEWFOOHASH==",
+       "dependencies": {
+         "lodash": "^4.17.0"
+       }
+     },
++    "node_modules/bar": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/bar/-/bar-2.0.0.tgz",
++      "integrity": "sha512-NEWBARHASH==",
++      "license": "MIT"
++    },
+-    "node_modules/baz": {
+-      "version": "0.5.1",
+-      "resolved": "https://registry.npmjs.org/baz/-/baz-0.5.1.tgz",
+-      "integrity": "sha512-REMOVEDBAZHASH=="
+-    },
+     "node_modules/qux": {
+       "version": "3.1.0",
+       "resolved": "https://registry.npmjs.org/qux/-/qux-3.1.0.tgz",

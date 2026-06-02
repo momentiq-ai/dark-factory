@@ -181,11 +181,58 @@ export interface PolicyConfig {
   postCommitMode: PostCommitMode;
 }
 
+// ADR 0001 — bounded lockfile strategy (issue #67).
+// Three-valued mode lets a single config drive "no compaction"
+// (full), "compactor stub" (compact), or "<path> diff omitted by
+// policy" marker (omit). See § 2.2 of the ADR for the full schema
+// + parser rules.
+export type GeneratedFileMode = "full" | "compact" | "omit";
+export const GENERATED_FILE_MODES: readonly GeneratedFileMode[] = [
+  "full",
+  "compact",
+  "omit",
+];
+
+// ADR 0001 § 2.3.4 — refuse-and-block is the security-preserving
+// default: an extractor parse error populates
+// `ReviewPacket.parseErrorPaths` and the prompt builder adds a
+// "treat as missing evidence" marker so critics route the case
+// through the existing CHANGES_REQUESTED branch. The
+// "compact-with-warning" opt-out emits the parse-error stub WITHOUT
+// the synthetic injection, for operators who knowingly accept the
+// trade-off (dogfood ramp-up where parse errors are noisy).
+export type OnParseErrorMode = "refuse-and-block" | "compact-with-warning";
+export const ON_PARSE_ERROR_MODES: readonly OnParseErrorMode[] = [
+  "refuse-and-block",
+  "compact-with-warning",
+];
+
+export interface GeneratedFileGlobOverride {
+  glob: string;
+  mode: GeneratedFileMode;
+}
+
+export interface GeneratedFilePolicy {
+  mode: GeneratedFileMode;
+  // ADR § 2.2 schema parser rule 2: optional. When omitted, the CLI
+  // substitutes DEFAULT_GENERATED_LOCKFILE_GLOBS at packet-build
+  // time (the schema package itself does NOT substitute; it stays
+  // dependency-free). When present, non-empty array; duplicates
+  // rejected; an explicitly-empty [] is rejected.
+  globs?: string[];
+  overrides?: GeneratedFileGlobOverride[];
+  onParseError?: OnParseErrorMode;
+}
+
 export interface ContextConfig {
   guidanceFiles: string[];
   promptFragments: string[];
   maxChangedFileBytes: number;
   includeFullChangedFiles: boolean;
+  // ADR 0001 — optional. Absent → behavior identical to today
+  // (no compaction, no compactedDiff, no compactedContent, no
+  // parseErrorPaths). See `docs/ADR/0001-bounded-lockfile-strategy.md`.
+  generatedFilePolicy?: GeneratedFilePolicy;
 }
 
 export interface VerificationRoute {
@@ -299,6 +346,14 @@ export interface ChangedFile {
   content?: string;
   contentHash?: string;
   omittedReason?: "binary" | "too_large" | "missing";
+  // ADR 0001 — optional. Present only for paths whose effective
+  // mode (per the generatedFilePolicy resolver) is !== "full". When
+  // present, the prompt's `<file>` block uses this stub instead of
+  // `content`, AND `content` is cleared on the packet (so a
+  // downstream consumer that JSON-stringifies the packet doesn't
+  // accidentally serialize both forms). Stub is byte-capped at
+  // MAX_COMPACTED_CONTENT_BYTES (defined in the CLI).
+  compactedContent?: string;
 }
 
 export interface CommitMetadata {
@@ -337,6 +392,25 @@ export interface ReviewPacket {
   guidanceFiles: GuidanceFile[];
   promptFragments: GuidanceFile[];
   validation: ReviewPacketValidation;
+  // ADR 0001 — optional, present when at least one path under the
+  // effective generatedFilePolicy has a non-"full" mode AND the
+  // diff carries a matching per-file section. Built from the
+  // UNTRUNCATED fullDiff returned by commitDiff() (ADR § 2.1.1
+  // pipeline order); the post-compaction result is byte-capped at
+  // MAX_COMPACTED_DIFF_BYTES then DEFAULT_DIFF_BUDGET. When present,
+  // the prompt builder uses this for the `<diff>` section instead
+  // of `packet.diff`.
+  compactedDiff?: string;
+  // ADR 0001 § 2.3.4 — present only when at least one matched
+  // lockfile failed extractor parsing AND the policy mode is the
+  // default "refuse-and-block". The prompt builder uses this to
+  // emit a top-of-diff "[DF-COMPACT PARSE-ERROR — treat as missing
+  // evidence]" marker that routes the critic through the existing
+  // "missing evidence ⇒ CHANGES_REQUESTED" branch. Under
+  // "compact-with-warning" the field is omitted (parse-error stub
+  // still appears in compactedDiff but without the synthetic
+  // injection).
+  parseErrorPaths?: string[];
 }
 
 export interface ReviewFinding {
@@ -713,7 +787,16 @@ export interface TelemetryEvent {
     | "cross_file_finding_normalized"
     | "cross_file_finding_normalized_deletion"
     | "supporting_path_missing"
-    | "replay_mode";
+    | "replay_mode"
+    // ADR 0001 § 2.5 — emitted once per runReview() when the bounded
+    // lockfile strategy fires (at least one path has effective mode
+    // !== "full" AND the compaction step ran). Payload reuses
+    // existing fields: `findingCount` carries the count of paths
+    // compacted, `perFileCounts` carries a JSON-stringified
+    // `{path: lockfileKind}` map (mirroring cycle-332 convention).
+    // Operators detect glob-miss regressions by greppping for this
+    // event and confirming expected paths appear in perFileCounts.
+    | "compacted_files";
   commit?: string;
   criticId?: string;
   adapter?: string;
@@ -1139,6 +1222,10 @@ export function parseAgentReviewConfig(raw: unknown): AgentReviewConfig {
   };
 
   const contextRaw = need(isObject, root["context"], "$.context", "object");
+  const generatedFilePolicy = parseGeneratedFilePolicy(
+    contextRaw["generatedFilePolicy"],
+    "$.context.generatedFilePolicy",
+  );
   const context: ContextConfig = {
     guidanceFiles: parseStringArray(contextRaw["guidanceFiles"], "$.context.guidanceFiles"),
     promptFragments: parseStringArray(contextRaw["promptFragments"], "$.context.promptFragments"),
@@ -1154,6 +1241,7 @@ export function parseAgentReviewConfig(raw: unknown): AgentReviewConfig {
       "$.context.includeFullChangedFiles",
       "boolean",
     ),
+    ...(generatedFilePolicy !== undefined ? { generatedFilePolicy } : {}),
   };
 
   const validationRaw = need(isObject, root["validation"], "$.validation", "object");
@@ -1387,6 +1475,104 @@ export function parseAgentReviewConfig(raw: unknown): AgentReviewConfig {
     ...(tdd !== undefined ? { tdd } : {}),
     ...(secrets !== undefined ? { secrets } : {}),
     ...(profiles !== undefined ? { profiles } : {}),
+  };
+}
+
+// ADR 0001 § 2.2 — generatedFilePolicy parser. Returns undefined when
+// the field is absent (back-compat: today's behavior preserved). When
+// present, enforces the validation rules documented in the ADR + the
+// `generated-file-policy.test.ts` test matrix.
+function parseGeneratedFilePolicy(
+  raw: unknown,
+  path: string,
+): GeneratedFilePolicy | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const obj = need(isObject, raw, path, "object");
+  const mode = needEnum(GENERATED_FILE_MODES, obj["mode"], `${path}.mode`);
+
+  // globs: optional. When present, must be a non-empty array of
+  // non-empty strings with no duplicates. An explicitly-empty
+  // `globs: []` is rejected so a misconfigured CLI version-bump
+  // doesn't silently fall back to defaults without operator intent.
+  let globs: string[] | undefined;
+  const globsRaw = obj["globs"];
+  if (globsRaw !== undefined && globsRaw !== null) {
+    const arr = need(isArray, globsRaw, `${path}.globs`, "array");
+    if (arr.length === 0) {
+      throw new SchemaError(
+        `${path}.globs`,
+        "non-empty array required when present; omit the field to fall back to DEFAULT_GENERATED_LOCKFILE_GLOBS",
+      );
+    }
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < arr.length; i++) {
+      const g = need(
+        isNonEmptyString,
+        arr[i],
+        `${path}.globs[${i}]`,
+        "non-empty string",
+      );
+      if (seen.has(g)) {
+        throw new SchemaError(`${path}.globs`, `duplicate glob: ${g}`);
+      }
+      seen.add(g);
+      out.push(g);
+    }
+    globs = out;
+  }
+
+  // overrides: optional. Each entry is `{glob, mode}`. Duplicate
+  // override glob rejected.
+  let overrides: GeneratedFileGlobOverride[] | undefined;
+  const overridesRaw = obj["overrides"];
+  if (overridesRaw !== undefined && overridesRaw !== null) {
+    const arr = need(isArray, overridesRaw, `${path}.overrides`, "array");
+    const out: GeneratedFileGlobOverride[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < arr.length; i++) {
+      const entry = need(isObject, arr[i], `${path}.overrides[${i}]`, "object");
+      const g = need(
+        isNonEmptyString,
+        entry["glob"],
+        `${path}.overrides[${i}].glob`,
+        "non-empty string",
+      );
+      const m = needEnum(
+        GENERATED_FILE_MODES,
+        entry["mode"],
+        `${path}.overrides[${i}].mode`,
+      );
+      if (seen.has(g)) {
+        throw new SchemaError(
+          `${path}.overrides`,
+          `duplicate override glob: ${g}`,
+        );
+      }
+      seen.add(g);
+      out.push({ glob: g, mode: m });
+    }
+    overrides = out;
+  }
+
+  // onParseError: optional. Default ("refuse-and-block") is applied
+  // at the packet-build site, not by the parser — parser preserves
+  // absence as undefined per ADR § 5.2 #9.
+  let onParseError: OnParseErrorMode | undefined;
+  const opeRaw = obj["onParseError"];
+  if (opeRaw !== undefined && opeRaw !== null) {
+    onParseError = needEnum(
+      ON_PARSE_ERROR_MODES,
+      opeRaw,
+      `${path}.onParseError`,
+    );
+  }
+
+  return {
+    mode,
+    ...(globs !== undefined ? { globs } : {}),
+    ...(overrides !== undefined ? { overrides } : {}),
+    ...(onParseError !== undefined ? { onParseError } : {}),
   };
 }
 

@@ -150,6 +150,37 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
 
     const sink = options.telemetry;
 
+    // ADR 0001 § 2.5 — emit compacted_files when the bounded
+    // lockfile strategy fired. The packet builder owns the
+    // compaction logic; the runner owns the TelemetrySink, so the
+    // event-emission lives here (round-3 cursor boundaries
+    // finding). Detect the strategy fired by the presence of
+    // packet.compactedDiff plus at least one ChangedFile with
+    // compactedContent.
+    if (packet.compactedDiff !== undefined) {
+      const compactedFiles = packet.changedFiles.filter(
+        (f) => f.compactedContent !== undefined,
+      );
+      if (compactedFiles.length > 0) {
+        // Identify lockfile kind from the path for the per-file map.
+        // Re-import is fine — this is a stable utility on the
+        // compact module's public surface.
+        const { identifyLockfileKind } = await import("./compact/index.js");
+        const perFile: Record<string, string> = {};
+        for (const f of compactedFiles) {
+          const kind = identifyLockfileKind(f.path);
+          perFile[f.path] = kind ?? "unknown";
+        }
+        emit(sink, {
+          ts: new Date().toISOString(),
+          event: "compacted_files",
+          commit: sha,
+          findingCount: compactedFiles.length,
+          perFileCounts: JSON.stringify(perFile),
+        });
+      }
+    }
+
     // Cycle 322.7 Phase C — Emergency revert audit trail. When the
     // config-load path applied `AGENT_REVIEW_AGGREGATION_POLICY`, it
     // populated `loaded.policyOverride` with the audit record. Emit
