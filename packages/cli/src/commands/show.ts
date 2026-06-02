@@ -8,7 +8,11 @@
 //
 // Default output is human-readable; `--json` is the structured form.
 
-import { loadForCommit, renderStatusText, showRunStructured } from "./show-status-core.js";
+import {
+  loadForCommit,
+  renderStatusText,
+  showRunStructured,
+} from "../lib/show-status-core.js";
 
 export interface ShowIo {
   stdout: (s: string) => void;

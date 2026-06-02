@@ -3,18 +3,25 @@
 // Pins:
 //   1. `df show --json` output is byte-equivalent with the
 //      `df_show_run` MCP tool's `structuredContent` envelope.
-//      Both surfaces share `loadForCommit` from
-//      src/commands/show-status-core.ts, so the test creates one
-//      fixture repo + artifact and compares the CLI subcommand's
-//      stdout against the MCP tool's structuredContent for the SAME
-//      commit. Any drift (e.g. someone re-wraps the CLI's payload
-//      under a different key) fails the test loudly.
-//   2. `df show` (no --json) renders the human-readable status block
-//      with the verdict + per-critic lines.
-//   3. `df status --json` returns the narrowed shape (commit, status,
-//      verdict, critics with id/status/verdict/findings count) — the
-//      pipeline-friendly subset.
-//   4. Failure modes: a non-existent artifact exits 1 with a clear
+//      Both surfaces share the loader + envelope helper from
+//      src/lib/show-status-core.ts, so the test creates one fixture
+//      repo + artifact and compares the CLI subcommand's stdout
+//      against the MCP tool's structuredContent for the SAME commit.
+//      Any drift (e.g. someone re-wraps the CLI's payload under a
+//      different key) fails the test loudly.
+//   2. `df show` (no --json) renders the rich human-readable status
+//      block (commit, status, verdict, range, aggregation, createdAt,
+//      per-critic lines).
+//   3. `df status --json` output is byte-equivalent with the
+//      `df_findings` MCP tool's `structuredContent` envelope —
+//      `{ commit, critics: [{ id, status, verdict?, findings: [
+//      { severity, file?, line?, rule, message } ] }] }`. Same
+//      side-by-side compare as (1) but against `df_findings`.
+//   4. `df status` (no --json) renders the TERSE block (short commit
+//      + verdict + per-critic one-liners) — distinct from `df show`'s
+//      rich block. Pins the operator UX split between the two
+//      subcommands.
+//   5. Failure modes: a non-existent artifact exits 1 with a clear
 //      error message; an invalid commit ref exits 1; unknown flag
 //      exits 2.
 
@@ -280,53 +287,120 @@ describe("df show — CLI mirror of df_show_run (closes #55)", () => {
   });
 });
 
-describe("df status — CLI narrowed verdict view (closes #55)", () => {
+describe("df status — CLI mirror of df_findings (closes #55)", () => {
   it("--help prints the subcommand's own help (routed past printHelp)", async () => {
     const r = await runDfCli(["status", "--help"]);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("df status");
     expect(r.stdout).toContain("--json");
+    expect(r.stdout).toContain("df_findings");
   });
 
-  it("without --json renders the human-readable status block", async () => {
+  it("--json output is byte-equivalent with df_findings.structuredContent", async () => {
     const { root, commitSha } = setupArtifactRepo();
     try {
-      const r = await runDfCli(["status", "--commit", commitSha], root);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain(`commit:   ${commitSha}`);
-      expect(r.stdout).toContain("verdict:  CHANGES_REQUESTED");
-      expect(r.stdout).toContain("cursor-local-chief-engineer");
+      // CLI side — spawn the binary inside the fixture repo.
+      const cli = await runDfCli(["status", "--json", "--commit", commitSha], root);
+      expect(cli.exitCode).toBe(0);
+      const cliPayload = JSON.parse(cli.stdout) as {
+        commit: string;
+        critics: unknown[];
+      };
+
+      // MCP side — call the same backend through the MCP server.
+      const server = createMcpServer({ cwd: root });
+      const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverT);
+      const client = new Client(
+        { name: "df-status-equivalence", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientT);
+      const mcpResult = await client.callTool({
+        name: "df_findings",
+        arguments: { commit: commitSha },
+      });
+      expect(mcpResult.isError).toBeFalsy();
+      const mcpPayload = mcpResult.structuredContent as {
+        commit: string;
+        critics: unknown[];
+      };
+
+      // Cycle 5 spec: the two payloads MUST match exactly. Any future
+      // drift (e.g. CLI emits a count-based shape vs. the narrowed
+      // findings shape) is a spec violation caught here loudly.
+      expect(cliPayload).toEqual(mcpPayload);
+      expect(cliPayload.commit).toBe(commitSha);
+
+      await client.close();
+      await server.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("--json returns the narrowed pipeline-friendly shape", async () => {
+  it("--json returns the df_findings narrowed shape with full finding fields", async () => {
     const { root, commitSha } = setupArtifactRepo();
     try {
       const r = await runDfCli(["status", "--json", "--commit", commitSha], root);
       expect(r.exitCode).toBe(0);
       const payload = JSON.parse(r.stdout) as {
         commit: string;
-        status: string;
-        verdict: string | null;
         critics: Array<{
           id: string;
           status: string;
-          verdict: string | null;
-          findings: number;
+          verdict?: string;
+          findings: Array<{
+            severity: string;
+            file?: string;
+            line?: number;
+            rule: string;
+            message: string;
+          }>;
         }>;
       };
       expect(payload.commit).toBe(commitSha);
-      expect(payload.status).toBe("complete");
-      expect(payload.verdict).toBe("CHANGES_REQUESTED");
       expect(payload.critics).toHaveLength(1);
       expect(payload.critics[0]).toEqual({
         id: "cursor-local-chief-engineer",
         status: "complete",
         verdict: "CHANGES_REQUESTED",
-        findings: 1,
+        findings: [
+          {
+            severity: "blocker",
+            file: "src/foo.ts",
+            line: 42,
+            rule: "untyped-any",
+            message: "function bar(x: any) { ... }",
+          },
+        ],
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("without --json renders the TERSE block, distinct from df show", async () => {
+    const { root, commitSha } = setupArtifactRepo();
+    try {
+      const status = await runDfCli(["status", "--commit", commitSha], root);
+      expect(status.exitCode).toBe(0);
+      // Terse view: short commit + verdict on the first line, one
+      // per-critic line below. NO range/aggregation/createdAt — those
+      // belong to `df show`.
+      expect(status.stdout).toContain(commitSha.slice(0, 12));
+      expect(status.stdout).toContain("CHANGES_REQUESTED");
+      expect(status.stdout).toContain("cursor-local-chief-engineer");
+      expect(status.stdout).not.toContain("range:");
+      expect(status.stdout).not.toContain("aggregation:");
+      expect(status.stdout).not.toContain("createdAt:");
+
+      // And `df show`'s rich block IS distinct.
+      const show = await runDfCli(["show", "--commit", commitSha], root);
+      expect(show.exitCode).toBe(0);
+      expect(show.stdout).not.toBe(status.stdout);
+      expect(show.stdout).toContain("range:");
+      expect(show.stdout).toContain("aggregation:");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

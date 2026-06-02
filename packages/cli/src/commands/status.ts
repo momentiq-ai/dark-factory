@@ -1,12 +1,22 @@
 // `df status` — terse verdict + per-critic line for a commit.
 //
 // Sibling of `df show`. Same shared backend (`loadForCommit`); narrower
-// output: one block of verdict + critic statuses, no full artifact.
-// `--json` returns the narrowed shape (commit + verdict + critics with
-// id/status/verdict/findingCount) — useful for shell pipelines that
-// want to gate on the verdict without re-parsing the full ReviewArtifact.
+// output:
+//   - `--json` returns the `df_findings` narrowed shape — `{ commit,
+//     critics: [{ id, status, verdict?, findings: [{ severity, file?,
+//     line?, rule, message }] }] }`. Byte-equivalent with the
+//     `df_findings.structuredContent` envelope the MCP tool returns
+//     (cycle 5 spec requirement; both routes call
+//     `mapArtifactForFindings()` on the SAME `LoadOutcome.artifact`).
+//   - non-JSON renders a terse text block (short commit + verdict + one
+//     line per critic) — distinct from `df show`'s rich block so the
+//     operator UX split between the two subcommands is real.
 
-import { loadForCommit, renderStatusText } from "./show-status-core.js";
+import {
+  loadForCommit,
+  mapArtifactForFindings,
+  renderTerseStatusText,
+} from "../lib/show-status-core.js";
 
 export interface StatusIo {
   stdout: (s: string) => void;
@@ -27,7 +37,11 @@ const HELP = [
   "",
   "Flags:",
   "  --commit <ref>  Commit ref (default HEAD).",
-  "  --json          Print narrowed JSON: { commit, status, verdict, critics }.",
+  "  --json          Print the df_findings narrowed JSON shape:",
+  "                  { commit, critics: [{ id, status, verdict?,",
+  "                  findings: [{ severity, file?, line?, rule,",
+  "                  message }] }] }. Byte-equivalent with the",
+  "                  df_findings MCP tool's structuredContent.",
   "  --help, -h      Show this message.",
   "",
   "Exit codes:",
@@ -80,20 +94,10 @@ export async function cmdStatus(rest: string[], io: StatusIo): Promise<number> {
     return 1;
   }
   if (parsed.json) {
-    const narrowed = {
-      commit: outcome.artifact.commit,
-      status: outcome.artifact.status,
-      verdict: outcome.artifact.gateVerdict ?? null,
-      critics: outcome.artifact.criticResults.map((r) => ({
-        id: r.criticId,
-        status: r.status,
-        verdict: r.verdict ?? null,
-        findings: r.findings.length,
-      })),
-    };
-    io.stdout(`${JSON.stringify(narrowed, null, 2)}\n`);
+    const findings = mapArtifactForFindings(outcome.artifact);
+    io.stdout(`${JSON.stringify(findings, null, 2)}\n`);
     return 0;
   }
-  io.stdout(`${renderStatusText(outcome.artifact)}\n`);
+  io.stdout(`${renderTerseStatusText(outcome.artifact)}\n`);
   return 0;
 }

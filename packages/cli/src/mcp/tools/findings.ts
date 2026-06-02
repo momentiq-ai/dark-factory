@@ -15,33 +15,23 @@
 //   df_show_run →
 //     { artifact: <full review artifact JSON> }
 //
-// Mapping decision — what each `df_findings.findings[i].rule` /
-// `.message` actually contains:
-//   - `rule`    = the underlying `ReviewFinding.category` (free-form
-//                 critic-supplied classifier like "tdd-violation" or
-//                 "untyped-any" — the natural "rule" analog in the
-//                 schemas-side shape).
-//   - `message` = the underlying `ReviewFinding.evidence` (concrete
-//                 code/text the critic cites). impact and requiredFix
-//                 are intentionally NOT included in the narrowed
-//                 view: callers wanting the full context call
-//                 df_show_run, which returns the unmodified artifact.
-// Documented in the source so the W3 critic can see the deliberate
-// narrowing (the spec's 5-field shape is a deliberate "essential
-// info only" view; the rich shape is one extra tool call away).
+// All shape construction lives in `src/lib/show-status-core.ts` so the
+// MCP tools and their CLI mirrors (`df status`, `df show`) stay byte-
+// equivalent — see that module for the field-mapping rationale and the
+// layering contract (lib does not depend on commands/ or mcp/).
 
 import { resolve } from "node:path";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import type {
-  CriticResult,
-  ReviewArtifact,
-  ReviewFinding,
-} from "@momentiq/dark-factory-schemas";
+import type { ReviewArtifact } from "@momentiq/dark-factory-schemas";
 
-import { loadForCommit } from "../../commands/show-status-core.js";
+import {
+  loadForCommit,
+  mapArtifactForFindings,
+  type DfFindingsResult,
+} from "../../lib/show-status-core.js";
 
 export interface RegisterFindingsToolsOptions {
   /**
@@ -50,52 +40,6 @@ export interface RegisterFindingsToolsOptions {
    * launched `df mcp`).
    */
   cwd?: string;
-}
-
-interface DfFinding {
-  readonly severity: string;
-  readonly file?: string;
-  readonly line?: number;
-  readonly rule: string;
-  readonly message: string;
-}
-
-interface DfFindingsCritic {
-  readonly id: string;
-  readonly status: string;
-  readonly verdict?: string;
-  readonly findings: readonly DfFinding[];
-}
-
-export interface DfFindingsResult {
-  readonly commit: string;
-  readonly critics: readonly DfFindingsCritic[];
-}
-
-export function mapFindingForSpec(finding: ReviewFinding): DfFinding {
-  return {
-    severity: finding.severity,
-    ...(finding.file !== undefined ? { file: finding.file } : {}),
-    ...(finding.line !== undefined ? { line: finding.line } : {}),
-    rule: finding.category,
-    message: finding.evidence,
-  };
-}
-
-export function mapCriticForSpec(result: CriticResult): DfFindingsCritic {
-  return {
-    id: result.criticId,
-    status: result.status,
-    ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
-    findings: result.findings.map(mapFindingForSpec),
-  };
-}
-
-export function mapArtifactForFindings(artifact: ReviewArtifact): DfFindingsResult {
-  return {
-    commit: artifact.commit,
-    critics: artifact.criticResults.map(mapCriticForSpec),
-  };
 }
 
 function renderFindingsMarkdown(

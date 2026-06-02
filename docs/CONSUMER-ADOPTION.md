@@ -436,6 +436,40 @@ After §8, the `agent-critic / agent-critic` and `cycle-doc-validation / cycle-d
 
 First-time critic runs are advisory (the policy is `aggregation.blockOnReviewError: false` per the canonical config). Treat the first 1-2 PRs as calibration: tighten `.agent-review/prompts/local-critic.md` and the config until critic findings are signal, not noise. A consequence: while the critic is still in calibration it degrades-and-passes, so the required check stays green even with advisory findings — enforcement bites once the critic emits actual `state=BLOCKING` verdicts.
 
+## 9.5 Inspect critic artifacts from the shell — `df show` / `df status`
+
+After `df review` writes a per-commit artifact to `.git/agent-reviews/<sha>.json`, two CLI subcommands inspect it without `jq`-pipelines or hand-rolled JSON parsing. Both are thin CLI mirrors of the `df_show_run` / `df_findings` MCP tools and share the same backend, so an operator's shell-side view and an agent's MCP-side view are guaranteed to match.
+
+| Subcommand | Default output | `--json` shape | MCP tool mirror |
+|---|---|---|---|
+| `df show [--commit <ref>] [--json]` | Rich text block — commit, status, verdict, range, aggregation, createdAt, per-critic lines, optional bypass block | `{ artifact: <full ReviewArtifact> }` | `df_show_run` |
+| `df status [--commit <ref>] [--json]` | Terse text block — short commit + verdict + one line per critic | `{ commit, critics: [{ id, status, verdict?, findings: [{ severity, file?, line?, rule, message }] }] }` | `df_findings` |
+
+Both subcommands:
+
+- default `--commit` to `HEAD`,
+- accept any ref `git rev-parse` accepts (SHA, `HEAD`, branch, tag, `HEAD~1`, …),
+- exit `0` on success, `1` if no artifact / config / git resolve fails (with a stderr message that includes the resolved SHA and a `df review` remediation hint), `2` on unknown flags.
+
+The `--json` outputs are **byte-equivalent** with their MCP-tool counterparts' `structuredContent` envelopes (cycle 5 spec). Pipelines that read either surface get the same shape.
+
+```bash
+# Inspect HEAD's full review artifact (rich text):
+./node_modules/.bin/df show
+
+# Inspect a specific commit, as structured JSON for downstream tooling:
+./node_modules/.bin/df show --commit 1a2b3c4d --json | jq '.artifact.gateVerdict'
+
+# Terse verdict + per-critic status, for a quick check or a CI step:
+./node_modules/.bin/df status
+
+# Narrowed findings list, byte-equivalent with df_findings — useful for
+# gating shell pipelines on findings without re-parsing the full artifact:
+./node_modules/.bin/df status --json | jq '.critics[] | select(.findings[].severity == "blocker")'
+```
+
+`df show --help` and `df status --help` list flags and exit codes inline.
+
 ## 10. Update cadence
 
 - Pin to a specific alpha/beta version (`0.1.0-alpha.N`) — never floating ranges.
@@ -452,8 +486,8 @@ First-time critic runs are advisory (the policy is `aggregation.blockOnReviewErr
 19 tools (read-only + write), 9 URI-addressable resources, and 7 prompts. Highlights:
 
 - `df_doctor` — env verification (Node, hooks, vendor auth, Doppler) as structured `{ ok, checks }`
-- `df_findings(commit)` — narrowed per-critic findings for a SHA
-- `df_show_run(commit)` — full ReviewArtifact JSON for a SHA
+- `df_findings(commit)` — narrowed per-critic findings for a SHA (CLI mirror: `df status --json`, see §9.5)
+- `df_show_run(commit)` — full ReviewArtifact JSON for a SHA (CLI mirror: `df show --json`, see §9.5)
 - `df_cycle_list` / `df_cycle_read(cycle_id)` — your repo's cycle docs as structured `{ frontmatter, sections }`
 - `df_adr_list` / `df_adr_read(adr_id)` — ADRs under `docs/ADR/`
 - `df_critics_config` — parsed `.agent-review/config.json` (narrowed view)

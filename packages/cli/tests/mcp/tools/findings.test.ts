@@ -28,7 +28,7 @@ import {
   mapArtifactForFindings,
   mapCriticForSpec,
   mapFindingForSpec,
-} from "../../../src/mcp/tools/findings.js";
+} from "../../../src/lib/show-status-core.js";
 
 const FINDING_FULL: ReviewFinding = {
   severity: "blocker",

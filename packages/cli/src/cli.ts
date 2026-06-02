@@ -355,11 +355,12 @@ const CYCLE12_SUBCOMMANDS = new Set([
 const CYCLE11_SUBCOMMANDS = new Set(["flow"]);
 
 // `df show` / `df status` — CLI mirrors of the df_show_run / df_findings
-// MCP tools. Both routes share the loader in commands/show-status-core.ts
-// so the CLI's `--json` output stays byte-equivalent with the MCP tool's
-// structuredContent envelope (cycle 5 spec requirement). Registered here
-// so the early --help interception forwards `df show --help` / `df status
-// --help` to the per-subcommand help printers.
+// MCP tools. Both routes share the loader + mappers in
+// src/lib/show-status-core.ts so the CLI's `--json` output stays
+// byte-equivalent with the MCP tool's structuredContent envelope (cycle 5
+// spec requirement). Registered here so the early --help interception
+// forwards `df show --help` / `df status --help` to the per-subcommand
+// help printers.
 const SHOW_STATUS_SUBCOMMANDS = new Set(["show", "status"]);
 
 function cmdStatusCheck(_rest: string[]): number {
@@ -1771,7 +1772,7 @@ async function main(argv: string[]): Promise<number> {
     });
   }
   // `df show` / `df status` — CLI mirrors of the df_show_run / df_findings
-  // MCP tools. See commands/show-status-core.ts for the shared backend.
+  // MCP tools. See src/lib/show-status-core.ts for the shared backend.
   if (sub === "show") {
     return await cmdShow(rest, {
       stdout: (s) => process.stdout.write(s),
