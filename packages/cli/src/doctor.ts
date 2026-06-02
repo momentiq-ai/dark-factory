@@ -28,7 +28,16 @@
 //     pass/fail accordingly.
 
 import { spawn } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { resolve } from "node:path";
 
 import type { AdapterRegistry } from "./adapters/critic.js";
@@ -137,6 +146,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorCheck[]> 
       ? {}
       : { remediation: `mkdir -p ${artifactDir} and ensure write permission` }),
   });
+
+  // Issue #105 — orphan-lock sweep. Subagent processes killed mid-run
+  // leave behind `.git/agent-reviews/<sha>.lock` files that block every
+  // subsequent `df review` for that SHA. Walk the dir, parse each
+  // lock's PID, and remove locks whose recorded PID is dead.
+  checks.push(sweepOrphanLocks(artifactDir));
 
   // 6. Doppler bootstrap visibility (when caller supplied a BootstrapResult).
   // For the OSS doctor, this is informational — a `no-bootstrap-file` status
@@ -508,4 +523,106 @@ function isCriticAuthCheckName(name: string): boolean {
 
 function uniq<T>(values: T[]): T[] {
   return Array.from(new Set(values));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #105 — orphan-lock sweep.
+//
+// `df review` writes `.git/agent-reviews/<sha>.lock` containing its PID
+// + an ISO timestamp. When the process is killed mid-run (SIGKILL, OOM,
+// container teardown) the lock orphans and blocks every subsequent
+// review of that SHA. `sweepOrphanLocks` walks the artifact dir, parses
+// each lock's first line as a PID, and removes the lock when
+// `process.kill(pid, 0)` reports ESRCH (no such process).
+// ---------------------------------------------------------------------------
+
+export function sweepOrphanLocks(artifactDir: string): DoctorCheck {
+  if (!existsSync(artifactDir)) {
+    return {
+      name: "orphan_lock_sweep",
+      passed: true,
+      detail: `artifact dir not present at ${artifactDir} — no orphan locks to sweep`,
+    };
+  }
+  let entries: string[];
+  try {
+    entries = readdirSync(artifactDir);
+  } catch (err) {
+    return {
+      name: "orphan_lock_sweep",
+      passed: false,
+      detail: `failed to enumerate ${artifactDir}: ${(err as Error).message}`,
+      remediation: `verify ${artifactDir} is readable`,
+    };
+  }
+  const removed: Array<{ name: string; pid: number | null; reason: string }> = [];
+  for (const entry of entries) {
+    if (!entry.endsWith(".lock")) continue;
+    const path = resolve(artifactDir, entry);
+    const parsed = readLockPid(path);
+    if (parsed.pid === null) {
+      try {
+        unlinkSync(path);
+        removed.push({ name: entry, pid: null, reason: parsed.reason });
+      } catch {
+        // best-effort; a racing process may have removed it already
+      }
+      continue;
+    }
+    if (isPidAlive(parsed.pid)) continue;
+    try {
+      unlinkSync(path);
+      removed.push({ name: entry, pid: parsed.pid, reason: "dead PID" });
+    } catch {
+      // best-effort
+    }
+  }
+  if (removed.length === 0) {
+    return {
+      name: "orphan_lock_sweep",
+      passed: true,
+      detail: `no orphan locks under ${artifactDir}`,
+    };
+  }
+  const summary = removed
+    .map((r) => `${r.name} (pid=${r.pid ?? "unreadable"}: ${r.reason})`)
+    .join(", ");
+  return {
+    name: "orphan_lock_sweep",
+    passed: true,
+    detail: `${removed.length} orphan lock(s) removed under ${artifactDir}: ${summary}`,
+  };
+}
+
+function readLockPid(path: string): { pid: number | null; reason: string } {
+  let contents: string;
+  try {
+    contents = readFileSync(path, "utf8");
+  } catch (err) {
+    return { pid: null, reason: `read failed: ${(err as Error).message}` };
+  }
+  const firstLine = contents.split("\n")[0]?.trim() ?? "";
+  if (firstLine === "") {
+    return { pid: null, reason: "empty lock file" };
+  }
+  const n = Number(firstLine);
+  if (!Number.isInteger(n) || n <= 0) {
+    return { pid: null, reason: `unparseable PID "${firstLine}"` };
+  }
+  return { pid: n, reason: "" };
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    // EPERM means the process exists but we lack permission to signal it
+    // → still alive from a lock-ownership perspective. ESRCH means no
+    // such process → orphan. Any other code: treat as alive to err on
+    // the side of NOT removing a possibly-live lock.
+    if (e.code === "ESRCH") return false;
+    return true;
+  }
 }
