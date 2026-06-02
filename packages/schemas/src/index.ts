@@ -449,6 +449,18 @@ export interface ReviewFinding {
   // the pass-target file, not by the cited-evidence file). Existing
   // artifacts that predate the field parse identically.
   contentHash?: string;
+  // Issue #106 — LLM self-flag: the model believes this finding cannot be
+  // objectively verified from its sandbox and warrants human judgement.
+  // Optional; the wire-level distinction between omitted (`undefined`)
+  // and explicit `false` is load-bearing so consumers can tell "the
+  // critic didn't report" from "the critic reported false". Adapters
+  // copy this through from the model's structured output; they do NOT
+  // derive it heuristically. Aggregation is unchanged — this is a
+  // presentation/routing hint for consumers; the gate decision is
+  // unchanged at the CLI layer (mirrors the result-level
+  // `CriticResult.requiresHumanJudgment` semantic but at per-finding
+  // granularity).
+  requiresHumanJudgment?: boolean;
 }
 
 export interface CriticReviewerInfo {
@@ -1709,6 +1721,18 @@ function parseFinding(raw: unknown, path: string, blockingSeverities: ReviewSeve
     `${path}.contentHash`,
     "string",
   );
+  // Issue #106 — optional LLM self-flag. Preserve the omitted-vs-false
+  // distinction at the wire level: absent → undefined, explicit false
+  // → false, true → true. Consumers must be able to tell "the critic
+  // didn't report" from "the critic reported false", so this field
+  // uses the same conditional-spread pattern as other optional fields
+  // (do NOT default to false).
+  const requiresHumanJudgment = optional(
+    isBoolean,
+    obj["requiresHumanJudgment"],
+    `${path}.requiresHumanJudgment`,
+    "boolean",
+  );
   if (blockingSeverities.includes(severity) && !file) {
     throw new SchemaError(`${path}.file`, `blocking severity ${severity} requires file`);
   }
@@ -1726,6 +1750,7 @@ function parseFinding(raw: unknown, path: string, blockingSeverities: ReviewSeve
     ...(routeId !== undefined ? { routeId } : {}),
     ...(justification !== undefined ? { justification } : {}),
     ...(contentHash !== undefined ? { contentHash } : {}),
+    ...(requiresHumanJudgment !== undefined ? { requiresHumanJudgment } : {}),
   };
 }
 
