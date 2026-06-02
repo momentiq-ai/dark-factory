@@ -184,7 +184,7 @@ export class SpawnGhClient implements GhClient {
     if (opts.repo) args.push("--repo", opts.repo);
     args.push(
       "--json",
-      "number,title,body,state,assignees,labels,updatedAt,closedAt",
+      "number,title,body,state,assignees,labels,updatedAt,closedAt,url",
     );
     const r = expectOk(await gh(args), `gh issue view ${num}`);
     return JSON.parse(r.stdout) as IssueView;

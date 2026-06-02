@@ -238,7 +238,7 @@ jobs:
           VERSION_OUTPUT=$(node ./dist/cli.js --version)
           echo "$VERSION_OUTPUT"
           echo "$VERSION_OUTPUT" | grep -q '@momentiq/sage-cli' || (echo "::error::sage --version output missing package name" && exit 1)
-          echo "$VERSION_OUTPUT" | grep -q 'bundled momentiq-ai/sage-blueprint@' || (echo "::error::sage --version output missing bundled sage-blueprint commit" && exit 1)
+          echo "$VERSION_OUTPUT" | grep -qE 'bundled (momentiq-ai/)?sage-blueprint@' || (echo "::error::sage --version output missing bundled sage-blueprint commit" && exit 1)
           # Bundled template is complete.
           test -f template/copier.yaml || (echo "::error::bundled template missing copier.yaml" && exit 1)
           test -d template/template     || (echo "::error::bundled template missing template/ dir" && exit 1)
