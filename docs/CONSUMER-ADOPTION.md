@@ -471,19 +471,30 @@ Field-by-field contract:
 
 **Truthy-token rule:** detection fires only on the canonical tokens `"true"` / `"1"` / `"yes"` (case-insensitive after `trim()`). Presence-only side-effect vars (e.g. `CODESPACE_NAME`) are intentionally ignored — the detector is structural, not heuristic, so consumer hooks cannot be tricked by an environment that merely *looks like* a cloud env.
 
-**Pre-push branch order — `cloudEnv` BEFORE `triage`.** Consumer hooks MUST read `cloudEnv.detected` first so the cloud-env bypass remediation is one branch upstream of the auth-pending branch:
+**Pre-push branch order — `cloudEnv` BEFORE `triage`.** Consumer hooks MUST read `cloudEnv.detected` first so the cloud-env bypass remediation is one branch upstream of the auth-pending branch. Cloud-env detection narrows the bypass to *subscription-auth-unavailable* rows only — `ok: false` for any other reason (config_missing, unwritable artifact dir, failed Doppler bootstrap, API-key critic auth failure) still fails the push, so the exit-code contract from §9.a holds in cloud envs too:
 
 ```bash
 report=$(./node_modules/.bin/df doctor --json) || true
-if printf '%s' "$report" | jq -e '.cloudEnv.detected' >/dev/null; then
-  # Cloud env: subscription probes are skipped by design. The canonical
-  # bypass from §13 is the right exit; do NOT fail the push on
-  # auth_pending here — auth is structurally unavailable, not missing.
-  markers=$(printf '%s' "$report" | jq -r '.cloudEnv.markers | join(", ")')
-  printf 'df doctor: cloud env detected (%s) — see §13 for the AGENT_REVIEW_BYPASS pattern.\n' "$markers"
-  exit 0
-fi
+ok=$(printf '%s' "$report" | jq -r '.ok')
 state=$(printf '%s' "$report" | jq -r '.triage.state')
+if printf '%s' "$report" | jq -e '.cloudEnv.detected' >/dev/null; then
+  # Cloud env: subscription probes are skipped by design, so an
+  # `auth_pending` state here means "subscription auth unavailable" —
+  # the canonical §13 bypass is the right exit and we do NOT fail the
+  # push. But API-key critics, config checks, hook wiring, and artifact
+  # dir writability ALL still run in cloud envs, so a non-auth failure
+  # (`config_missing`, unwritable artifact dir, Doppler bootstrap, …)
+  # must still block. Only bypass when triage is `ok` or `auth_pending`.
+  markers=$(printf '%s' "$report" | jq -r '.cloudEnv.markers | join(", ")')
+  if [ "$ok" = "true" ] || [ "$state" = "auth_pending" ]; then
+    printf 'df doctor: cloud env detected (%s) — see §13 for the AGENT_REVIEW_BYPASS pattern.\n' "$markers"
+    exit 0
+  fi
+  printf 'df doctor: cloud env detected (%s) but non-auth checks failed (state=%s).\n' "$markers" "$state" >&2
+  printf '%s' "$report" | jq -r '.triage.line' >&2
+  printf 'Cloud env does NOT bypass config / artifact / API-key failures. Run `./node_modules/.bin/df doctor` for per-check remediation.\n' >&2
+  exit 1
+fi
 if [ "$state" = "auth_pending" ]; then
   printf '%s' "$report" | jq -r '.triage.line' >&2
   printf 'Run `./node_modules/.bin/df doctor` for the per-critic remediation.\n' >&2
