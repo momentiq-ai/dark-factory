@@ -1,0 +1,443 @@
+---
+name: chief-engineer-blitz
+description: Use when the human asks to "ship X autonomously", "burn down the backlog", "blitz", "resolve all of these", or sets a big delivery objective decomposable into many small high-confidence chunks. Orchestrates a high-volume parallel subagent fleet against the objective, with up-front planning, two-phase (spec → implement) or one-phase (specs exist → implement) execution, critic-finding triage discipline, and end-of-blitz validation against real exit criteria (not green-check theatre).
+---
+
+# Chief Engineer Blitz
+
+A blitz is a planned, time-bounded burst of orchestrated subagent work against a
+clear objective. Like a blitz in football or a blitzkrieg in war, it concentrates
+parallelizable effort against the objective to compress wall-clock time, but
+that compression only works **if the plan is good and the quality controls are
+real.** Without them, a blitz is a fast way to ship a pile of broken PRs.
+
+This skill encodes the doctrine — what to plan, how to decompose, how to fan
+out, how to triage critic findings, how to validate completion *for real* —
+distilled from running this exact pattern against real product backlogs.
+
+**It is not** a generic "spawn lots of agents" pattern. It is a discipline:
+plan first, decompose for high-confidence delivery, triage findings instead
+of iterating blindly, validate at the end against the *actual exit criteria*.
+
+## When to invoke
+
+Trigger phrases (the human says any of these, or close paraphrase):
+
+- "ship X autonomously via subagents"
+- "burn down the bug backlog"
+- "resolve all of these"
+- "blitz [the cycle / the issues / the PRs]"
+- "you have admin permissions, execute everything as subagents"
+- "let's get this fully resolved, no stopping"
+- "ship a cycle with subcycles"
+
+Also implicit triggers:
+
+- A big delivery objective is set + the work decomposes into ≥5 small chunks
+- The chunks can land in parallel (no sequential dependencies between most)
+- The human has explicitly opted into autonomous execution
+
+Do NOT invoke for:
+
+- Single-PR work (just use the Agent tool directly)
+- Work where the chunks have hard sequential dependencies (a blitz is parallel)
+- Exploratory / design-mode work where decomposition isn't possible yet
+  (do brainstorming + cycle-doc-writing first; blitz the *implementation* once
+  specs exist)
+
+## The doctrine — six phases
+
+A blitz always has six phases in order. Skipping any phase is a red flag.
+
+1. **Plan** — read everything, classify, identify dependencies + collisions, decide phases
+2. **Spec** (only if specs missing) — fan out spec-writing subagents; review + merge
+3. **Implement** — fan out implementation subagents in parallel worktrees
+4. **Triage** — for each PR's critic findings: FIX / OVERRIDE / ESCALATE
+5. **Validate** — confirm exit criteria are *actually met* against real state
+6. **Closure** — close issues with evidence; file follow-ups for un-shipped scope
+
+The phases are deliberately distinct. Don't conflate "spawn implementation
+agents" with "planning" (skipping plan loses up-front decomposition); don't
+conflate "critic passed" with "validated" (passing critic ≠ meeting exit
+criteria).
+
+## Phase 1 — Plan
+
+The most-skipped phase, and the one that compounds the most when skipped.
+
+**Read everything before doing anything.** For every issue/PR in scope:
+
+- Pull the body, the labels, the linked PRs/cycles, and the **most recent comments**
+  (stale issues often have a "this was already fixed in PR #N" hint buried in the
+  last comment)
+- Classify by **readiness**:
+  - **Ready** — clear scope, identified files, ready to implement
+  - **Mostly ready** — clear scope, one or two open contract questions
+  - **Needs scoping** — real problem, unclear approach, design decision required
+  - **Strategic / multi-week** — cycle-doc-level work, multiple phases
+  - **Stale / superseded** — already shipped or no longer relevant
+- Classify by **dependency**:
+  - **Independent** — no other issue in the batch needs to land first
+  - **Depends on N** — a specific issue must land first
+  - **Collides with N** — same files / same numbering / same surface
+- Classify by **repo**:
+  - **Local** — {{REPO_NAME}}
+  - **Cross-repo** — upstream `momentiq-ai/dark-factory`, sibling repos, etc.
+
+The output of Plan is a **disposition table**: per-issue row with classification
++ proposed action (ship / spec-then-ship / cycle-doc-only / close-stale / defer).
+Show it to the human if the slate is large enough that they might want to
+re-scope; otherwise commit and execute.
+
+**Detect "already shipped" before spawning implementation work.** State-verify by
+running `git log --oneline -- <files> | grep -i "fix #N"` or a quick query against
+prod state. Many "open" issues have already been shipped and just left open by
+keyword-tracking oversight. Always state-verify before launching implementation.
+
+**Pick cycle numbers up front** if multiple cycle docs ship in the same blitz.
+Multiple cycle-doc subagents in parallel **will** all pick the same next-number
+("highest + 1"); assign numbers explicitly in the Plan output. The cost of
+renumber follow-up is small but real; avoid it by being explicit.
+
+**For collisions:** decide *now* whether to serialize, segment by file, or
+accept conflicts + resolve at merge. For multiple PRs touching the same file,
+serialize them through the same worktree; for truly independent areas in the
+same service, parallel worktrees are fine and rebases handle the small overlap.
+
+## Phase 2 — Spec (only when needed)
+
+Skip this phase entirely if specs already exist (one-phase blitz).
+
+If specs don't exist, fan out spec-writing subagents in parallel. Each agent's
+deliverable is **one of**:
+
+- **A cycle doc** — for strategic / multi-week work. New file in
+  `{{CYCLE_DOCS_DIR}}/cycleN-slug.md`. Land as a PR.
+- **An issue-body spec section** — for ~1-2-PR work that doesn't warrant a cycle
+  doc. Appended via `gh issue edit` to the existing body. No PR.
+
+Each spec-writing prompt must include:
+
+- The decision authority. ("You have autonomous approval — make the calls. Flag
+  load-bearing decisions as 'Recommended, open for one round of review.'")
+- The cycle-number assignment (if applicable) — explicit, not "next available"
+- The depth bar ("ready-to-implement; the next session should not need to redo
+  design")
+- The frontmatter / template per `CLAUDE.md` § "Cycle doc workflow"
+- The deliverable's link target (PR for cycle docs; updated issue body for
+  inline specs)
+
+After spec subagents return: review each, merge clean ones, iterate on any with
+gaps. The spec-merge gate is the spec-merge gate; don't blur it with the
+implementation gate.
+
+## Phase 3 — Implement
+
+The biggest phase. Maximum parallelism.
+
+**One subagent per PR.** Not one agent for multiple issues. Not one agent for
+multiple phases of a cycle. Each agent ships exactly one PR.
+
+**Pre-create the worktrees** before spawning agents. Pattern:
+
+```bash
+for slug in fix-N1 fix-N2 fix-N3 ...; do
+  git worktree add "{{WORKTREE_ROOT}}/df+$slug" -b "df/$slug-auto" origin/main
+done
+```
+
+Don't make agents create their own worktrees — they'll race on the git common
+dir.
+
+**Each implementation prompt must include:**
+
+- The issue number(s) the PR closes
+- The exact worktree path + branch name
+- Required reads: `CLAUDE.md`, the issue body, any referenced cycle docs
+- The deliverable: a PR with "Closes #N" in the body, do-not-merge instruction
+- The commit-identity convention (per consumer's CLAUDE.md — typically a
+  `claude-code+<handle>@{{AGENT_COMMITTER_ORG}}.ai` committer email + Co-Authored-By trailer)
+- The push posture: if local gate fails for env reasons (sandbox can't OAuth
+  subscription critics), use the documented cloud-env bypass; NEVER bypass for
+  real findings
+- The final-report format: under 300-400 words; PR URL, design choices, test
+  results, blockers
+
+**For cross-repo work** (upstream issue belongs in `momentiq-ai/dark-factory`,
+sibling repos, etc.):
+
+- Have the agent `gh repo clone <owner>/<repo> /tmp/<repo>-agent-N/` and work
+  there
+- After the upstream PR opens: post a comment on the consumer-side issue with
+  the upstream PR link, then **close the consumer-side issue as
+  "upstream-tracked"** (it stays closed until you bump the pin in a follow-up,
+  but the issue tracker reflects the correct disposition)
+- Flag access failures clearly — if `gh repo view <owner>/<repo>` returns 404,
+  STOP and surface; don't fake the work
+
+**For agents working in a fresh worktree:** the `npm ci --include=dev` step is
+mandatory before the pre-push gate works. Skip it and the push will block with
+"CLI not installed". Build this into the prompt explicitly.
+
+## Phase 4 — Triage critic findings
+
+This is the phase that separates a real blitz from a PR-spam blitz.
+
+Every PR's `dark-factory/critic` check completes with a verdict. For each PR
+that's `action_required`:
+
+**Pull the actual findings, not just the verdict count:**
+
+```bash
+sha=$(gh pr view <N> --repo {{OWNER_REPO}} --json headRefOid --jq .headRefOid)
+check_id=$(gh api "repos/{{OWNER_REPO}}/commits/$sha/check-runs" \
+  --jq '.check_runs[] | select(.name=="dark-factory/critic") | .id')
+gh api "repos/{{OWNER_REPO}}/check-runs/$check_id/annotations" \
+  --jq '.[] | "[\(.annotation_level)] \(.path):\(.start_line) — \(.title)\n  \(.message[:300])\n"'
+```
+
+**Classify each finding.** The bypass posture must match CLAUDE.md exactly —
+do NOT widen it. CLAUDE.md scopes `AGENT_REVIEW_BYPASS` / admin-merge to a
+**closed list of cases**: PJ-approved emergency, pre-existing-main-branch
+protocol, cloud-env exception, critic-unverifiable-check exception. Anything
+outside that list is FIX (or ESCALATE for genuine design calls).
+
+| Classification | Signal | Action |
+|---|---|---|
+| **Actionable** | Any vendor flagged `[high]` / `[blocker]`, OR ≥2 critics agree at any severity, OR production-impact language ("will throw", "breaks the build", "security regression"), specific file:line + concrete fix | FIX — spawn an iteration subagent (one new commit; never amend) |
+| **Single-vendor nit** | One critic only, `[medium]` or `[note]`, style preference ("could be improved", "should consider"), doc-only contradiction | FIX (cheap small commit) — or, if genuinely no-fix-needed, leave a PR comment explaining + file a follow-up issue if pattern repeats. **Do NOT admin-merge silently** — that erodes the critic's signal-to-noise over time. |
+| **Critic-infra failure** | Critic itself failed to run — sandbox-bwrap permission denied, EPIPE on background pipe close, 500 / timeout. Content not actually reviewed. | OVERRIDE — admin-merge with structured bypass citing the upstream infra issue. Per CLAUDE.md "Critic-unverifiable-check exception," only when there's deterministic out-of-band evidence the gate would have approved (tests pass, type-check pass, etc.). Reason string cites: (1) the infra failure verbatim, (2) the out-of-band evidence, (3) the upstream tracker issue. |
+| **Recursion case** | The PR fixes the bug that's blocking its own critic from posting a verdict | OVERRIDE — admin-merge per CLAUDE.md "Recursion case (W3 worker break-glass)". Reason string: "W3 worker broken by the bug this PR fixes — see #<this PR's closes-issue>." |
+| **`requiresHumanJudgment: true`** | Critic itself flagged the finding as subjective | **ESCALATE** — per CLAUDE.md "Thrash signals," this is a "do NOT iterate; bail to issue-and-bypass" signal. File a follow-up issue capturing the finding; if the underlying check can be satisfied by deterministic out-of-band evidence (per CLAUDE.md "Critic-unverifiable-check exception"), structured bypass with the three required citations. Otherwise pull the human in. **Not an automatic admin-merge.** |
+| **Hallucination** | Finding contradicts measurable empirical reality (cited line doesn't exist; semantics demonstrably wrong against an empirical probe) | FIX the doc / comment / surface that confused the critic if there's a fix that disambiguates. If genuinely a vendor-quality issue with nothing to fix on our side, OVERRIDE with diagnostic comment + file at the critic-quality tracker. |
+| **Genuine design call** | The finding is right but the fix is a real architectural decision the human should make | ESCALATE — pull the human in |
+
+**Per-PR disposition table** — for every iteration round, classify the whole
+PR's finding set into one of: FIX / OVERRIDE / ESCALATE. Default to FIX. Be
+strict on production-code PRs; even on docs-only PRs prefer a small fix-commit
+over an admin-merge through the noise. The bypass audit-trail
+(`.git/agent-reviews/_runs.ndjson` + `make df-stats`) is read by humans —
+flooding it with "single-vendor nit" entries erodes its signal.
+
+**FIX iteration:** spawn a focused subagent for each PR-needing-fix. The agent's
+deliverable is **one new commit on the existing branch** (never amend — the
+critic artifact is bound to the original SHA, and amending desyncs the audit
+trail). The agent re-pushes; the critic re-runs; the next-round verdict is
+either GREEN (merge) or another iteration.
+
+**Iteration budget:** cap at **3 rounds** per PR. After round 3, if findings
+persist, escalate. Three rounds is enough for real bugs; persistent findings
+past three rounds usually indicate either a genuine design call or a
+critic-quality problem (open a tracker, override).
+
+## Phase 5 — Validate
+
+**This is the phase that separates real delivery from theatre.**
+
+Green checks ≠ delivery. Tests passing ≠ delivery. The validation gate is the
+**actual exit criteria** of the work:
+
+- For a **bug fix**: the production symptom is gone. Query the prod surface.
+  Examples — "14 stuck rows reclaimed in one atomic sweep at 04:17 UTC" is a SQL
+  query against prod, not "tests pass". "SIGTERM readiness" is a live
+  kubectl delete-pod + watch /ready transitions.
+- For a **feature**: the feature actually works against real data. Spin up
+  the consumer surface (dashboard, CLI, API) and exercise the path end-to-end.
+- For a **cycle doc / spec**: the doc is at the depth the implementer needs.
+  Sample the doc by simulating "next session reads this and starts coding —
+  do they need to redo design?"
+- For **infra / IaC**: deploy-validate, then live-state-validate. `terraform
+  plan` clean is not the same as `terraform apply` clean is not the same as
+  "the live resources exist and are configured right".
+
+**Build the prod-query into the blitz from the start.** Take a "before" snapshot
+during Phase 1 (the symptom count, the broken state). After deploy, run the
+"after" snapshot. Diff them — that's the evidence.
+
+**For deployed Kubernetes services**, confirm the merge commit's image is
+actually rolling before declaring "deployed". Pattern:
+
+```bash
+kubectl get deployment <svc> -n <namespace> -o \
+  jsonpath='{.spec.template.spec.containers[0].image}'
+```
+
+Image-updater can lag; ArgoCD can stall. The live `kubectl get` is the gate.
+
+**Anti-patterns in validation:**
+
+- **"All checks green"** — checks are inputs to validation, not validation
+- **"Critic approved"** — critic is one signal; the actual exit criteria are
+  often broader (e.g. "users can see the new field on the dashboard")
+- **"Tests pass"** — tests are unit-level; prod-level validation is the gate
+- **"I declared success"** — success theatre. The user can read the diff;
+  they can also see the failed prod state if you faked it.
+
+## Phase 6 — Closure
+
+For each issue in the blitz, the closure gate is **issue closed + evidence
+attached**:
+
+- For a code fix: close the issue with a comment containing the prod evidence
+  (the SQL output, the kubectl output, the dashboard screenshot — whatever
+  proves the symptom cleared).
+- For a spec: close with a pointer to the cycle doc PR.
+- For a cross-repo: close as "upstream-tracked" with the upstream PR/issue
+  link.
+- For "already shipped": close with a context comment naming the PR that
+  shipped it, the commit SHA, and the verification.
+
+**File follow-ups for un-shipped scope.** A blitz almost always surfaces work
+that's worth doing but out-of-scope for the current blitz. File those as new
+issues immediately, before the context evaporates.
+
+**Cleanup the worktrees.** `git worktree remove {{WORKTREE_ROOT}}/<n> --force`
++ `git branch -D <branch>` for each finished agent. Leave the repo state
+clean.
+
+## Quality controls (the non-negotiables)
+
+These are the doctrine commitments. Violating any is a sign the blitz has lost
+discipline.
+
+1. **One PR per subagent, always.** Never one agent for multiple PRs;
+   audit trails get muddled, retries get hard, critic findings get
+   cross-confused.
+2. **Worktree isolation, always.** Each agent in its own worktree off `main`.
+   Race conditions on the git common dir are real.
+3. **CLAUDE.md commit identity, always.** The committer email convention
+   (`claude-code+<handle>@{{AGENT_COMMITTER_ORG}}.ai`) is the agentic-marker;
+   preserve author identity per-dev, mark committer per-policy.
+4. **Validation against real exit criteria, always.** Never declare done on
+   "checks green" alone. Query the prod surface.
+5. **Triage critic findings, never blind-iterate.** Decide per-finding using
+   the Phase 4 table. Default to FIX (even single-vendor nits — a small commit
+   is cheaper than diluting the bypass audit trail). Reserve `admin-merge` for
+   the closed list of cases CLAUDE.md sanctions (critic-infra failure,
+   recursion case, critic-unverifiable-check exception with deterministic
+   out-of-band evidence). `requiresHumanJudgment: true` is a thrash signal —
+   ESCALATE, don't auto-merge.
+6. **State-verify before implementing.** Many issues are already-shipped;
+   close with evidence instead of duplicating work.
+7. **Close issues with evidence.** A green PR + closed issue without a
+   verification comment is theatre. Attach the kubectl output, the SQL
+   output, the screenshot.
+8. **File follow-ups for un-shipped scope.** Don't lose surfaced work to
+   context evaporation.
+
+## Decision tree — when the rate-limit / context-budget bites
+
+A long blitz consumes context. The orchestrator (you) is the bottleneck, not
+the subagents. Two scenarios:
+
+**Scenario A: rate-limit hit mid-blitz.** Subagent spawns fail with "session
+limit reached." Wait for reset; pick up where you left off. The state on
+disk (worktrees, branches, open PRs) is the canonical truth — re-launch
+agents that didn't complete. Don't try to "remember" what was in flight; query
+`gh pr list --state open` + `git worktree list`.
+
+**Scenario B: context-budget exhaustion.** You feel the auto-compaction
+kicking in. Two options:
+
+1. **Continue** — the auto-compaction summarizes prior turns; you can keep
+   going. Fine for routine work.
+2. **Hand off** — use the `handoff` skill to leave a comprehensive note for
+   a fresh session. Particularly right when the remaining work is a NEW
+   phase (e.g. you're done with implementations, need to start the cross-repo
+   PRs).
+
+**Don't bail just because the blitz is long.** Bail if context is genuinely
+gone or if the remaining work needs a fresh planning pass. Otherwise: push
+through.
+
+## Common pitfalls
+
+Catalogued from real misfires.
+
+**1. Cycle-number collision.** Multiple subagents in parallel each pick "next
+available cycle number" → they all pick the same number. Assign numbers up
+front in the Plan output, or expect a renumber follow-up.
+
+**2. Same-file merge conflicts.** Multiple PRs all touching the same source
+file will conflict at merge. Either serialize them or accept the rebase
+overhead.
+
+**3. "Tests pass" → "ship it" trap.** Tests are unit-level. Prod validation
+is the gate. Always do the post-deploy query.
+
+**4. Recursion case (the PR fixes the bug blocking its own merge).** Most
+common with critic-infrastructure issues. Recognize it; admin-merge with a
+structured bypass; document the recursion in the merge commit body.
+
+**5. Stale issue body.** The issue says "implement X" but X was already
+shipped. Always state-verify before implementing. Check `git log --oneline
+-- <files> | grep "#N"` and the most recent merged PRs.
+
+**6. Agent stops mid-flight without pushing.** The agent's local commit
+exists in the worktree but never made it to origin. Check `git log
+<branch>..` and finish the push yourself if the work is sound — don't
+re-spawn the whole agent.
+
+**7. Critic finding asks for an over-defensive fix.** Default response: leave
+a PR comment explaining the trade-off + file the pattern on the
+critic-quality tracker. If the PR keeps getting CHANGES_REQUESTED on the same
+paranoia-tier finding past iteration round 2, escalate — don't admin-merge
+silently.
+
+**8. Cross-repo agent can't access the repo.** Surface immediately; don't
+fake the work. File the access-block on the consumer-side issue, escalate
+to the human.
+
+**9. Spec phase agents return "already covered by existing cycle doc N".**
+This is GOOD — they correctly refused to duplicate work. Close the spec'd
+issue as superseded with a context comment, don't force a duplicate doc.
+
+**10. Cleanup-after-yourself.** Leave the repo state clean: remove worktrees,
+delete merged branches, prune the local refs. Future you (or the next
+session) will thank you.
+
+## Anti-patterns
+
+- **Spawning a "review everything" mega-agent** — context bloat; better to
+  spawn many small focused agents.
+- **Spawning agents without clear scope** ("just fix the bug") — they thrash.
+  Always include: files-to-touch, exit criteria, test plan, do-not-merge.
+- **Skipping the Plan phase to "move fast"** — you'll pay double in
+  triage + collisions.
+- **Iterating on critic findings without triage** — decide FIX / OVERRIDE /
+  ESCALATE per the Phase 4 table; blind iteration loses focus.
+- **OVERRIDE-by-default on single-vendor nits** — dilutes the bypass audit
+  trail. Default to FIX (small commit) or PR-comment-and-defer; reserve
+  bypass for CLAUDE.md's sanctioned cases.
+- **Declaring success on "all green" without prod validation** — theatre.
+- **Forgetting to close the consumer-side issue when the upstream PR opens**
+  — the issue tracker drifts.
+- **Spawning subagents from a worktree that's outside the worktree-first
+  policy** — fight the policy and it fights back.
+
+## Composition with other skills
+
+- **`brainstorming`** — use this for the design phase BEFORE the blitz, when
+  scope isn't decomposable yet. A blitz against a not-yet-decomposed objective
+  is a blitz against vapor.
+- **`handoff`** — use this if context-budget runs out mid-blitz, to leave a
+  comprehensive note for the next session.
+- **`writing-plans`** — the Plan phase output is a plan; use this skill's
+  template if a structured plan format helps.
+- **`subagent-driven-development`** — overlaps significantly; that skill is
+  about *single-cycle* multi-task implementation; this one is about *blitz-
+  scale* delivery. Both teach the "one agent per task" discipline.
+- **`verification-before-completion`** — Phase 5 (Validate) embodies that
+  skill's discipline; defer to it for the validation checklist when
+  ambiguous.
+
+## Quality-gate commands (consumer-specific)
+
+The validation pipeline for {{REPO_NAME}}:
+
+```bash
+{{QUALITY_GATE_TARGETS}}
+```
+
+These are the canonical Make-targets the blitz expects to be runnable in any
+fresh worktree.

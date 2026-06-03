@@ -1,0 +1,56 @@
+# Escalation to Pod Chief Engineer ({{REPO_NAME}})
+
+## Originating Squad
+
+**Squad:** {SQUAD_NAME}
+**Squad CE:** {SQUAD_CE_IDENTIFIER}
+
+## PR Under Review
+
+- **PR:** #{PR_NUMBER} — {PR_TITLE}
+- **URL:** {PR_URL}
+- **Type:** {PLAN_OR_CODE}
+- **Domain:** {PRIMARY_DOMAIN}
+
+## Squad CE Assessment Summary
+
+{SQUAD_CE_FULL_REVIEW}
+
+## Reason for Escalation
+
+{ESCALATION_REASON}
+
+Select the applicable escalation trigger:
+
+- [ ] Change impacts domains outside the squad's boundary — cannot evaluate full blast radius
+- [ ] Genuine architectural disagreement between squad CE and engineer after evidence-based discussion
+- [ ] Novel pattern introduced with no manifesto precedent (manifesto: {{MANIFESTO_PATH}})
+- [ ] Issue applies broadly outside the squad's scope
+
+## Cross-Squad Impact
+
+**Affected squads/domains:**
+
+{CROSS_SQUAD_IMPACT}
+
+## Decision Needed from Pod CE
+
+{SPECIFIC_DECISION_REQUEST}
+
+## Recommended Resolution
+
+{SQUAD_CE_RECOMMENDATION}
+
+---
+
+**Pod CE Instructions:**
+
+You are reviewing this escalation as the Pod Chief Engineer for {{REPO_NAME}}. Your scope is cross-squad coherence:
+
+1. Read the squad CE's full assessment above.
+2. Evaluate the cross-squad impact: does this change conflict with or duplicate work in adjacent domains?
+3. Determine if the architectural direction is consistent across the product area.
+4. Make a decision on the specific request above.
+5. If the manifesto ({{MANIFESTO_PATH}}) needs updating to address this novel situation, note that as a follow-up action.
+
+Produce your response in the standard CE output format with `Pod` level indicated.

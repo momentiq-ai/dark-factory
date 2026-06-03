@@ -2364,3 +2364,228 @@ function parseBypassRecord(raw: unknown, path: string): BypassRecord {
       : {}),
   };
 }
+
+// ---------------------------------------------------------------------
+// `darkfactory.yaml` — the consumer's per-repo Dark Factory config.
+//
+// Every field is optional; an empty file is a valid config and means
+// "use manifest defaults everywhere". The schema is intentionally narrow
+// — every field has a single, documented consumer at install time (the
+// `df skills install` renderer, the agents/orchestration runtime, etc.).
+// New fields go through a normal review cycle so the consumer contract
+// stays auditable.
+//
+// Source-of-truth for field meaning: this file's TypeScript types +
+// `docs/CONSUMER-ADOPTION.md` (which links to this parser for the
+// canonical shape).
+// ---------------------------------------------------------------------
+
+export interface DarkFactoryRepoConfig {
+  displayName?: string;
+  slug?: string;
+  ownerRepo?: string;
+}
+
+export interface DarkFactoryDocsConfig {
+  manifesto?: string;
+  adrDir?: string;
+  cycleDocsDir?: string;
+  rfcDir?: string;
+  prdDir?: string;
+}
+
+export interface DarkFactoryAgentsConfig {
+  chiefEngineer?: string;
+}
+
+export interface DarkFactoryQualityGatesExtras {
+  apiTypes?: string;
+}
+
+export interface DarkFactorySkillEntry {
+  enabled?: boolean;
+}
+
+export interface DarkFactoryConfig {
+  repo?: DarkFactoryRepoConfig;
+  docs?: DarkFactoryDocsConfig;
+  agents?: DarkFactoryAgentsConfig;
+  qualityGates?: string[];
+  qualityGatesExtras?: DarkFactoryQualityGatesExtras;
+  worktreeRoot?: string;
+  agentCommitterOrg?: string;
+  skills?: Record<string, DarkFactorySkillEntry>;
+}
+
+const DARK_FACTORY_TOP_KEYS = new Set([
+  "repo",
+  "docs",
+  "agents",
+  "qualityGates",
+  "qualityGatesExtras",
+  "worktreeRoot",
+  "agentCommitterOrg",
+  "skills",
+]);
+
+function parseDarkFactoryRepo(raw: unknown, path: string): DarkFactoryRepoConfig {
+  const obj = need(isObject, raw, path, "object");
+  for (const key of Object.keys(obj)) {
+    if (!["displayName", "slug", "ownerRepo"].includes(key)) {
+      throw new SchemaError(path, `unknown key: ${key}`);
+    }
+  }
+  const out: DarkFactoryRepoConfig = {};
+  if (obj["displayName"] !== undefined) {
+    out.displayName = need(isString, obj["displayName"], `${path}.displayName`, "string");
+  }
+  if (obj["slug"] !== undefined) {
+    out.slug = need(isString, obj["slug"], `${path}.slug`, "string");
+  }
+  if (obj["ownerRepo"] !== undefined) {
+    out.ownerRepo = need(isString, obj["ownerRepo"], `${path}.ownerRepo`, "string");
+  }
+  return out;
+}
+
+function parseDarkFactoryDocs(raw: unknown, path: string): DarkFactoryDocsConfig {
+  const obj = need(isObject, raw, path, "object");
+  const allowed = ["manifesto", "adrDir", "cycleDocsDir", "rfcDir", "prdDir"];
+  for (const key of Object.keys(obj)) {
+    if (!allowed.includes(key)) {
+      throw new SchemaError(path, `unknown key: ${key}`);
+    }
+  }
+  const out: DarkFactoryDocsConfig = {};
+  for (const key of allowed) {
+    if (obj[key] !== undefined) {
+      (out as Record<string, string>)[key] = need(
+        isString,
+        obj[key],
+        `${path}.${key}`,
+        "string",
+      );
+    }
+  }
+  return out;
+}
+
+function parseDarkFactoryAgents(raw: unknown, path: string): DarkFactoryAgentsConfig {
+  const obj = need(isObject, raw, path, "object");
+  for (const key of Object.keys(obj)) {
+    if (key !== "chiefEngineer") {
+      throw new SchemaError(path, `unknown key: ${key}`);
+    }
+  }
+  const out: DarkFactoryAgentsConfig = {};
+  if (obj["chiefEngineer"] !== undefined) {
+    out.chiefEngineer = need(
+      isString,
+      obj["chiefEngineer"],
+      `${path}.chiefEngineer`,
+      "string",
+    );
+  }
+  return out;
+}
+
+function parseDarkFactoryQualityGatesExtras(
+  raw: unknown,
+  path: string,
+): DarkFactoryQualityGatesExtras {
+  const obj = need(isObject, raw, path, "object");
+  for (const key of Object.keys(obj)) {
+    if (key !== "apiTypes") {
+      throw new SchemaError(path, `unknown key: ${key}`);
+    }
+  }
+  const out: DarkFactoryQualityGatesExtras = {};
+  if (obj["apiTypes"] !== undefined) {
+    out.apiTypes = need(isString, obj["apiTypes"], `${path}.apiTypes`, "string");
+  }
+  return out;
+}
+
+function parseDarkFactorySkillEntry(
+  raw: unknown,
+  path: string,
+): DarkFactorySkillEntry {
+  const obj = need(isObject, raw, path, "object");
+  for (const key of Object.keys(obj)) {
+    if (key !== "enabled") {
+      throw new SchemaError(path, `unknown key: ${key}`);
+    }
+  }
+  const out: DarkFactorySkillEntry = {};
+  if (obj["enabled"] !== undefined) {
+    out.enabled = need(isBoolean, obj["enabled"], `${path}.enabled`, "boolean");
+  }
+  return out;
+}
+
+/**
+ * Parse a `darkfactory.yaml` body (already YAML-decoded into a plain
+ * JS object) into a typed DarkFactoryConfig. Every field is optional;
+ * `parseDarkFactoryConfig({})` succeeds with an empty config and is the
+ * defaulted-everywhere case the CLI uses when the file is missing or
+ * empty.
+ *
+ * Strict shape — any unknown top-level or nested key is rejected with
+ * a SchemaError naming the bad key path, so consumer typos surface at
+ * config-load time rather than at install/render time.
+ */
+export function parseDarkFactoryConfig(raw: unknown): DarkFactoryConfig {
+  const root = need(isObject, raw, "$", "object");
+  for (const key of Object.keys(root)) {
+    if (!DARK_FACTORY_TOP_KEYS.has(key)) {
+      throw new SchemaError("$", `unknown key: ${key}`);
+    }
+  }
+  const out: DarkFactoryConfig = {};
+  if (root["repo"] !== undefined) {
+    out.repo = parseDarkFactoryRepo(root["repo"], "$.repo");
+  }
+  if (root["docs"] !== undefined) {
+    out.docs = parseDarkFactoryDocs(root["docs"], "$.docs");
+  }
+  if (root["agents"] !== undefined) {
+    out.agents = parseDarkFactoryAgents(root["agents"], "$.agents");
+  }
+  if (root["qualityGates"] !== undefined) {
+    const arr = need(isArray, root["qualityGates"], "$.qualityGates", "array");
+    out.qualityGates = arr.map((v, i) =>
+      need(isString, v, `$.qualityGates[${i}]`, "string"),
+    );
+  }
+  if (root["qualityGatesExtras"] !== undefined) {
+    out.qualityGatesExtras = parseDarkFactoryQualityGatesExtras(
+      root["qualityGatesExtras"],
+      "$.qualityGatesExtras",
+    );
+  }
+  if (root["worktreeRoot"] !== undefined) {
+    out.worktreeRoot = need(
+      isString,
+      root["worktreeRoot"],
+      "$.worktreeRoot",
+      "string",
+    );
+  }
+  if (root["agentCommitterOrg"] !== undefined) {
+    out.agentCommitterOrg = need(
+      isString,
+      root["agentCommitterOrg"],
+      "$.agentCommitterOrg",
+      "string",
+    );
+  }
+  if (root["skills"] !== undefined) {
+    const skillsObj = need(isObject, root["skills"], "$.skills", "object");
+    const skills: Record<string, DarkFactorySkillEntry> = {};
+    for (const [name, entry] of Object.entries(skillsObj)) {
+      skills[name] = parseDarkFactorySkillEntry(entry, `$.skills.${name}`);
+    }
+    out.skills = skills;
+  }
+  return out;
+}

@@ -98,6 +98,10 @@ import { summarizeGate } from "./policy/gate.js";
 // stderr-only diagnostics) is structurally distinct from the other
 // subcommands. See docs/roadmap/cycles/cycle5-mcp-server.md.
 import { cmdMcp } from "./mcp/cli.js";
+// DFP #192 — `df skills install/list` subcommand. The skills module is the
+// install engine (consumer-config-driven template rendering); cmdSkills
+// in commands/skills.ts is the CLI wrapper around it.
+import { cmdSkills } from "./commands/skills.js";
 // Cycle 11 Phase 11.1 — `df flow` namespace surfacing the PR Flow
 // Assessor's records from momentiq-ai/df-assessments. See
 // docs/roadmap/cycles/cycle11-flow-assessor-surfacing-and-tools.md.
@@ -216,6 +220,13 @@ function printHelp(meta: PackageMeta): void {
       "                              speaking agent as a structured tool + resource",
       "                              + prompt catalog. Run `df mcp --help` for the",
       "                              .mcp.json wiring snippet.",
+      "",
+      "Bundled skills (consumer-shape):",
+      "  df skills install <name>    Render + install a bundled skill into",
+      "                              .claude/skills/<name>/, driven by the consumer's",
+      "                              darkfactory.yaml. --all installs every skill",
+      "                              flagged enabled: true.",
+      "  df skills list              List bundled skill names + summaries.",
       "",
       "PR Flow Assessor surfacing:",
       "  df flow                     Surface the PR Flow Assessor's records.",
@@ -381,6 +392,13 @@ const CYCLE11_SUBCOMMANDS = new Set(["flow"]);
 // spec requirement). Registered here so the early --help interception
 // forwards each `df <cmd> --help` to its per-subcommand help printer.
 const SHOW_STATUS_SUBCOMMANDS = new Set(["show", "status", "findings"]);
+
+// `df skills` — bundled-skill installer (Cycle: DFP #192). The namespace
+// fans out into `install/list` sub-subcommands handled inside cmdSkills;
+// registered here so the early --help interception above forwards
+// `df skills --help` to cmdSkills' own help printer instead of the
+// top-level printHelp.
+const SKILLS_SUBCOMMANDS = new Set(["skills"]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // pr-status-check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -1877,7 +1895,8 @@ async function main(argv: string[]): Promise<number> {
       !PHASE_G_SUBCOMMANDS.has(sub0) &&
       !CYCLE12_SUBCOMMANDS.has(sub0) &&
       !CYCLE11_SUBCOMMANDS.has(sub0) &&
-      !SHOW_STATUS_SUBCOMMANDS.has(sub0)
+      !SHOW_STATUS_SUBCOMMANDS.has(sub0) &&
+      !SKILLS_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -1973,6 +1992,11 @@ async function main(argv: string[]): Promise<number> {
       stdout: (s) => process.stdout.write(s),
       stderr: (s) => process.stderr.write(s),
     });
+  }
+  // DFP #192 — bundled-skill installer surface. The subcommand fans out
+  // into `install/list` inside cmdSkills, mirroring the `df flow` pattern.
+  if (sub === "skills") {
+    return await cmdSkills(rest);
   }
   return notImplemented(sub);
 }

@@ -42,6 +42,10 @@
     "./cycle-tracker-sync": {
       "types": "./dist/cycle-tracker-sync/index.d.ts",
       "import": "./dist/cycle-tracker-sync/index.js"
+    },
+    "./skills": {
+      "types": "./dist/skills/index.d.ts",
+      "import": "./dist/skills/index.js"
     }
   },
   "bin": {
@@ -49,6 +53,7 @@
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
     "LICENSE"
   ],
