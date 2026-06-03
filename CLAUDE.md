@@ -114,7 +114,13 @@ Plan PRs (cycle docs) start as `--draft` and only get auto-merge after `gh pr re
 
 ## Iteration-trap — N=2 ceiling
 
-The Dark Factory ratchet pattern: critics iterate, but bounded. **If you've made 2 rounds of fixes addressing the same critic finding and a third round of findings on the same surface is appearing, STOP iterating and surface to PJ.** This is a structural anti-pattern (`iteration-trap-large-doc` / `iteration-trap-large-code` per cycle 333's pattern catalog), not a "keep trying" signal.
+The Dark Factory ratchet pattern: critics iterate, but bounded. **If you've made 2 rounds of fixes and a third round of findings on the same finding-class is appearing, STOP iterating and surface to PJ.** This is a structural anti-pattern (`iteration-trap-large-doc` / `iteration-trap-large-code` per cycle 333's pattern catalog), not a "keep trying" signal.
+
+**Same finding-class** does NOT require literally the same finding text. *Any* new critic finding introduced by a fix is a thrash signal, **regardless of**:
+
+- **Severity drop** (`[high]` → `[medium]` is *not* convergence — the underlying drift class is still firing).
+- **Location change** (a finding in a different file or section is *not* progress — your patch surfaced a new location of the same structural problem).
+- **Vendor agreement** (cross-vendor consensus on a thrash-triggered finding is *real signal*, but the right response is **restructure**, not **patch**).
 
 Common triggers:
 
@@ -122,6 +128,12 @@ Common triggers:
 - Findings flagged `requiresHumanJudgment: true` — genuinely subjective; don't iterate.
 - You're touching files that aren't in your PR's original scope.
 - A fix you made introduced a NEW critic finding — that's cascading scope creep.
+
+**Mandatory response at the 2nd consecutive round of fix-introduced findings:** call `advisor` + identify the structural cause + apply DRY / restructure to the doctrine or content being iterated on, **before** any further FIX attempt. The advisor tool takes no parameters — it auto-forwards full context — so the only cost is wall-clock.
+
+**Mandatory advisor cadence:** at 2+ critic-iteration rounds with zero advisor calls, the advisor call becomes mandatory by round 3 (the advisor sees the full iteration arc and identifies structural causes that per-round triage cannot).
+
+Motivating evidence: `momentiq-ai/dark-factory-platform#218` took 14 critic-iteration rounds because the agent rationalized past the prior (looser) "same critic finding" framing — each round's finding was technically *different* (different file, different severity, different section), but they were all the same finding-class: doctrine drift caused by restating the same complex contract in too many places.
 
 When you hit the N=2 ceiling, file a tracking issue, surface the situation, and stop. Do not bypass; do not amend.
 
