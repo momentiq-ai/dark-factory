@@ -185,6 +185,30 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorCheck[]> 
     checks.push(await checkDopplerOnPath(loaded));
   }
 
+  // 7a. Cloud-env detection (consumer issue dark-factory-platform#56).
+  // When this process is running inside a cloud sandbox / dev-container
+  // (GitHub Codespaces, dev-container, Claude Code sandbox, etc.) the
+  // workstation OAuth flows for subscription-backed critics (`cursor-agent
+  // login`, `codex login`) are structurally unavailable — there is no
+  // browser to drive the OAuth dance and no Keychain to persist the
+  // resulting tokens. Surfacing this as a top-level INFO check (always
+  // emitted; not gated on `secrets.doppler` like the doppler probe) gives
+  // pre-push hooks a deterministic signal they can read from
+  // `df doctor --json` and short-circuit the gate with the documented
+  // `AGENT_REVIEW_BYPASS="cloud env — local quorum unavailable; W3
+  // critic is the gate"` cooperation pattern instead of churning through
+  // a per-critic "CURSOR_API_KEY is not set" failure cascade.
+  //
+  // The detection is also wired downstream: when `cloudEnv.detected` is
+  // true AND the resolved critic is pinned to a subscription auth
+  // source (`auth: "chatgpt"`), the per-adapter `doctor()` invocation is
+  // skipped and replaced with a `subscription_auth_unavailable_cloud_env`
+  // INFO check. API-auth critics (`auth: "api"`, no pin) still run their
+  // adapter `doctor()` — API keys ARE expected to be present in cloud
+  // envs via Doppler / env vars.
+  const cloudEnv = detectCloudEnv();
+  checks.push(cloudEnvCheck(cloudEnv));
+
   // 8. per-adapter doctor() — this is where subscription-auth verification
   // actually lives. Each adapter's doctor() checks ITS own credentials
   // (env var, ~/.cursor auth, ~/.codex auth, etc.). When a profile is
@@ -206,6 +230,22 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorCheck[]> 
       });
       continue;
     }
+    // Cloud-env subscription-auth skip (issue #56): when a critic is
+    // pinned to a subscription auth source in a cloud env, do NOT call
+    // the adapter's `doctor()` — there is no path to authenticate, so
+    // the probe would either spuriously fail OR (worse) consult a stale
+    // file. Surface the structural gap as a single INFO check whose
+    // remediation is the documented bypass.
+    if (cloudEnv.detected && isSubscriptionAuth(critic.auth)) {
+      checks.push({
+        name: `${critic.id}.subscription_auth_unavailable_cloud_env`,
+        passed: true,
+        optional: true,
+        detail: `cloud env detected (${cloudEnv.markers.join(", ")}); subscription auth (auth="${critic.auth ?? "(unset)"}") is structurally unavailable here — adapter doctor() skipped.`,
+        remediation: CLOUD_ENV_BYPASS_REMEDIATION,
+      });
+      continue;
+    }
     const adapter = registry.resolve(critic.adapter);
     const adapterChecks = await adapter.doctor(critic);
     // Optional (shadow) critics are tagged `optional: true` so cmdDoctor
@@ -220,6 +260,99 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorCheck[]> 
   }
 
   return checks;
+}
+
+// ---------------------------------------------------------------------------
+// Cloud-env detection (consumer issue dark-factory-platform#56).
+//
+// Pure: reads only `process.env` (or an injected `env` map for tests).
+// No I/O, no time dependence. Returns the structured detection result
+// so callers can both render the INFO check AND key behavior off
+// `detected: true` (subscription-auth skip in `runDoctor`, fail-fast
+// short-circuit in the consumer-side pre-push hook).
+//
+// Markers (any one triggers detection):
+//   - `CODESPACES=true`              GitHub Codespaces native marker
+//   - `REMOTE_CONTAINERS=true`       VS Code Dev Containers (local + Codespaces)
+//   - `CLAUDE_CODE_SANDBOX=true`     Claude Code web sandbox marker
+//   - `DEVCONTAINER=true`            generic devcontainer marker (some images set this)
+//
+// The marker set is *intentionally minimal* — future cloud-env brands
+// add themselves by exporting one of these (or by extending this list
+// upstream). The list is exported so consumers (pre-push hooks,
+// observability sinks) can introspect what was checked.
+// ---------------------------------------------------------------------------
+
+export const CLOUD_ENV_MARKERS = [
+  "CODESPACES",
+  "REMOTE_CONTAINERS",
+  "CLAUDE_CODE_SANDBOX",
+  "DEVCONTAINER",
+] as const;
+
+export type CloudEnvMarker = (typeof CLOUD_ENV_MARKERS)[number];
+
+export interface CloudEnvDetection {
+  detected: boolean;
+  /**
+   * The subset of `CLOUD_ENV_MARKERS` whose values were truthy in
+   * `process.env` at detection time (each one of "true", "1", "yes",
+   * case-insensitive; presence-only markers like a non-empty
+   * `CODESPACE_NAME` are NOT considered — keep the contract explicit
+   * boolean-ish to avoid false positives from generic env-set state).
+   */
+  markers: CloudEnvMarker[];
+}
+
+export interface DetectCloudEnvOptions {
+  env?: NodeJS.ProcessEnv;
+}
+
+export function detectCloudEnv(
+  options: DetectCloudEnvOptions = {},
+): CloudEnvDetection {
+  const env = options.env ?? process.env;
+  const markers: CloudEnvMarker[] = [];
+  for (const key of CLOUD_ENV_MARKERS) {
+    const raw = env[key];
+    if (raw === undefined) continue;
+    const v = raw.trim().toLowerCase();
+    if (v === "true" || v === "1" || v === "yes") {
+      markers.push(key);
+    }
+  }
+  return { detected: markers.length > 0, markers };
+}
+
+const CLOUD_ENV_BYPASS_REMEDIATION =
+  'cloud env: local subscription quorum is structurally unavailable. Push with `AGENT_REVIEW_BYPASS="cloud env — local quorum unavailable; W3 critic is the gate" git push`; the hosted W3 critic remains the merge gate via branch protection.';
+
+function cloudEnvCheck(detection: CloudEnvDetection): DoctorCheck {
+  if (!detection.detected) {
+    return {
+      name: "cloud_env",
+      passed: true,
+      detail: `no cloud-env markers detected (${CLOUD_ENV_MARKERS.join(", ")} all unset / falsy)`,
+    };
+  }
+  return {
+    name: "cloud_env",
+    passed: true,
+    optional: true,
+    detail: `cloud env detected via ${detection.markers.join(", ")} — subscription-auth critics will be skipped (use the documented bypass)`,
+    remediation: CLOUD_ENV_BYPASS_REMEDIATION,
+  };
+}
+
+// A critic's `auth` value is "subscription" (chatgpt / subscription /
+// composer) when its workstation auth path is OAuth-backed and therefore
+// structurally unavailable inside a cloud env. The literal token set
+// matches the canonical values the adapters honor (cursor-cli accepts
+// only "chatgpt"; codex-sdk accepts "chatgpt" | "api"; future
+// subscription tokens added upstream should land here).
+function isSubscriptionAuth(auth: string | undefined): boolean {
+  if (auth === undefined) return false;
+  return auth === "chatgpt" || auth === "subscription" || auth === "composer";
 }
 
 // `git config --local core.hooksPath` check. Verifies that the local repo
