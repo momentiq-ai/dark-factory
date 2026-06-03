@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "repoRoot": "<NORM>",
+  "canonicalName": "momentiq-ai/dark-factory-platform",
+  "stacks": [
+    {
+      "language": "typescript",
+      "versionPin": ">=20",
+      "manifestPath": "package.json"
+    }
+  ],
+  "services": [
+    {
+      "name": "aggregation",
+      "path": "services/aggregation",
+      "stack": null
+    },
+    {
+      "name": "event-ingest",
+      "path": "services/event-ingest",
+      "stack": null
+    },
+    {
+      "name": "mcp-gateway",
+      "path": "services/mcp-gateway",
+      "stack": null
+    },
+    {
+      "name": "webhook-receiver",
+      "path": "services/webhook-receiver",
+      "stack": null
+    },
+    {
+      "name": "worker",
+      "path": "services/worker",
+      "stack": null
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "@momentiq/dark-factory-cli",
+      "version": "2.0.0",
+      "manifestPath": "package-lock.json"
+    }
+  ],
+  "ci": {
+    "workflows": [
+      {
+        "name": "bastion-bootstrap-test",
+        "path": ".github/workflows/bastion-bootstrap-test.yml",
+        "triggers": [
+          "pull_request"
+        ],
+        "jobs": [
+          "bastion-bootstrap-test"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Build and Publish Images",
+        "path": ".github/workflows/build-images.yml",
+        "triggers": [
+          "push",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "detect-changes",
+          "build"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "check-dockerfile",
+        "path": ".github/workflows/check-dockerfile-test.yml",
+        "triggers": [
+          "pull_request",
+          "push"
+        ],
+        "jobs": [
+          "check-dockerfile-test"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "cloud-bootstrap-and-dockerfile",
+        "path": ".github/workflows/cloud-bootstrap-and-dockerfile.yml",
+        "triggers": [
+          "pull_request",
+          "push"
+        ],
+        "jobs": [
+          "cloud-bootstrap-test",
+          "dockerfile-build"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "df-pin",
+        "path": ".github/workflows/df-pin.yml",
+        "triggers": [
+          "pull_request",
+          "push"
+        ],
+        "jobs": [
+          "df-pin"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "helm-render-test",
+        "path": ".github/workflows/helm-render-test.yml",
+        "triggers": [
+          "pull_request"
+        ],
+        "jobs": [
+          "helm-render-test"
+        ],
+        "matrixDimensions": []
+      }
+    ],
+    "deployStory": {
+      "workflowPath": ".github/workflows/build-images.yml",
+      "command": "echo \"ArgoCD Image Updater will auto-deploy this image within ~2 min (cycle 6 GitOps loop). No manual \\`helm upgrade\\` required.\"",
+      "target": "helm"
+    }
+  },
+  "tree": {
+    "topLevelDirs": [
+      {
+        "name": "docs",
+        "category": "docs",
+        "fileCount": 94
+      },
+      {
+        "name": "services",
+        "category": "services",
+        "fileCount": 0
+      }
+    ],
+    "languageBreakdown": {
+      "markdown": 98,
+      "json": 2
+    },
+    "testDirs": [],
+    "fileCount": 100
+  },
+  "git": {
+    "recentCommitConventions": {
+      "conventional": true,
+      "cycleReferenced": true
+    },
+    "defaultBranch": "main"
+  },
+  "docs": {
+    "existing": [
+      "README.md",
+      "docs/admin/README.md",
+      "docs/ADR/2026-05-creator-model-autonomy.md",
+      "docs/ADR/2026-05-df-event-hub-postgres-as-bus.md",
+      "docs/ADR/2026-05-w1-w3-gate-migration.md",
+      "docs/architecture/agent-tooling.md",
+      "docs/architecture/bastion-impersonation-design.md",
+      "docs/architecture/local-critic-auth.md",
+      "docs/architecture/production-deployment.md",
+      "docs/architecture/README.md",
+      "docs/deployment/README.md",
+      "docs/design/README.md",
+      "docs/engineering/README.md",
+      "docs/guides/adr-workflow.md",
+      "docs/guides/ai-pair-roadmap-planning-guide.md",
+      "docs/observability.md",
+      "docs/patterns/README.md",
+      "docs/playbooks/README.md",
+      "docs/prds/2026-05-self-hosted-single-tenant.md",
+      "docs/PRINCIPLES.md",
+      "docs/rfcs/2026-05-license-gated-encrypted-prompts.md",
+      "docs/roadmap/capabilities/pillar-1-deterministic-gate.md",
+      "docs/roadmap/capabilities/pillar-2-hosted-control-plane.md",
+      "docs/roadmap/capabilities/pillar-3-team-sport.md",
+      "docs/roadmap/capabilities/pillar-4-spec-driven-development.md",
+      "docs/roadmap/capabilities/pillar-5-runtime-closed-loop.md",
+      "docs/roadmap/capabilities/pillar-6-observability-native.md",
+      "docs/roadmap/capabilities/README.md",
+      "docs/roadmap/cycles/cycle1-dashboard-installation-linking.md",
+      "docs/roadmap/cycles/cycle10-critic-observability-resilience.md",
+      "docs/roadmap/cycles/cycle11-flow-assessor-surfacing-and-tools.md",
+      "docs/roadmap/cycles/cycle12-agent-handoff-v2-issue-anchor.md",
+      "docs/roadmap/cycles/cycle13-claude-code-cloud-envs.md",
+      "docs/roadmap/cycles/cycle13-self-hosted-enterprise.md",
+      "docs/roadmap/cycles/cycle14-aggregation-additions-for-gate-run-detail.md",
+      "docs/roadmap/cycles/cycle15-df-onboard-agent.md",
+      "docs/roadmap/cycles/cycle16-customer-trace-ui.md",
+      "docs/roadmap/cycles/cycle17-project-group-layer.md",
+      "docs/roadmap/cycles/cycle18-exec-dashboard-sota.md",
+      "docs/roadmap/cycles/cycle2-agentic-repo-onboarding.md",
+      "docs/roadmap/cycles/cycle3-fleet-w1-elimination.md",
+      "docs/roadmap/cycles/cycle316-dark-factory-enforcement.md",
+      "docs/roadmap/cycles/cycle318-dark-factory-sota.md",
+      "docs/roadmap/cycles/cycle322-dark-factory-resilience.md",
+      "docs/roadmap/cycles/cycle331-dark-factory-platformization.md",
+      "docs/roadmap/cycles/cycle331.1-extract-from-sage3c.md",
+      "docs/roadmap/cycles/cycle331.2-github-app-private-beta.md",
+      "docs/roadmap/cycles/cycle331.3-oss-cli-public-beta.md",
+      "docs/roadmap/cycles/cycle331.4-fleet-and-enterprise.md",
+      "docs/roadmap/cycles/cycle331.5-executive-operational-dashboard.md"
+    ],
+    "hasClaudeMd": true,
+    "hasAgentsMd": true,
+    "agentContextSetPresent": true,
+    "claudeMd": {
+      "sizeBytes": 24,
+      "headings": [
+        "truncated for fixture"
+      ]
+    },
+    "agentsMd": {
+      "sizeBytes": 24,
+      "headings": [
+        "truncated for fixture"
+      ]
+    }
+  },
+  "dfPresence": {
+    "hooks": true,
+    "configJson": true,
+    "prWorkflow": false,
+    "cliPin": "2.0.0"
+  },
+  "decisions": [],
+  "analyzerErrors": []
+}
