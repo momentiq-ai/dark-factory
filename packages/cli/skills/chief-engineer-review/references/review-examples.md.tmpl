@@ -1,0 +1,130 @@
+# Chief Engineer Review Examples
+
+Annotated examples demonstrating the expected quality and specificity of CE reviews. These examples calibrate the CE's judgment — what to catch, how to express findings, and how to distinguish manifesto violations from style preferences.
+
+> Note: examples use illustrative file paths and Make targets. Substitute the
+> conventions of {{REPO_NAME}} (validation pipeline: see the SKILL.md
+> "Validate" step) when adapting the patterns.
+
+---
+
+## Example 1: BLOCK — Hand-Written Types (Schema-Pipeline Principle)
+
+**Context:** A code PR adds a new learning-path feature. The engineer created TypeScript interfaces in the frontend that mirror the backend Pydantic schemas.
+
+### Bad Review (Too Vague)
+>
+> "Consider using generated types instead of hand-written ones."
+
+### Good Review (Specific, Actionable, Cited)
+>
+> #### BLOCK — Schema Pipeline as Single Source of Truth
+>
+> **File:** `web/types/learning.ts:12-28`
+> **Finding:** The `LearningPath` and `LearningPathCreate` interfaces are hand-written duplicates of the Pydantic schemas at `backend/domains/student/schemas.py:45-78`. These schemas already exist in the committed generated OpenAPI declarations at `web/types/api/schema.d.ts`.
+> **Required:** Delete `web/types/learning.ts`. Import the canonical schema types from `@/types/api/schema` instead:
+>
+> ```typescript
+> import type { components } from '@/types/api/schema';
+>
+> type LearningPath = components['schemas']['LearningPath'];
+> type LearningPathCreate = components['schemas']['LearningPathCreate'];
+> ```
+>
+> If the generated types are missing, run the consumer's API-types generation target (e.g. `make generate-api-types`) first and commit the updated `web/types/api/schema.d.ts`.
+
+**Why this is good:** Exact file paths, exact line numbers, exact replacement code. The engineer can fix this in 30 seconds.
+
+---
+
+## Example 2: BLOCK — Missing Observability
+
+**Context:** A code PR adds three new API endpoints for student progress tracking.
+
+### Bad Review
+>
+> "These endpoints need tracing."
+
+### Good Review
+>
+> #### BLOCK — Observability-Native
+>
+> **Files:** `backend/domains/student/routes/students.py:34`, `:67`, `:95`
+> **Finding:** Three new endpoints (`GET /students`, `GET /students/{id}`, `POST /students/{id}/advance`) have no OpenTelemetry instrumentation. Each endpoint handles business logic (mastery filtering, status advancement) that must be traceable for debugging and monitoring.
+> **Required:** Add OTel span creation to each endpoint. Example for the advance endpoint:
+>
+> ```python
+> from opentelemetry import trace
+> tracer = trace.get_tracer(__name__)
+>
+> @router.post("/students/{id}/advance")
+> async def advance_student(id: UUID, ...):
+>     with tracer.start_as_current_span("advance_student", attributes={"student_id": str(id)}):
+>         ...
+> ```
+>
+> Also: add a panel to the operational dashboard for mastery advancement events.
+
+---
+
+## Example 3: BLOCK — CRUD Instead of Conversational
+
+**Context:** A plan PR proposes a form-based learning-path creation flow.
+
+### Bad Review (Vague Redirect)
+>
+> "This should use the chat interface."
+
+### Good Review (Concrete Alternative)
+>
+> #### BLOCK — Conversational-First, Not CRUD-with-AI
+>
+> **Document:** `{{CYCLE_DOCS_DIR}}/cycle250-learning-path.md`, Section 3.2 "Learning Path Creation Flow"
+> **Finding:** The plan describes a multi-step form wizard for creating learning paths (title -> goals -> standards -> schedule). This is a traditional CRUD pattern. In an AI-native product, learning-path creation is a conversation:
+>
+> *Parent:* "Build a self-paced reading curriculum for my 4th-grader, aligned to grade-level standards and light enough for 30 minutes a day"
+> *Agent:* [Reasons about learner profile, maps standards and prerequisites, proposes a sequenced path with practice cadence, presents for approval via generative UI]
+>
+> The agent should gather requirements conversationally, generate the path, optimize sequencing via agentic architecture, and present the result as a generative UI card in the chat — not a form.
+> **Required:** Redesign the learning-path creation flow as a conversational interaction. The agent is the interface, not a form.
+
+---
+
+## Example 4: ALIGN — Suboptimal Agent Decomposition
+
+**Context:** A code PR implements a single monolithic agent that handles all student progress operations.
+
+> **ALIGN — Agentic Architecture**
+>
+> **File:** `backend/domains/student/chat/services/student_progress_agent.py`
+> **Finding:** The student_progress agent handles 12 different operations (learning-path planning, mastery analysis, practice scheduling, resource finding, assessment generation, progress summarization) in a single ReAct loop with 12 tools. This works but violates the specialist delegation principle. A practice-scheduling decision shouldn't require loading every mastery-analysis and resource-discovery tool into context.
+> **Recommended:** Decompose into specialist agents: `planning_specialist`, `progress_analyst`, `practice_scheduler`, `resource_curator`, etc. The root student_progress agent delegates to specialists based on intent. Each specialist has only the tools relevant to its domain.
+> This is ALIGN (not BLOCK) because the current implementation is functional and agentic — it just needs decomposition for maintainability and context efficiency.
+
+---
+
+## Example 5: APPROVE — Plan PR With Clear Decomposition
+
+**Context:** A plan PR proposes a new cycle for parent-facing reading-progress notifications.
+
+> **APPROVE — All Principles Aligned**
+>
+> The plan in `{{CYCLE_DOCS_DIR}}/cycle260-reading-progress-notifications.md` is well-decomposed and aligned:
+> - Notification triggering is agent-driven (not cron) — agent decides what's worth notifying about based on a learning model
+> - Generative UI surface for the parent dashboard — no static template
+> - Temporal workflow for daily aggregation — durable
+> - OTel instrumentation specified for every new event type
+> - Schema additions traced through the pipeline (Pydantic → OpenAPI → frontend types)
+> - Cycle doc references three relevant ADRs and two preceding cycle docs
+>
+> No blockers. Proceed to implementation.
+
+---
+
+## What These Examples Calibrate
+
+- **Citation specificity**: Always cite by file:line or doc section, never "somewhere in the codebase."
+- **Replacement code**: When you block on a pattern, show the right pattern. The engineer should not have to guess what you want.
+- **Manifesto-tied reasoning**: Every BLOCK/ALIGN/APPROVE cites the principle from {{MANIFESTO_PATH}} that drives the assessment.
+- **Pragmatism vs. shortcut distinction**: ALIGN reviews acknowledge that working code can still be improved without being a blocker. BLOCK reviews are reserved for actual manifesto violations.
+- **The default disposition is BLOCK** — APPROVE is the exceptional case, earned by evidence of alignment.

@@ -1,0 +1,67 @@
+{
+  "$schema": "../skill-schema.json",
+  "name": "chief-engineer-review",
+  "version": "1.0.0",
+  "summary": "AI-native architectural review system for any repo that adopts Dark Factory — autonomous (post to PR) + conversational (CE second-brain) modes.",
+  "originatingRepo": "momentiq-ai/sage3c",
+  "files": [
+    { "template": "SKILL.md.tmpl", "target": "SKILL.md" },
+    { "template": "templates/code-review-prompt.md.tmpl", "target": "templates/code-review-prompt.md" },
+    { "template": "templates/plan-review-prompt.md.tmpl", "target": "templates/plan-review-prompt.md" },
+    { "template": "templates/escalation-prompt.md.tmpl", "target": "templates/escalation-prompt.md" },
+    { "template": "references/review-examples.md.tmpl", "target": "references/review-examples.md" }
+  ],
+  "variables": {
+    "REPO_NAME": {
+      "description": "Display name of the consumer repo (e.g. 'Dark Factory Platform').",
+      "source": "darkfactory.yaml: repo.displayName",
+      "default": "this repo"
+    },
+    "REPO_SLUG": {
+      "description": "Slug of the consumer repo (used in Make-target prefixes like `make {REPO_SLUG}-quality-gates`).",
+      "source": "darkfactory.yaml: repo.slug, or git remote inference",
+      "default": ""
+    },
+    "MANIFESTO_PATH": {
+      "description": "Repo-relative path to the engineering manifesto (principles doc).",
+      "source": "darkfactory.yaml: docs.manifesto",
+      "default": "docs/PRINCIPLES.md"
+    },
+    "ADR_DIR": {
+      "description": "Repo-relative path to the ADR directory.",
+      "source": "darkfactory.yaml: docs.adrDir",
+      "default": "docs/ADR"
+    },
+    "CYCLE_DOCS_DIR": {
+      "description": "Repo-relative path to the cycle-docs directory.",
+      "source": "darkfactory.yaml: docs.cycleDocsDir",
+      "default": "docs/roadmap/cycles"
+    },
+    "RFC_DIR": {
+      "description": "Repo-relative path to the RFC directory (optional — section omitted if neither RFC_DIR nor PRD_DIR exists in consumer config).",
+      "source": "darkfactory.yaml: docs.rfcDir",
+      "default": "docs/rfcs"
+    },
+    "PRD_DIR": {
+      "description": "Repo-relative path to the PRD directory.",
+      "source": "darkfactory.yaml: docs.prdDir",
+      "default": "docs/prds"
+    },
+    "CE_AGENT_PATH": {
+      "description": "Repo-relative path to the chief-engineer subagent definition.",
+      "source": "darkfactory.yaml: agents.chiefEngineer",
+      "default": ".claude/agents/chief-engineer.md"
+    },
+    "QUALITY_GATE_TARGETS": {
+      "description": "Newline-separated, indented Make-target commands the skill should run as the validation pipeline. Rendered as a `make X` block.",
+      "source": "darkfactory.yaml: qualityGates (array)",
+      "default": "make quality-gates",
+      "kind": "list"
+    },
+    "API_TYPES_TARGET": {
+      "description": "Optional Make target for generating API types (used by review examples). Omitted if blank.",
+      "source": "darkfactory.yaml: qualityGatesExtras.apiTypes",
+      "default": ""
+    }
+  }
+}
