@@ -14,7 +14,7 @@ import {
   gitShowFile,
   resolveCommit,
 } from "../git.js";
-import { readQualityGateEvidence } from "../evidence/index.js";
+import { readDockerBuildEvidence, readQualityGateEvidence } from "../evidence/index.js";
 import {
   compactDiff,
   effectiveMode,
@@ -113,6 +113,18 @@ export async function buildReviewPacket(
     ? await readGuidanceFilesFromRef(options.trustedSurfaceRef, config.context.promptFragments, cwd)
     : readGuidanceFiles(repoRoot, config.context.promptFragments);
   const validation = await readValidationEvidence(loaded, sha);
+  // DFP #141 — pick up the consumer's `scripts/check-dockerfile.sh`
+  // evidence if the shim ran. Field is undefined when the shim hasn't
+  // run, which is the status-quo path (no behavior change). Read from
+  // the working-tree side; UNLIKE config + guidance files this is NOT
+  // a trusted-surface input (it lives under .git/agent-reviews/,
+  // outside the tracked tree, so the parent-ref rebind doesn't apply
+  // and would also fail — git can't `show ref:_dockerbuild-evidence.json`
+  // because the file is never committed). The reader's second arg is
+  // the SHA-binding gate: records whose `reviewedSha` doesn't match the
+  // commit under review are dropped as stale (mirror of the
+  // `readQualityGateEvidence` stale-handling path).
+  const dockerBuildEvidence = await readDockerBuildEvidence(loaded, sha);
 
   return {
     repoRoot,
@@ -129,6 +141,7 @@ export async function buildReviewPacket(
     validation,
     ...(compactedDiff !== undefined ? { compactedDiff } : {}),
     ...(parseErrorPaths !== undefined ? { parseErrorPaths } : {}),
+    ...(dockerBuildEvidence !== undefined ? { dockerBuildEvidence } : {}),
   };
 }
 
