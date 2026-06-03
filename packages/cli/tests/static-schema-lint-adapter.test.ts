@@ -240,7 +240,11 @@ test("StaticSchemaLintAdapter APPROVES a valid claude-code-settings example", as
   expect_eq(result.findings.length, 0);
 });
 
-test("StaticSchemaLintAdapter emits medium-severity advisory for unknown schema names", async () => {
+test("StaticSchemaLintAdapter blocks on unknown schema names (typo guard)", async () => {
+  // A typo'd annotation (e.g. `claude-code-setting` missing the trailing `s`)
+  // would otherwise silently disable validation for the exact class of doc
+  // examples this adapter is designed to gate. Promote the verdict to
+  // CHANGES_REQUESTED so the typo surfaces instead of failing open.
   const claudemdContent = [
     "```jsonc",
     "// schema: never-registered-schema",
@@ -252,10 +256,9 @@ test("StaticSchemaLintAdapter emits medium-severity advisory for unknown schema 
   ]);
   const adapter = new StaticSchemaLintAdapter();
   const result = await adapter.review(packet, CRITIC, REVIEW_OPTIONS);
-  // Medium is NOT in the default blocking set, so the verdict is APPROVED.
-  expect_eq(result.verdict, "APPROVED");
+  expect_eq(result.verdict, "CHANGES_REQUESTED");
   expect_eq(result.findings.length, 1);
-  expect_eq(result.findings[0]?.severity, "medium");
+  expect_eq(result.findings[0]?.severity, "high");
   expect_match(result.findings[0]?.evidence ?? "", /Unknown schema/);
 });
 
@@ -401,4 +404,131 @@ test("StaticSchemaLintAdapter is deterministic across repeated runs", async () =
   expect_eq(r1.verdict, r2.verdict);
   expect_eq(r1.findings.length, r2.findings.length);
   expect_eq(r1.findings[0]?.evidence, r2.findings[0]?.evidence);
+});
+
+// ---------------------------------------------------------------------------
+// String-aware JSONC stripping — trailing commas inside string literals.
+//
+// The trailing-comma removal step must not mutate commas that live inside
+// JSON string values, or the validator runs against data that does not
+// match the documented example.
+
+test("stripJsoncSyntax preserves a comma-brace sequence inside a string literal", () => {
+  const out = stripJsoncSyntax('{ "literal": ",}", "after": 1 }');
+  const parsed = JSON.parse(out);
+  expect_eq(parsed.literal, ",}");
+  expect_eq(parsed.after, 1);
+});
+
+test("stripJsoncSyntax preserves a comma-bracket sequence inside a string literal", () => {
+  const out = stripJsoncSyntax('{ "literal": ",]", "after": 1 }');
+  const parsed = JSON.parse(out);
+  expect_eq(parsed.literal, ",]");
+  expect_eq(parsed.after, 1);
+});
+
+test("stripJsoncSyntax preserves escaped quotes inside strings", () => {
+  const out = stripJsoncSyntax('{ "x": "a\\",}b" }');
+  const parsed = JSON.parse(out);
+  expect_eq(parsed.x, 'a",}b');
+});
+
+// ---------------------------------------------------------------------------
+// YAML support — `# schema: <name>` annotation inside a YAML fence.
+
+test("StaticSchemaLintAdapter validates YAML blocks annotated with # schema:", async () => {
+  const docContent = [
+    "```yaml",
+    "# schema: claude-code-settings",
+    "model: opus",
+    'effortLevel: "max"',
+    "```",
+  ].join("\n");
+  const packet = makePacket([
+    { path: "CLAUDE.md", status: "modified", content: docContent },
+  ]);
+  const adapter = new StaticSchemaLintAdapter();
+  const result = await adapter.review(packet, CRITIC, REVIEW_OPTIONS);
+  expect_eq(result.verdict, "CHANGES_REQUESTED");
+  expect_truthy(result.findings.length >= 1);
+  expect_eq(result.findings[0]?.severity, "high");
+  expect_match(result.findings[0]?.evidence ?? "", /effortLevel/);
+});
+
+test("StaticSchemaLintAdapter APPROVES a valid YAML claude-code-settings example", async () => {
+  const docContent = [
+    "```yaml",
+    "# schema: claude-code-settings",
+    "model: opus",
+    'effortLevel: "xhigh"',
+    "```",
+  ].join("\n");
+  const packet = makePacket([
+    { path: "CLAUDE.md", status: "modified", content: docContent },
+  ]);
+  const adapter = new StaticSchemaLintAdapter();
+  const result = await adapter.review(packet, CRITIC, REVIEW_OPTIONS);
+  expect_eq(result.verdict, "APPROVED");
+  expect_eq(result.findings.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Diff-fallback path — adapter must surface findings even when file bodies
+// were not loaded into the packet (e.g. consumer set
+// `context.includeFullChangedFiles: false`). The packet still carries the
+// unified diff; the adapter reconstructs added markdown content from the
+// `+` lines so the DFP #107 regression fixture is caught end-to-end.
+
+test("StaticSchemaLintAdapter falls back to packet.diff when file content is absent", async () => {
+  // Simulates the production packet shape under
+  // context.includeFullChangedFiles: false: changedFiles entry has no
+  // `content`, but packet.diff includes the added markdown lines.
+  const diff = [
+    "diff --git a/CLAUDE.md b/CLAUDE.md",
+    "index abc..def 100644",
+    "--- a/CLAUDE.md",
+    "+++ b/CLAUDE.md",
+    "@@ -0,0 +1,5 @@",
+    "+# CLAUDE.md",
+    "+",
+    "+```jsonc",
+    "+// schema: claude-code-settings",
+    '+{ "model": "opus", "effortLevel": "max" }',
+    "+```",
+    "",
+  ].join("\n");
+  const packet = makePacket([{ path: "CLAUDE.md", status: "modified" }]);
+  packet.diff = diff;
+  const adapter = new StaticSchemaLintAdapter();
+  const result = await adapter.review(packet, CRITIC, REVIEW_OPTIONS);
+  expect_eq(result.verdict, "CHANGES_REQUESTED");
+  expect_truthy(result.findings.length >= 1);
+  const f = result.findings[0]!;
+  expect_eq(f.severity, "high");
+  expect_eq(f.file, "CLAUDE.md");
+  expect_match(f.evidence, /effortLevel/);
+});
+
+test("StaticSchemaLintAdapter diff fallback ignores deletion-only hunks", async () => {
+  // A REMOVED schema-annotated block (i.e. the consumer fixed the
+  // violation) must not be reported as a new finding. Only `+` lines are
+  // candidate content for fallback parsing.
+  const diff = [
+    "diff --git a/CLAUDE.md b/CLAUDE.md",
+    "index abc..def 100644",
+    "--- a/CLAUDE.md",
+    "+++ b/CLAUDE.md",
+    "@@ -1,5 +1,0 @@",
+    "-```jsonc",
+    "-// schema: claude-code-settings",
+    '-{ "model": "opus", "effortLevel": "max" }',
+    "-```",
+    "",
+  ].join("\n");
+  const packet = makePacket([{ path: "CLAUDE.md", status: "modified" }]);
+  packet.diff = diff;
+  const adapter = new StaticSchemaLintAdapter();
+  const result = await adapter.review(packet, CRITIC, REVIEW_OPTIONS);
+  expect_eq(result.verdict, "APPROVED");
+  expect_eq(result.findings.length, 0);
 });

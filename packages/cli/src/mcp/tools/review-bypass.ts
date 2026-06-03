@@ -230,6 +230,10 @@ const ADAPTER_LOADERS: ReadonlyArray<{
   { id: "codex-sdk", modulePath: "../../adapters/codex-sdk.js", className: "CodexSdkAdapter" },
   { id: "gemini-sdk", modulePath: "../../adapters/gemini-sdk.js", className: "GeminiSdkAdapter" },
   { id: "grok-direct-sdk", modulePath: "../../adapters/grok-direct-sdk.js", className: "GrokDirectSdkAdapter" },
+  // Consumer DFP #107 — mirror cli.ts ADAPTER_LOADERS + the MCP doctor
+  // list so the review-bypass adapter registry knows about
+  // static-schema-lint when a consumer wires it.
+  { id: "static-schema-lint", modulePath: "../../adapters/static-schema-lint.js", className: "StaticSchemaLintAdapter" },
 ];
 
 async function buildAdapterRegistry(): Promise<AdapterRegistry> {

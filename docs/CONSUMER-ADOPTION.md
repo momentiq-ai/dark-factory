@@ -195,6 +195,15 @@ In addition to the LLM critics, the local fleet ships a **deterministic** critic
 
 **Wire it in.** Add the critic + the id to your local profile (cloud profile gets it too — same deterministic result either side, belt-and-suspenders). Quorum stays unchanged: schema-lint is `required: false` and its job is to surface **blocking-severity findings** that veto regardless of quorum (the existing single-critic-veto pattern under `min-complete-quorum`).
 
+**Source of markdown content.** The adapter prefers `changedFiles[i].content` when the consumer config has `context.includeFullChangedFiles: true` (the recommended default — that's what dark-factory itself uses). When `includeFullChangedFiles: false`, the adapter falls back to reconstructing added markdown lines from `packet.diff` so the gate still surfaces regressions; deletion-only hunks are correctly ignored. Set `includeFullChangedFiles: true` if you want the adapter to scan the full file (catches annotations in unmodified context); leave it `false` if you want it to scan only the `+` lines of the current change. Either way the DFP #107 fixture is blocked end-to-end.
+
+**Verify the wiring with `df doctor`.** After adding the critic, run `df doctor` (or invoke the MCP `df_doctor` tool from your agent client). Confirm two checks pass:
+
+- `schema-lint-chief-engineer.static_schema_lint_registry` — the registry compiled and reports the built-in schema count.
+- `schema-lint-chief-engineer.static_schema_lint_smoke` — a known-good `effortLevel: "high"` payload validates clean against the bundled `claude-code-settings` schema.
+
+If either check is missing, the MCP loader didn't pick up the adapter (open an issue against `momentiq-ai/dark-factory`). If the smoke check fails, re-install: `npm ci --workspace=@momentiq/dark-factory-cli`.
+
 <!-- schema: df-agent-review-config -->
 ```jsonc
 {
@@ -239,7 +248,18 @@ Strict JSON (no inline comments) — use the HTML-comment form IMMEDIATELY befor
 { "model": "opus", "effortLevel": "xhigh" }
 ```
 
-Both forms above will be validated; the value `"effortLevel": "max"` would produce a `severity: high` finding in either form. YAML / shell fences use `# schema: <name>`; block-comment-friendly fences use `/* schema: <name> */`. Built-in schema names: `claude-code-settings`, `df-agent-review-config`. Extend via the `schemas` constructor option if you have additional shapes worth linting.
+Both forms above will be validated; the value `"effortLevel": "max"` would produce a `severity: high` finding in either form. YAML fences use `# schema: <name>` and are parsed via the `yaml` package:
+
+<!-- schema: claude-code-settings -->
+```yaml
+# schema: claude-code-settings
+model: opus
+effortLevel: "xhigh"
+```
+
+Block-comment-friendly fences use `/* schema: <name> */`. Built-in schema names: `claude-code-settings`, `df-agent-review-config`. Extend via the `schemas` constructor option if you have additional shapes worth linting.
+
+**Unknown schema names are blocking.** A typo in the annotation (e.g. `// schema: claude-code-setting` missing the trailing `s`) emits a `severity: high` finding so the misconfiguration surfaces at gate time instead of failing open. Register the schema or fix the annotation.
 
 **What it does NOT do.** It does not auto-detect schemas from file paths (the opt-in annotation is required — false positives erode trust faster than false negatives). It does not call any LLM. It does not validate the full markdown body — only annotated code blocks.
 

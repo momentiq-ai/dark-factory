@@ -78,6 +78,7 @@ import {
 // shape moved between 8.x patch releases historically).
 import AjvImport, { type ErrorObject, type ValidateFunction } from "ajv";
 import addFormatsImport from "ajv-formats";
+import { parse as parseYaml } from "yaml";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const AjvCtor: new (opts?: object) => any =
@@ -282,26 +283,34 @@ export interface ExtractedBlock {
 }
 
 /**
- * Strip JSONC / JSON5-style comments and trailing commas from a JSON-ish
- * payload so `JSON.parse` succeeds on JSONC examples. Pure / regex-based;
- * does NOT recurse into string contents (matches inside `"..."` are left
- * alone). Designed for the limited surface of config-file examples in
- * docs, not as a general JSON5 parser.
+ * Strip JSONC / JSON5-style comments AND trailing commas from a JSON-ish
+ * payload so `JSON.parse` succeeds on JSONC examples. Single-pass state
+ * machine — comment stripping AND trailing-comma removal both honor
+ * string-literal boundaries, so a comma-brace sequence inside a string
+ * value (`",}"`) is preserved verbatim. Designed for the limited surface
+ * of config-file examples in docs, not as a general JSON5 parser.
  *
  * Exported for unit-testability.
  */
 export function stripJsoncSyntax(text: string): string {
-  // Pass 1: remove // line comments and /* block comments */ that are NOT
-  // inside a string literal. We process character-by-character with a
-  // small state machine — regex alone can't reliably skip strings.
-  const chars: string[] = [];
+  // Single pass: walk the text character-by-character and emit chars to
+  // the output buffer. State tracked: whether we're inside a string
+  // literal, and the index of the most recent comma emitted at the
+  // top-of-output (used to retroactively drop trailing commas when the
+  // next non-whitespace, non-comment, non-string token is `}` or `]`).
+  const out: string[] = [];
   let i = 0;
-  let inString: string | null = null; // the quote char ('"') when inside a string
+  let inString: string | null = null;
   let escape = false;
+  // pendingCommaIndex: index into `out` of the last emitted ',' that has
+  // only seen whitespace / comments since. Reset to -1 once the comma is
+  // either kept (any other char emitted) or dropped (closer encountered).
+  let pendingCommaIndex = -1;
   while (i < text.length) {
     const c = text[i] ?? "";
     if (inString !== null) {
-      chars.push(c);
+      out.push(c);
+      pendingCommaIndex = -1;
       if (escape) {
         escape = false;
       } else if (c === "\\") {
@@ -312,35 +321,59 @@ export function stripJsoncSyntax(text: string): string {
       i++;
       continue;
     }
-    // not inside a string
+    // Not inside a string.
     if (c === '"' || c === "'") {
       inString = c;
-      chars.push(c);
+      out.push(c);
+      pendingCommaIndex = -1;
       i++;
       continue;
     }
     if (c === "/" && text[i + 1] === "/") {
-      // line comment — skip to end-of-line (preserve the newline)
+      // Line comment — skip to end-of-line (the newline is consumed
+      // outside this branch on the next loop iteration). pendingCommaIndex
+      // is preserved across the comment.
       while (i < text.length && text[i] !== "\n") i++;
       continue;
     }
     if (c === "/" && text[i + 1] === "*") {
-      // block comment — skip to closing */
+      // Block comment — skip to closing */ (pendingCommaIndex preserved).
       i += 2;
       while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
-      i += 2; // consume the */
+      i += 2;
       continue;
     }
-    chars.push(c);
+    if (c === ",") {
+      out.push(c);
+      pendingCommaIndex = out.length - 1;
+      i++;
+      continue;
+    }
+    if (c === "}" || c === "]") {
+      // Trailing-comma case: if the most-recent non-whitespace token
+      // emitted was ',', drop it. Splicing the array preserves the
+      // single-pass invariant without an extra string-rewrite step.
+      if (pendingCommaIndex !== -1) {
+        out.splice(pendingCommaIndex, 1);
+      }
+      out.push(c);
+      pendingCommaIndex = -1;
+      i++;
+      continue;
+    }
+    if (c === " " || c === "\t" || c === "\n" || c === "\r") {
+      // Whitespace does NOT close the trailing-comma window.
+      out.push(c);
+      i++;
+      continue;
+    }
+    // Any other character commits the pending comma (it's a real
+    // separator, not trailing).
+    out.push(c);
+    pendingCommaIndex = -1;
     i++;
   }
-  let stripped = chars.join("");
-  // Pass 2: remove trailing commas before } or ]. Outside strings (the
-  // string-skipping above is no longer in effect, but trailing-comma
-  // patterns inside strings are vanishingly rare and the gate-payload
-  // domain is config files, not arbitrary text).
-  stripped = stripped.replace(/,(\s*[}\]])/g, "$1");
-  return stripped;
+  return out.join("");
 }
 
 /**
@@ -411,6 +444,102 @@ export function extractSchemaBlocks(source: string): ExtractedBlock[] {
     });
   }
   return blocks;
+}
+
+// ---------------------------------------------------------------------------
+// Parser dispatch.
+//
+// `parseBlockBody` selects between JSON/JSONC and YAML parsing based on
+// the fence language tag captured during extraction. The YAML branch
+// runs `yaml.parse` directly (no comment-stripping pass — YAML's syntax
+// already permits `#` line comments, which the parser handles natively).
+// JSON / JSONC / strict-JSON fences go through `stripJsoncSyntax` so
+// `// ...` / `/* ... */` comments and trailing commas don't trip
+// `JSON.parse` on doc examples.
+//
+// Language tags recognized:
+//   - "yaml", "yml" → YAML parser
+//   - "" (no tag), "json", "jsonc", "json5" → JSON-with-JSONC-strip path
+//
+// An unknown / non-empty language tag falls back to the JSON path. The
+// extractor enforces opt-in via the schema annotation, so this only
+// runs against blocks the author explicitly opted in to.
+
+const YAML_LANGUAGES: ReadonlySet<string> = new Set(["yaml", "yml"]);
+
+function parseBlockBody(block: ExtractedBlock): unknown {
+  const lang = block.language.toLowerCase();
+  if (YAML_LANGUAGES.has(lang)) {
+    return parseYaml(block.body);
+  }
+  const normalized = stripJsoncSyntax(block.body);
+  return JSON.parse(normalized);
+}
+
+// ---------------------------------------------------------------------------
+// Diff fallback — reconstruct added markdown content from packet.diff.
+//
+// When `context.includeFullChangedFiles: false`, `git.ts:changedFiles`
+// skips the `git show <sha>:<path>` content read and emits each entry
+// without a `content` field. The adapter would otherwise scan zero
+// files and silently APPROVE every markdown-only PR. The fallback
+// extracts the `+` lines from each file's hunks in the unified diff,
+// producing a best-effort reconstruction of the ADDED content the
+// adapter can scan.
+//
+// Caveats (documented in CONSUMER-ADOPTION §4.1):
+//   - Only `+` lines contribute — deletions are correctly NOT reported
+//     as new findings (a removed annotated block is not regressed).
+//   - Context lines (no leading `+`) are dropped, so an annotation
+//     ONLY visible in pre-existing context is not picked up. This is
+//     by design: the gate's job is to catch regressions introduced by
+//     the current PR, not to lint historical content.
+//   - If the diff itself is truncated (`packet.diffTruncated: true`),
+//     fallback coverage is partial. The recommended posture is to set
+//     `context.includeFullChangedFiles: true` for repos where this
+//     matters; the doctor surfaces the truncation case in a future
+//     extension.
+
+export function reconstructAddedContentFromDiff(diff: string): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!diff) return out;
+  const lines = diff.split("\n");
+  let currentPath: string | null = null;
+  let buffer: string[] = [];
+  const flush = (): void => {
+    if (currentPath !== null && buffer.length > 0) {
+      const prior = out.get(currentPath);
+      const joined = buffer.join("\n");
+      out.set(currentPath, prior ? `${prior}\n${joined}` : joined);
+    }
+    buffer = [];
+  };
+  for (const line of lines) {
+    // `+++ b/<path>` — header for the destination file in a hunk header.
+    // The leading `b/` is the standard `git diff` prefix; strip it if
+    // present, fall back to the raw path otherwise.
+    if (line.startsWith("+++ ")) {
+      flush();
+      const rest = line.slice(4).trim();
+      if (rest === "/dev/null") {
+        currentPath = null;
+      } else if (rest.startsWith("b/")) {
+        currentPath = rest.slice(2);
+      } else {
+        currentPath = rest;
+      }
+      continue;
+    }
+    if (line.startsWith("--- ") || line.startsWith("diff --git ") || line.startsWith("@@")) {
+      // Header lines — do NOT contribute content, do NOT switch path.
+      continue;
+    }
+    if (line.startsWith("+") && currentPath !== null) {
+      buffer.push(line.slice(1));
+    }
+  }
+  flush();
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -545,10 +674,20 @@ export class StaticSchemaLintAdapter implements CriticAdapter {
     let extractedBlocks = 0;
     let parseFailures = 0;
 
+    // Fallback-source map: when a changed file body is not loaded into
+    // `changedFiles[].content` (the consumer set
+    // `context.includeFullChangedFiles: false`, so git.ts skips the
+    // `git show <sha>:<path>` read), we reconstruct the added markdown
+    // content from `packet.diff` so the adapter is not silently starved.
+    // This keeps the deterministic backstop on for the DFP #107 fixture
+    // without requiring every consumer to flip a context flag.
+    const diffFallbacks = reconstructAddedContentFromDiff(packet.diff);
+
     for (const file of packet.changedFiles) {
       if (!this.scannedFilePatterns.some((re) => re.test(file.path))) continue;
       if (file.omittedReason) continue;
-      const content = file.content ?? file.compactedContent;
+      const content =
+        file.content ?? file.compactedContent ?? diffFallbacks.get(file.path);
       if (!content) continue;
       scannedFiles++;
 
@@ -557,28 +696,31 @@ export class StaticSchemaLintAdapter implements CriticAdapter {
         extractedBlocks++;
         const validator = this.registry.get(block.schemaName);
         if (!validator) {
-          // Unknown schema — emit a `medium`-severity finding so the
-          // doc author knows their annotation is dead weight, but do
-          // NOT block. The remediation is either to register the
-          // schema or fix the annotation.
+          // Unknown schema — `high` severity by default (blocks merge).
+          // A typo in the annotation (e.g. `claude-code-setting` instead
+          // of `claude-code-settings`) would otherwise silently disable
+          // validation for the exact class of doc examples this adapter
+          // is meant to gate. Treat unknown schemas as a configuration
+          // error the author must resolve before merge.
           findings.push({
-            severity: "medium",
+            severity: "high",
             category: "schema",
             file: file.path,
             line: block.startLine,
             evidence: `Unknown schema name "${block.schemaName}" in fenced code-block annotation (registered: ${this.registry.names().join(", ") || "(none)"}).`,
             impact:
-              "The schema annotation is present but the named schema is not in the adapter registry, so this block is NOT being validated. The annotation is silently inert.",
-            requiredFix: `Use one of the registered schema names, OR register a new schema by extending \`STATIC_SCHEMAS\` in \`packages/cli/src/adapters/static-schema-lint.ts\`.`,
+              "The schema annotation is present but the named schema is not in the adapter registry, so this block is NOT being validated. A one-character typo here disables the deterministic backstop for that block; the gate must surface it rather than fail open.",
+            requiredFix: `Use one of the registered schema names (${this.registry.names().join(", ") || "(none)"}), OR register a new schema by extending \`STATIC_SCHEMAS\` in \`packages/cli/src/adapters/static-schema-lint.ts\` (or via the \`schemas\` constructor option for repo-local adapters), OR remove the schema annotation if the block is intentionally not subject to schema lint.`,
           });
           continue;
         }
-        // Parse the block body. JSONC-friendly so `// ...` comments and
-        // trailing commas don't trip JSON.parse on doc examples.
+        // Parse the block body. Dispatch on the fence language: YAML
+        // fences (annotated with `# schema:`) parse via the `yaml`
+        // package; JSON / JSONC / strict-JSON fences parse via the
+        // JSONC-stripping JSON.parse path.
         let parsed: unknown;
         try {
-          const normalized = stripJsoncSyntax(block.body);
-          parsed = JSON.parse(normalized);
+          parsed = parseBlockBody(block);
         } catch (err) {
           parseFailures++;
           findings.push({
@@ -586,11 +728,11 @@ export class StaticSchemaLintAdapter implements CriticAdapter {
             category: "schema",
             file: file.path,
             line: block.startLine,
-            evidence: `Schema-annotated block (\`${block.schemaName}\`) is not parseable as JSON/JSONC: ${(err as Error).message}`,
+            evidence: `Schema-annotated block (\`${block.schemaName}\`, language=\`${block.language || "(none)"}\`) is not parseable: ${(err as Error).message}`,
             impact:
-              "Doc examples that claim a schema MUST be valid JSON/JSONC against that schema; an unparseable block produces a silent regression for any consumer copy-pasting the example.",
+              "Doc examples that claim a schema MUST be valid in their declared format (JSON/JSONC/YAML); an unparseable block produces a silent regression for any consumer copy-pasting the example.",
             requiredFix:
-              "Fix the syntax error in the code block, or remove the `// schema:` annotation if the block is intentionally illustrating malformed input.",
+              "Fix the syntax error in the code block, or remove the schema annotation if the block is intentionally illustrating malformed input.",
           });
           continue;
         }

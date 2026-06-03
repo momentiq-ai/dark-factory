@@ -89,6 +89,11 @@ const RUNDOCTOR_LOADER_CLASSES: ReadonlyArray<{
   { id: "codex-sdk", modulePath: "../../adapters/codex-sdk.js", className: "CodexSdkAdapter" },
   { id: "gemini-sdk", modulePath: "../../adapters/gemini-sdk.js", className: "GeminiSdkAdapter" },
   { id: "grok-direct-sdk", modulePath: "../../adapters/grok-direct-sdk.js", className: "GrokDirectSdkAdapter" },
+  // Consumer DFP #107 — deterministic schema-lint adapter. Must mirror
+  // cli.ts ADAPTER_LOADERS so a critic config that names
+  // `static-schema-lint` does not emit a false `adapter_..._registered:
+  // false` check via the MCP doctor path.
+  { id: "static-schema-lint", modulePath: "../../adapters/static-schema-lint.js", className: "StaticSchemaLintAdapter" },
 ];
 
 async function buildAdapterRegistry(): Promise<AdapterRegistry> {
