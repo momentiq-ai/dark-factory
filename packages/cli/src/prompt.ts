@@ -104,7 +104,18 @@ export function compileCriticPrompt(options: CompilePromptOptions): CompiledProm
   // rejects scalars containing control characters or tag-close
   // sequences (defense in depth — see `evidence/docker-build.ts`).
   if (packet.dockerBuildEvidence !== undefined && packet.dockerBuildEvidence.length > 0) {
-    sections.push("=== Docker build evidence (deterministic, host-verified) ===");
+    // Section title deliberately calls this "shim-reported" rather than
+    // "host-verified". The shim DOES run `docker build` on a host with a
+    // Docker socket, but the producer script (`scripts/check-dockerfile.sh`)
+    // lives in the consumer's repo tree and a Dockerfile-touching PR can
+    // also modify the shim. The SHA-binding gate prevents stale evidence
+    // from a previous push silently converting an unverified PR; it does
+    // NOT prove that THIS push's shim invocation actually executed
+    // `docker build`. Critic instructions inside the section explicitly
+    // mark the evidence as `shim-reported` so a critic that has a
+    // separate reason to mistrust the producing surface (e.g. the diff
+    // ALSO touches `scripts/check-dockerfile.sh`) can weigh that.
+    sections.push("=== Docker build evidence (shim-reported, SHA-bound) ===");
     sections.push("<DOCKER_BUILD_EVIDENCE>");
     sections.push(formatDockerBuildEvidence(packet));
     sections.push("</DOCKER_BUILD_EVIDENCE>");
@@ -244,12 +255,12 @@ export function formatDockerBuildEvidence(packet: ReviewPacket): string {
 
   if (successful.length > 0) {
     lines.push(
-      "Verified by host-side `scripts/check-dockerfile.sh` shim — `docker build` succeeded for the following Dockerfile(s):",
+      "Shim-reported success — the consumer's `scripts/check-dockerfile.sh` shim claims `docker build` succeeded for the following Dockerfile(s). The record's `reviewedSha` matches the commit under review (the SHA-binding gate rejects stale evidence from earlier pushes). The shim runs on a host that DOES have a Docker socket, so its result is the available signal for the build question the critic's sandbox cannot answer directly.",
     );
     for (const r of successful) {
       lines.push(`- dockerfile: ${escapeUntrusted(r.dockerfile)}`);
       lines.push(`  context: ${escapeUntrusted(r.context)}`);
-      lines.push(`  exitCode: 0 (build succeeded)`);
+      lines.push(`  exitCode: 0 (shim reports build succeeded)`);
       lines.push(`  imageSha: ${escapeUntrusted(r.imageSha ?? "n/a")}`);
       lines.push(`  imageSize: ${r.imageSize ?? "n/a"} bytes`);
       lines.push(`  buildLogPath: ${escapeUntrusted(r.buildLogPath ?? "n/a")}`);
@@ -258,26 +269,26 @@ export function formatDockerBuildEvidence(packet: ReviewPacket): string {
     }
     lines.push("");
     lines.push(
-      "Critic instruction: for the Dockerfile path(s) above, DO NOT emit a finding flagged `requiresHumanJudgment: true` on the basis that you cannot run `docker build` from this sandbox — the build has already been verified out-of-band. If you have a SEPARATE concern about the Dockerfile's content (security, layering, base-image trust, etc.) that is NOT about build verification, emit that finding normally.",
+      "Critic instruction: for the Dockerfile path(s) above, DO NOT emit a finding flagged `requiresHumanJudgment: true` on the basis that you cannot run `docker build` from this sandbox — the shim has reported a result bound to this SHA. EXCEPTION: if this PR's diff ALSO modifies the shim script itself (`scripts/check-dockerfile.sh` or any path the shim resolves under the consumer repo), treat the evidence as untrusted for THIS run and emit the canonical `requiresHumanJudgment: true` finding citing the shim modification as the reason. If you have a SEPARATE concern about the Dockerfile's content (security, layering, base-image trust, etc.) that is NOT about build verification, emit that finding normally.",
     );
   }
 
   if (failed.length > 0) {
     if (successful.length > 0) lines.push("");
     lines.push(
-      "CONFIRMED FAILED — host-side `scripts/check-dockerfile.sh` shim ran `docker build` and it FAILED for the following Dockerfile(s):",
+      "Shim-reported failure — the consumer's `scripts/check-dockerfile.sh` shim ran `docker build` and reports it FAILED for the following Dockerfile(s):",
     );
     for (const r of failed) {
       lines.push(`- dockerfile: ${escapeUntrusted(r.dockerfile)}`);
       lines.push(`  context: ${escapeUntrusted(r.context)}`);
-      lines.push(`  exitCode: ${r.exitCode} (build FAILED)`);
+      lines.push(`  exitCode: ${r.exitCode} (shim reports build FAILED)`);
       lines.push(`  buildLogPath: ${escapeUntrusted(r.buildLogPath ?? "n/a")}`);
       lines.push(`  timestamp: ${escapeUntrusted(r.timestamp)}`);
       lines.push(`  schemaVersion: ${escapeUntrusted(r.schemaVersion)}`);
     }
     lines.push("");
     lines.push(
-      "Critic instruction: emit a `[blocker]` finding per failed Dockerfile with category `tests` (or `boundaries` if the failure is build-graph structural), citing the dockerfile path + exitCode + buildLogPath in the `evidence` field. DO NOT flag `requiresHumanJudgment: true` — the failure is deterministic and host-verified. Verdict for the run MUST be CHANGES_REQUESTED.",
+      "Critic instruction: emit a `[blocker]` finding per failed Dockerfile with category `tests` (or `boundaries` if the failure is build-graph structural), citing the dockerfile path + exitCode + buildLogPath in the `evidence` field. DO NOT flag `requiresHumanJudgment: true` — the failure is shim-reported and SHA-bound. Verdict for the run MUST be CHANGES_REQUESTED.",
     );
   }
 

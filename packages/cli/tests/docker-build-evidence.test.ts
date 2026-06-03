@@ -197,7 +197,12 @@ test("docker-build evidence: exitCode=0 → prompt suppresses requiresHumanJudgm
   });
   expect_match(compiled.text, /<DOCKER_BUILD_EVIDENCE>/);
   expect_match(compiled.text, /<\/DOCKER_BUILD_EVIDENCE>/);
-  expect_match(compiled.text, /docker build` succeeded/);
+  // Section title qualifies the evidence as `shim-reported` (not
+  // unconditionally "host-verified") — the producer (`scripts/check-dockerfile.sh`)
+  // lives in the consumer repo tree, so the prompt must be honest about
+  // what the trust gate actually proves. See codex PR #115 review.
+  expect_match(compiled.text, /shim-reported, SHA-bound/);
+  expect_match(compiled.text, /Shim-reported success/);
   expect_match(compiled.text, /\.devcontainer\/Dockerfile/);
   expect_match(compiled.text, /sha256:abc123def456/);
   expect_match(compiled.text, /524288000 bytes/);
@@ -207,8 +212,15 @@ test("docker-build evidence: exitCode=0 → prompt suppresses requiresHumanJudgm
     compiled.text,
     /DO NOT emit a finding flagged `requiresHumanJudgment: true`/,
   );
+  // The shim-modification escape hatch MUST appear so a Dockerfile-touching
+  // PR that ALSO modifies the shim cannot silently auto-pass via crafted
+  // evidence (codex PR #115 review — producer-provenance gap).
+  expect_match(
+    compiled.text,
+    /this PR's diff ALSO modifies the shim script/,
+  );
   // The success branch MUST NOT also emit blocker instructions.
-  expect_no_match(compiled.text, /CONFIRMED FAILED/);
+  expect_no_match(compiled.text, /Shim-reported failure/);
 });
 
 // ---------------------------------------------------------------------------
@@ -235,12 +247,12 @@ test("docker-build evidence: exitCode!=0 → prompt amplifies to confirmed [bloc
     blockingSeverities: ["blocker", "high"],
     treatDiffAsUntrusted: true,
   });
-  expect_match(compiled.text, /CONFIRMED FAILED/);
+  expect_match(compiled.text, /Shim-reported failure/);
   expect_match(compiled.text, /services\/worker\/Dockerfile/);
-  expect_match(compiled.text, /exitCode: 1 \(build FAILED\)/);
+  expect_match(compiled.text, /exitCode: 1 \(shim reports build FAILED\)/);
   // The blocker-amplification instruction MUST appear AND must NOT
   // tell the critic to flag requiresHumanJudgment — the failure is
-  // host-verified, not unverifiable.
+  // shim-reported and SHA-bound, not unverifiable.
   expect_match(compiled.text, /emit a `\[blocker\]` finding/);
   expect_match(compiled.text, /Verdict for the run MUST be CHANGES_REQUESTED/);
   expect_no_match(compiled.text, /DO NOT emit a finding flagged `requiresHumanJudgment/);
@@ -306,8 +318,8 @@ test("docker-build evidence: array form preserves all valid records", async () =
   });
   // Both the success-suppression and failure-amplification branches
   // fire because one record is exitCode=0 and the other is non-zero.
-  expect_match(compiled.text, /docker build` succeeded/);
-  expect_match(compiled.text, /CONFIRMED FAILED/);
+  expect_match(compiled.text, /Shim-reported success/);
+  expect_match(compiled.text, /Shim-reported failure/);
   expect_match(compiled.text, /\.devcontainer\/Dockerfile/);
   expect_match(compiled.text, /services\/worker\/Dockerfile/);
 });
