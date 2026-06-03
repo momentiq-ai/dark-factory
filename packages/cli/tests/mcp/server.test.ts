@@ -89,7 +89,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     await server.close();
   });
 
-  it("tools/list pins the catalog (21 tools: 15 cycle5 + cycle12 handoff/handoffs/accept/rehydrate + DFP#192 skills_install/skills_list)", async () => {
+  it("tools/list pins the catalog (19 tools: 15 cycle5 + cycle12 handoff/handoffs/accept/rehydrate)", async () => {
     const server = createMcpServer();
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -124,8 +124,6 @@ describe("MCP server (cycle5 Phase 1)", () => {
       "df_review",
       "df_review_status",
       "df_show_run",
-      "df_skills_install",
-      "df_skills_list",
       "df_stats",
     ]);
 

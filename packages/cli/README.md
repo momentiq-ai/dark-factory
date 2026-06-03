@@ -109,13 +109,6 @@ df stats                              # alias for `df audit stats`
 # MCP-speaking agent.
 df mcp                                # start the stdio MCP server
 df mcp --help                         # config snippets for Claude Code, Cursor, Codex
-
-# Bundled-skill installer (consumer-shape — implements DFP #192).
-df skills list                        # list bundled skills (name, version, summary)
-df skills install <name>              # render + write .claude/skills/<name>/
-df skills install --all               # install every skill declared `enabled: true`
-                                      # in darkfactory.yaml
-df skills install <name> --force      # overwrite a hand-edited rendered file
 ```
 
 > **Note on `--use-bundled-default-spec`**: the bundled `spec-default.yaml`
@@ -279,77 +272,6 @@ The bundled Python scripts resolve the consumer repo root in this order:
 
 The TypeScript wrappers set `DF_REPO_ROOT` automatically when a `repoRoot`
 option is supplied — pass it when invoking outside a git worktree.
-
-## Bundled skills (`df skills install` — DFP #192)
-
-The CLI ships a small set of **consumer-shape templated skills** that any
-repo adopting Dark Factory can install with one command — no fork, no
-hand-edit. The skill body templates live in this repo under `skills/<name>/`;
-the renderer substitutes `{{REPO_NAME}}`, `{{ADR_DIR}}`,
-`{{CYCLE_DOCS_DIR}}`, `{{QUALITY_GATE_TARGETS}}`, etc. against the
-consumer's `darkfactory.yaml` at install time.
-
-**Bundled today:**
-
-- **`chief-engineer-review`** — AI-native architectural review (autonomous
-  + conversational modes). Originated in `momentiq-ai/sage3c`.
-- **`chief-engineer-blitz`** — orchestrated multi-PR delivery doctrine (six
-  phases: Plan → Spec → Implement → Triage → Validate → Closure).
-  Originated in `momentiq-ai/dark-factory-platform`.
-
-**Consumer setup (one-time per repo):**
-
-```bash
-# 1. Author darkfactory.yaml at repo root (see the schema below).
-# 2. Install:
-df skills install --all          # installs every skill marked enabled
-# … or one at a time:
-df skills install chief-engineer-review
-```
-
-**`darkfactory.yaml` schema** (every key optional — install falls back to
-sensible defaults):
-
-```yaml
-repo:
-  displayName: "My Repo"
-  slug: "my-repo"
-  ownerRepo: "my-org/my-repo"
-docs:
-  manifesto: docs/PRINCIPLES.md
-  adrDir: docs/ADR
-  cycleDocsDir: docs/roadmap/cycles
-  rfcDir: docs/rfcs
-  prdDir: docs/prds
-agents:
-  chiefEngineer: .claude/agents/chief-engineer.md
-qualityGates:
-  - make quality-gates
-  - make test
-worktreeRoot: .claude/worktrees
-agentCommitterOrg: my-org      # for the claude-code+<handle>@<org>.ai committer
-skills:
-  chief-engineer-review:
-    enabled: true
-  chief-engineer-blitz:
-    enabled: true
-```
-
-**Re-install semantics:**
-
-- A re-install with identical inputs is a no-op (the rendered file carries
-  an `install-hash` in its `GENERATED` header; matching hash → unchanged).
-- A re-install with different inputs (config changed, template upstream
-  changed) overwrites the rendered file.
-- A re-install where the rendered file has been hand-edited (no `GENERATED`
-  header detected) is **skipped** — pass `--force` to overwrite.
-
-**MCP tool parity:** the `df mcp` server exposes `df_skills_install` +
-`df_skills_list` with the same semantics, so MCP-speaking agents (Claude
-Code, Cursor) can install skills programmatically without shelling out.
-
-**Adding a new bundled skill:** see `skills/README.md` for the manifest +
-template authoring rules.
 
 ## License
 

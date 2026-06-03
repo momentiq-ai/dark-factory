@@ -70,16 +70,13 @@ The CLI ships a [Model Context Protocol](https://modelcontextprotocol.io) server
 as `df mcp`. Connect any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini)
 over stdio:
 
-- **21 tools** — `df_doctor`, `df_findings`, `df_show_run`, `df_cycle_list`,
+- **19 tools** — `df_doctor`, `df_findings`, `df_show_run`, `df_cycle_list`,
   `df_cycle_read`, `df_adr_list`, `df_adr_read`, `df_critics_config`, `df_stats`,
   `df_gate_push`, `df_review` (async) + `df_review_status`, `df_bypass` (with
   elicitation for missing issue URLs), `df_cycle_doc_generate` +
   `df_adr_generate` (via MCP sampling — the server asks the **client's** LLM to
-  populate skeletons), the **agent handoff** verbs `df_handoff` /
-  `df_handoffs` / `df_accept` / `df_rehydrate`, and the **bundled-skill
-  installer** `df_skills_install` / `df_skills_list` (DFP #192 — consumer-shape
-  templated skills like `chief-engineer-review` + `chief-engineer-blitz`,
-  driven by `darkfactory.yaml`)
+  populate skeletons), and the **agent handoff** verbs `df_handoff` /
+  `df_handoffs` / `df_accept` / `df_rehydrate`
 - **9 URI-addressable resources** — `df://repo/cycles`, `df://repo/cycle/{id}`,
   ADRs, findings, runs/recent, audit-log, principles. Templated `list` callbacks
   auto-enumerate known cycles + ADRs, so `resources/list` at session start gives
