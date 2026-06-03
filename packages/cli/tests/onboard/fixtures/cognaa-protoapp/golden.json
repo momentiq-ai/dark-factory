@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "repoRoot": "<NORM>",
+  "canonicalName": "momentiq-ai/cognaa-protoapp",
+  "stacks": [],
+  "services": [],
+  "dependencies": [],
+  "ci": {
+    "workflows": [],
+    "deployStory": null
+  },
+  "tree": {
+    "topLevelDirs": [],
+    "languageBreakdown": {},
+    "testDirs": [],
+    "fileCount": 0
+  },
+  "git": {
+    "recentCommitConventions": {
+      "conventional": false,
+      "cycleReferenced": false
+    },
+    "defaultBranch": "main"
+  },
+  "docs": {
+    "existing": [],
+    "hasClaudeMd": false,
+    "hasAgentsMd": false,
+    "agentContextSetPresent": false,
+    "claudeMd": null,
+    "agentsMd": null
+  },
+  "dfPresence": {
+    "hooks": false,
+    "configJson": false,
+    "prWorkflow": false,
+    "cliPin": null
+  },
+  "decisions": [],
+  "analyzerErrors": []
+}

@@ -1,0 +1,412 @@
+{
+  "schemaVersion": 1,
+  "repoRoot": "<NORM>",
+  "canonicalName": "momentiq-ai/sage3c",
+  "stacks": [
+    {
+      "language": "typescript",
+      "versionPin": null,
+      "manifestPath": "package.json"
+    }
+  ],
+  "services": [],
+  "dependencies": [
+    {
+      "name": "requests",
+      "version": "0.3.0",
+      "manifestPath": "package-lock.json"
+    },
+    {
+      "name": "@momentiq/dark-factory-cli",
+      "version": "2.0.0",
+      "manifestPath": "package-lock.json"
+    },
+    {
+      "name": "@types/node",
+      "version": "22.19.19",
+      "manifestPath": "package-lock.json"
+    },
+    {
+      "name": "@types/react",
+      "version": "19.2.15",
+      "manifestPath": "package-lock.json"
+    },
+    {
+      "name": "chrome-devtools-mcp",
+      "version": "1.1.1",
+      "manifestPath": "package-lock.json"
+    },
+    {
+      "name": "chrome-remote-interface",
+      "version": "0.33.3",
+      "manifestPath": "package-lock.json"
+    },
+    {
+      "name": "husky",
+      "version": "9.1.7",
+      "manifestPath": "package-lock.json"
+    }
+  ],
+  "ci": {
+    "workflows": [
+      {
+        "name": "Agentic Flow Eval Loop",
+        "path": ".github/workflows/agentic-eval-loop.yml",
+        "triggers": [
+          "schedule",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "preflight-kill-switch-check",
+          "scan-and-triage",
+          "consultant-issues",
+          "fix-agent",
+          "weekly-rollup",
+          "dataset-update",
+          "diagnose-single-trace"
+        ],
+        "matrixDimensions": [
+          "finding"
+        ]
+      },
+      {
+        "name": "Backend Lint & Type Check",
+        "path": ".github/workflows/backend-lint.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "lint-and-type-check"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Backend Tests",
+        "path": ".github/workflows/backend-tests.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "test",
+          "coverage-check"
+        ],
+        "matrixDimensions": [
+          "test-category"
+        ]
+      },
+      {
+        "name": "Bot Review Settle",
+        "path": ".github/workflows/bot-review-settle.yml",
+        "triggers": [
+          "pull_request",
+          "merge_group"
+        ],
+        "jobs": [
+          "settle"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Branch Protection Audit",
+        "path": ".github/workflows/branch-protection-audit.yml",
+        "triggers": [
+          "pull_request",
+          "merge_group",
+          "schedule",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "audit"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Build and Publish Images",
+        "path": ".github/workflows/build-images.yml",
+        "triggers": [
+          "push",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "detect-changes",
+          "build"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Build postgres-pgvector image",
+        "path": ".github/workflows/build-postgres-pgvector.yml",
+        "triggers": [
+          "push",
+          "pull_request",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "build"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Chromatic",
+        "path": ".github/workflows/chromatic.yml",
+        "triggers": [
+          "pull_request",
+          "push"
+        ],
+        "jobs": [
+          "chromatic"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Claude PR Assistant",
+        "path": ".github/workflows/claude.yml",
+        "triggers": [
+          "issue_comment",
+          "pull_request_review_comment",
+          "issues"
+        ],
+        "jobs": [
+          "claude-code-action"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Cycle Board Automation",
+        "path": ".github/workflows/cycle-board.yml",
+        "triggers": [
+          "pull_request",
+          "workflow_run"
+        ],
+        "jobs": [
+          "update-board"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Cycle Doc Validation",
+        "path": ".github/workflows/cycle-doc-validation.yml",
+        "triggers": [
+          "pull_request",
+          "merge_group"
+        ],
+        "jobs": [
+          "validate-cycle-doc"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Cycle Tracker Sync",
+        "path": ".github/workflows/cycle-tracker-sync.yml",
+        "triggers": [
+          "push",
+          "workflow_dispatch",
+          "schedule"
+        ],
+        "jobs": [
+          "sync"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Feedback Investigator",
+        "path": ".github/workflows/feedback-investigator.yml",
+        "triggers": [
+          "schedule",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "investigate-bugs",
+          "evaluate-features"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Frontend Lint & Type Check",
+        "path": ".github/workflows/frontend-lint.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "lint-and-type-check"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Frontend E2E Tests",
+        "path": ".github/workflows/frontend-tests.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "e2e-tests",
+          "merge-reports"
+        ],
+        "matrixDimensions": [
+          "browser",
+          "shard"
+        ]
+      },
+      {
+        "name": "Frontend Unit Tests",
+        "path": ".github/workflows/frontend-unit-tests.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "unit-tests"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Issue Spec Gate",
+        "path": ".github/workflows/issue-spec-gate.yml",
+        "triggers": [
+          "pull_request",
+          "merge_group"
+        ],
+        "jobs": [
+          "issue-spec-gate"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Issue Triage",
+        "path": ".github/workflows/issue-triage.yml",
+        "triggers": [
+          "issues",
+          "issue_comment"
+        ],
+        "jobs": [
+          "triage"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Parent Chat Eval Nightly",
+        "path": ".github/workflows/parent-chat-eval-nightly.yml",
+        "triggers": [
+          "schedule",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "golden-set-judge"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Plan PR Review Gate",
+        "path": ".github/workflows/plan-pr-review-gate.yml",
+        "triggers": [
+          "pull_request",
+          "pull_request_review",
+          "merge_group"
+        ],
+        "jobs": [
+          "classify-and-gate"
+        ],
+        "matrixDimensions": []
+      }
+    ],
+    "deployStory": null
+  },
+  "tree": {
+    "topLevelDirs": [
+      {
+        "name": "docs",
+        "category": "docs",
+        "fileCount": 861
+      }
+    ],
+    "languageBreakdown": {
+      "markdown": 866,
+      "json": 2
+    },
+    "testDirs": [],
+    "fileCount": 868
+  },
+  "git": {
+    "recentCommitConventions": {
+      "conventional": true,
+      "cycleReferenced": false
+    },
+    "defaultBranch": "main"
+  },
+  "docs": {
+    "existing": [
+      "README.md",
+      "CONTRIBUTING.md",
+      "docs/ADR/2025-06-28-frontend-tracing-architecture.md",
+      "docs/ADR/2025-06-cognitive-memory-architecture.md",
+      "docs/ADR/2025-06-comprehensive-observability.md",
+      "docs/ADR/2025-06-comprehensive-testing.md",
+      "docs/ADR/2025-06-fully-agentic-architecture.md",
+      "docs/ADR/2025-06-gitbook-sync-workaround.md",
+      "docs/ADR/2025-06-image-schema.md",
+      "docs/ADR/2025-06-meta-learning-framework.md",
+      "docs/ADR/2025-06-meta-learning-ideas.md",
+      "docs/ADR/2025-06-prompt-ops-architecture.md",
+      "docs/ADR/2025-07-03-image-service-architecture.md",
+      "docs/ADR/2025-07-05-observability-modular-architecture.md",
+      "docs/ADR/2025-07-17-cerebe-auth-tdd.md",
+      "docs/ADR/2025-07-17-test-perma-green-architecture.md",
+      "docs/ADR/2025-07-cerebe-platform-architecture.md",
+      "docs/ADR/2025-07-sota-observability-architecture.md",
+      "docs/ADR/2025-08-03-testcontainers-architecture.md",
+      "docs/ADR/2025-08-madr-core-service.md",
+      "docs/ADR/2025-08-vortex-vector-storage-architecture.md",
+      "docs/ADR/2025-09-parent-chat-SOTA.md",
+      "docs/ADR/2025-10-22-agentic-writing-assessment-design.md",
+      "docs/ADR/2025-10-27-graph-agent-state.md",
+      "docs/ADR/2025-11-add-rendered-system-prompt-to-cerebe.md",
+      "docs/ADR/2026-03-clerk-auth-billing.md",
+      "docs/ADR/2026-03-cloud-provider-selection.md",
+      "docs/ADR/2026-03-sse-session-management.md",
+      "docs/ADR/2026-04-student-auth-modernization.md",
+      "docs/ADR/2026-05-ai-tools-fluency-framework.md",
+      "docs/ADR/2026-05-chief-engineer-pr-auto-merge.md",
+      "docs/ADR/2026-05-conversational-session-state.md",
+      "docs/ADR/2026-05-democratization-permission-defaults.md",
+      "docs/ADR/2026-05-ib-learning-framework-pack-family.md",
+      "docs/ADR/2026-05-kc-owned-level-metadata.md",
+      "docs/ADR/2026-05-learning-framework-discriminator-strategies.md",
+      "docs/ADR/2026-05-learning-framework-myp-audit.md",
+      "docs/ADR/2026-05-learning-management-ddd-aggregate-model.md",
+      "docs/ADR/2026-05-local-cursor-critic-host-execution.md",
+      "docs/ADR/2026-05-pact-deletion-schema-check-supersedes.md",
+      "docs/ADR/2026-05-postgres-pgvector-image-pinning.md",
+      "docs/ADR/2026-05-quality-gate-ratcheting.md",
+      "docs/ADR/2026-05-tutor-persona-foundation.md",
+      "docs/ADR/adr-027-cerebe-skill-packaging-format.md",
+      "docs/ADR/cycle310-agentic-eval-firewall.md",
+      "docs/ADR/README.md",
+      "docs/ADR/TEMPLATE.md",
+      "docs/architecture/agentic-uploads.md",
+      "docs/architecture/architecture-overview.md",
+      "docs/architecture/cerebe-ai-platform.md"
+    ],
+    "hasClaudeMd": true,
+    "hasAgentsMd": true,
+    "agentContextSetPresent": true,
+    "claudeMd": {
+      "sizeBytes": 24,
+      "headings": [
+        "truncated for fixture"
+      ]
+    },
+    "agentsMd": {
+      "sizeBytes": 24,
+      "headings": [
+        "truncated for fixture"
+      ]
+    }
+  },
+  "dfPresence": {
+    "hooks": true,
+    "configJson": true,
+    "prWorkflow": false,
+    "cliPin": "2.0.0"
+  },
+  "decisions": [],
+  "analyzerErrors": []
+}

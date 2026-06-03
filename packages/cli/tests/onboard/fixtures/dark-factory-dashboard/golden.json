@@ -1,0 +1,324 @@
+{
+  "schemaVersion": 1,
+  "repoRoot": "<NORM>",
+  "canonicalName": "momentiq-ai/dark-factory-dashboard",
+  "stacks": [
+    {
+      "language": "typescript",
+      "versionPin": ">=20",
+      "manifestPath": "package.json"
+    }
+  ],
+  "services": [],
+  "dependencies": [
+    {
+      "name": "@momentiq/dark-factory-cli",
+      "version": "2.0.0",
+      "manifestPath": "package-lock.json"
+    }
+  ],
+  "ci": {
+    "workflows": [
+      {
+        "name": "Backend Lint & Type Check",
+        "path": ".github/workflows/backend-lint.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "lint-and-type-check"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Backend Tests",
+        "path": ".github/workflows/backend-tests.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "test",
+          "coverage-report"
+        ],
+        "matrixDimensions": [
+          "test-category"
+        ]
+      },
+      {
+        "name": "Bot Review Settle",
+        "path": ".github/workflows/bot-review-settle.yml",
+        "triggers": [
+          "pull_request",
+          "merge_group"
+        ],
+        "jobs": [
+          "settle"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Build and Publish Images",
+        "path": ".github/workflows/build-images.yml",
+        "triggers": [
+          "push",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "detect-changes",
+          "build"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Claude PR Assistant",
+        "path": ".github/workflows/claude.yml",
+        "triggers": [
+          "issue_comment",
+          "pull_request_review_comment",
+          "issues"
+        ],
+        "jobs": [
+          "claude-code-action"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Contract Tests",
+        "path": ".github/workflows/contract-tests.yml",
+        "triggers": [
+          "workflow_dispatch",
+          "workflow_call"
+        ],
+        "jobs": [
+          "pact-consumer-tests",
+          "openapi-validation",
+          "provider-verification",
+          "contract-test-summary"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Cycle Board Automation",
+        "path": ".github/workflows/cycle-board.yml",
+        "triggers": [
+          "pull_request",
+          "check_suite"
+        ],
+        "jobs": [
+          "update-board"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Dark Factory PR Gates",
+        "path": ".github/workflows/dark-factory-pr.yml",
+        "triggers": [
+          "pull_request",
+          "merge_group"
+        ],
+        "jobs": [
+          "pr-status-check",
+          "agent-critic",
+          "cycle-doc-validation",
+          "branch-protection-audit"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Frontend Lint & Type Check",
+        "path": ".github/workflows/frontend-lint.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "lint-and-type-check"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Frontend E2E Tests",
+        "path": ".github/workflows/frontend-tests.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "e2e-tests",
+          "merge-reports"
+        ],
+        "matrixDimensions": [
+          "browser",
+          "shard"
+        ]
+      },
+      {
+        "name": "Frontend Unit Tests",
+        "path": ".github/workflows/frontend-unit-tests.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "unit-tests"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Plan PR Review Gate",
+        "path": ".github/workflows/plan-pr-review-gate.yml",
+        "triggers": [
+          "pull_request",
+          "pull_request_review",
+          "merge_group"
+        ],
+        "jobs": [
+          "classify-and-gate"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "PR CI",
+        "path": ".github/workflows/pr.yml",
+        "triggers": [
+          "pull_request"
+        ],
+        "jobs": [
+          "detect-changes",
+          "pr-title-lint",
+          "check-ci-skip",
+          "quality-gate",
+          "backend-lint",
+          "frontend-lint",
+          "backend-tests",
+          "frontend-tests",
+          "frontend-unit-tests",
+          "contract-tests",
+          "schema-check",
+          "evals",
+          "docs-lint",
+          "pr-status"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Promote to Production",
+        "path": ".github/workflows/promote-to-prod.yml",
+        "triggers": [
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "promote"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Quality Gate",
+        "path": ".github/workflows/quality-gate.yml",
+        "triggers": [
+          "workflow_call"
+        ],
+        "jobs": [
+          "quality-gate"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Run Evaluations",
+        "path": ".github/workflows/run-evals.yml",
+        "triggers": [
+          "workflow_call",
+          "push",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "run-evaluations"
+        ],
+        "matrixDimensions": []
+      },
+      {
+        "name": "Verify Rulesets",
+        "path": ".github/workflows/verify-rulesets.yml",
+        "triggers": [
+          "pull_request",
+          "merge_group",
+          "schedule",
+          "workflow_dispatch"
+        ],
+        "jobs": [
+          "verify"
+        ],
+        "matrixDimensions": []
+      }
+    ],
+    "deployStory": null
+  },
+  "tree": {
+    "topLevelDirs": [
+      {
+        "name": "docs",
+        "category": "docs",
+        "fileCount": 20
+      }
+    ],
+    "languageBreakdown": {
+      "markdown": 25,
+      "json": 2
+    },
+    "testDirs": [],
+    "fileCount": 27
+  },
+  "git": {
+    "recentCommitConventions": {
+      "conventional": true,
+      "cycleReferenced": false
+    },
+    "defaultBranch": "main"
+  },
+  "docs": {
+    "existing": [
+      "README.md",
+      "CONTRIBUTING.md",
+      "docs/admin/ce-bypass-setup.md",
+      "docs/ADR/2026-06-tool-boundary-security.md",
+      "docs/ADR/README.md",
+      "docs/cycles/cycle1-dark-factory-adoption.md",
+      "docs/cycles/cycle2-gate-run-detail-page.md",
+      "docs/cycles/cycle3-gate-run-pr-context-tools.md",
+      "docs/cycles/cycle4-per-critic-visibility.md",
+      "docs/cycles/cycle5-schema-pipeline-tool-outputs.md",
+      "docs/cycles/cycle6-sota-chat.md",
+      "docs/deployment/production-setup.md",
+      "docs/design/2026-05-25-exec-view-design.md",
+      "docs/design/2026-05-26-contextual-ai-fleet-analyst-plan.md",
+      "docs/design/2026-05-26-contextual-ai-fleet-analyst.md",
+      "docs/design/README.md",
+      "docs/engineering/ai-native-manifesto.md",
+      "docs/guides/dev-workstation-setup.md",
+      "docs/patterns/chat-persistence.md",
+      "docs/patterns/contextual-chat.md",
+      "docs/patterns/sse-notifications.md",
+      "docs/superpowers/plans/2026-06-03-cycle6.0-foundation.md"
+    ],
+    "hasClaudeMd": true,
+    "hasAgentsMd": true,
+    "agentContextSetPresent": true,
+    "claudeMd": {
+      "sizeBytes": 24,
+      "headings": [
+        "truncated for fixture"
+      ]
+    },
+    "agentsMd": {
+      "sizeBytes": 24,
+      "headings": [
+        "truncated for fixture"
+      ]
+    }
+  },
+  "dfPresence": {
+    "hooks": true,
+    "configJson": true,
+    "prWorkflow": true,
+    "cliPin": "2.0.0"
+  },
+  "decisions": [],
+  "analyzerErrors": []
+}
