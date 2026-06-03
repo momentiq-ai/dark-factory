@@ -51,6 +51,15 @@ import {
   mapArtifactForFindings,
   type DfFindingsResult,
 } from "../../lib/show-status-core.js";
+// Issue #118 (cursor finding) — the MCP `df_review` entry point must
+// wire the self-consistency probe in the same way `cmdCritic` and
+// `cmdReview` do (cli.ts ~594 and ~818). Without this, operators
+// configuring `aggregation.unilateralVetoRules.requireCorroborationFor:
+// [self_inconsistent]` with `GEMINI_API_KEY` get probe tagging on
+// `df review` / `df critic` but a silent policy no-op on MCP-driven
+// reviews — the policy never demotes findings, the telemetry stream
+// never shows the probe events.
+import { resolveProductionSelfConsistencyProbe } from "../../cli.js";
 
 const EXPECTED_REVIEW_SECONDS = 60;
 
@@ -366,6 +375,14 @@ export function registerReviewBypassTools(
       };
       jobs.set(jobId, job);
 
+      // Issue #118 — match the CLI's probe-wiring behavior so MCP-
+      // driven reviews honor the same `unilateralVetoRules.
+      // requireCorroborationFor` policy that `df review` / `df critic`
+      // do. `resolveProductionSelfConsistencyProbe` returns `undefined`
+      // when the policy is not active or the key is unset, so this
+      // is a no-op on configurations that haven't opted in.
+      const selfConsistencyProbe = resolveProductionSelfConsistencyProbe(loaded);
+
       // Fire and forget. The agent polls df_review_status to retrieve
       // the outcome. Errors are captured into job.error so they're
       // recoverable by the agent (not silently swallowed).
@@ -375,6 +392,7 @@ export function registerReviewBypassTools(
         ref: commit,
         telemetry: sink,
         profileName,
+        ...(selfConsistencyProbe !== undefined ? { selfConsistencyProbe } : {}),
       })
         .then((outcome) => {
           job.status = "completed";

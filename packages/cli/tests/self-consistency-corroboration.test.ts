@@ -1278,6 +1278,73 @@ describe("buildDefaultSelfConsistencyProbe", () => {
     }
     expect_eq(threw, true);
   });
+
+  // Issue #118 (cursor finding) — probe model is resolvable via env
+  // override `DF_SELF_CONSISTENCY_PROBE_MODEL`, so operators can tune
+  // the routing target without a CLI release. Resolution order:
+  //   1. options.modelId (explicit, e.g. tests)
+  //   2. env.DF_SELF_CONSISTENCY_PROBE_MODEL (operator override)
+  //   3. documented default (DEFAULT_PROBE_MODEL constant)
+  test("DF_SELF_CONSISTENCY_PROBE_MODEL env override is plumbed into the LLM caller", async () => {
+    let observedModel: string | undefined;
+    const probe = buildDefaultSelfConsistencyProbe({
+      env: { DF_SELF_CONSISTENCY_PROBE_MODEL: "gemini-2.5-pro" },
+      callLlm: async (model) => {
+        observedModel = model;
+        return '{"consistent": true, "reason": "ok"}';
+      },
+    });
+    const f = finding("blocker", "a.ts", 1);
+    await probe!({ vendor: "v", commitSha: "c", finding: f, fileContent: "x" });
+    expect_eq(observedModel, "gemini-2.5-pro");
+  });
+
+  test("explicit options.modelId beats the env override (resolution order #1)", async () => {
+    let observedModel: string | undefined;
+    const probe = buildDefaultSelfConsistencyProbe({
+      env: { DF_SELF_CONSISTENCY_PROBE_MODEL: "gemini-2.5-pro" },
+      modelId: "gemini-test-explicit",
+      callLlm: async (model) => {
+        observedModel = model;
+        return '{"consistent": true, "reason": "ok"}';
+      },
+    });
+    const f = finding("blocker", "a.ts", 1);
+    await probe!({ vendor: "v", commitSha: "c", finding: f, fileContent: "x" });
+    expect_eq(observedModel, "gemini-test-explicit");
+  });
+
+  test("no override → documented default model id is used", async () => {
+    let observedModel: string | undefined;
+    const probe = buildDefaultSelfConsistencyProbe({
+      env: {},
+      callLlm: async (model) => {
+        observedModel = model;
+        return '{"consistent": true, "reason": "ok"}';
+      },
+    });
+    const f = finding("blocker", "a.ts", 1);
+    await probe!({ vendor: "v", commitSha: "c", finding: f, fileContent: "x" });
+    // The documented default — kept in sync with self-consistency.ts.
+    expect_eq(observedModel, "gemini-2.5-flash");
+  });
+
+  test("empty-string env override falls through to the documented default", async () => {
+    // Operators sometimes set an env var to "" to mean "unset"; the
+    // resolver treats that as no-override and falls through to the
+    // module default.
+    let observedModel: string | undefined;
+    const probe = buildDefaultSelfConsistencyProbe({
+      env: { DF_SELF_CONSISTENCY_PROBE_MODEL: "" },
+      callLlm: async (model) => {
+        observedModel = model;
+        return '{"consistent": true, "reason": "ok"}';
+      },
+    });
+    const f = finding("blocker", "a.ts", 1);
+    await probe!({ vendor: "v", commitSha: "c", finding: f, fileContent: "x" });
+    expect_eq(observedModel, "gemini-2.5-flash");
+  });
 });
 
 // ---------------------------------------------------------------------------

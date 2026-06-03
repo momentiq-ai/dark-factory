@@ -399,7 +399,14 @@ The `self_inconsistent` flag is stamped by the in-aggregator self-consistency pr
 | `@momentiq/dark-factory-schemas` | `0.5.0` (adds `AggregationConfig.unilateralVetoRules`, `ReviewFinding.selfInconsistent`, `ReviewArtifact.disagreements`, `TelemetryEvent.event` extends with `self_consistency_probe` + `critic_disagreement`) |
 | `@momentiq/dark-factory-cli` | `1.2.0` (wires the production probe; implements the demotion path in `quorumAggregateVerdict` + `evaluateQuorumCriticResults`; persists disagreements on the artifact + markdown) |
 
-Pinning the CLI to `< 1.2.0` while shipping a 0.5.0-shaped config (i.e. with `unilateralVetoRules` present) is rejected by the parser. Pinning the CLI to `>= 1.2.0` while shipping a 0.4.0-shaped config (i.e. WITHOUT `unilateralVetoRules`) is fine — the field is optional and absence preserves pre-#112 behavior. Bump both together.
+**Failure modes for mismatched pins (per cursor finding on PR #118):**
+
+- `@momentiq/dark-factory-schemas@0.5.0` parses `aggregation.unilateralVetoRules` regardless of which CLI version consumes it — the parser does NOT reject a 0.5.0-shaped config on `< 1.2.0`. What you get on a CLI `< 1.2.0` pin is **silent legacy behavior**: the field round-trips through the loaded config but the runner never instantiates the self-consistency probe and never demotes flagged findings. The CLI logs a stderr `[critic] self-consistency probe disabled` line ONLY when the policy is active AND the probe wiring is reachable (i.e. on `>= 1.2.0`); on `< 1.2.0` the field is silently inert.
+- `>= 1.2.0` while shipping a 0.4.0-shaped config (i.e. WITHOUT `unilateralVetoRules`) is fine — the field is optional and absence preserves pre-#112 behavior.
+- `>= 1.2.0` + `GEMINI_API_KEY` unset but policy active → loud stderr degradation: `[critic] self-consistency probe disabled — GEMINI_API_KEY unset; policy ... is configured but probe-flagged findings will not be demoted on this run.`
+- `>= 1.2.0` + `GEMINI_API_KEY` set + policy active → automatic probe wiring on `df review`, `df critic`, AND the MCP `df_review` tool (per PR #118).
+
+**Recommendation:** bump both `@momentiq/dark-factory-schemas` and `@momentiq/dark-factory-cli` together when adopting `unilateralVetoRules`. The CLI pin is what carries the runtime behavior; the schemas pin only guarantees the on-disk artifact shape can be re-parsed losslessly by downstream consumers.
 
 ## 5. `docs/roadmap/cycles/` — Spec-Driven Traceability (MANDATORY)
 

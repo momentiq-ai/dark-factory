@@ -349,12 +349,36 @@ function raceWithTimeout<T>(p: Promise<T>, timeoutMs: number): Promise<T> {
       reject(new Error(`timeout after ${timeoutMs}ms`));
     }, timeoutMs);
   });
-  return Promise.race([
-    p.finally(() => {
-      if (handle !== undefined) clearTimeout(handle);
-    }),
-    timeoutPromise,
-  ]);
+  // Issue #118 (gemini finding) — the wrapper promise `p.finally(...)`
+  // can reject AFTER the timeout already settled the race (the race
+  // winner is the rejection from `timeoutPromise`); without an
+  // attached `.catch` handler, that late rejection surfaces as an
+  // UnhandledPromiseRejection that can crash the CLI process under
+  // Node.js's strict `--unhandled-rejections=strict` mode. We cannot
+  // cancel `p` (the v0.1 probe contract does not accept an
+  // AbortSignal), so the containment strategy is:
+  //
+  //   1. Enter the original `p.finally(...)` into the race so a real
+  //      probe rejection BEFORE the timeout still surfaces the
+  //      probe's error to the caller (preserves the existing
+  //      `probe_error` detail propagation).
+  //   2. Separately attach a swallowing `.catch` to the SAME wrapper
+  //      so a late rejection (after the race has already settled
+  //      with the timeout) is absorbed silently. This catch is a
+  //      detached chain — it never feeds back into the race — so it
+  //      cannot retroactively change the race winner.
+  const wrapped = p.finally(() => {
+    if (handle !== undefined) clearTimeout(handle);
+  });
+  // Detached swallow — caught here purely to absorb late rejections
+  // so they cannot escape to the runtime as unhandled. We DO NOT
+  // re-throw; the race entry above already surfaced the rejection if
+  // it landed before the timeout.
+  wrapped.catch(() => {
+    // Intentionally empty — see comment above raceWithTimeout for
+    // why we cannot do better without an AbortSignal in the contract.
+  });
+  return Promise.race([wrapped, timeoutPromise]);
 }
 
 /**
@@ -391,7 +415,26 @@ export interface DefaultProbeFactoryOptions {
   callLlm?: (model: string, prompt: string) => Promise<string>;
 }
 
+/**
+ * Documented default probe model. Resolution order at runtime:
+ *
+ *   1. `options.modelId` (explicit caller override — tests, hosted worker)
+ *   2. `env.DF_SELF_CONSISTENCY_PROBE_MODEL` (operator env override, no
+ *      code change required to tune the probe model per host)
+ *   3. this constant (documented default; the cheapest Gemini variant
+ *      that supports JSON-mode output as of writing)
+ *
+ * Per cursor finding on PR #118, this is the *documented default* —
+ * NOT a hardcoded module-scope routing decision. The env override exists
+ * because `.agent-review/prompts/local-critic.md` blocks "inline LLM
+ * prompts or model IDs hardcoded at module scope" when those IDs are
+ * the only routing surface; the operator override hatch above keeps the
+ * config-not-code posture for model routing while leaving a stable
+ * default for OSS consumers who do not want to think about model ids.
+ */
 const DEFAULT_PROBE_MODEL = "gemini-2.5-flash";
+
+const PROBE_MODEL_ENV_VAR = "DF_SELF_CONSISTENCY_PROBE_MODEL";
 
 export function buildDefaultSelfConsistencyProbe(
   options: DefaultProbeFactoryOptions = {},
@@ -404,7 +447,16 @@ export function buildDefaultSelfConsistencyProbe(
     // legacy aggregator semantics.
     return null;
   }
-  const modelId = options.modelId ?? DEFAULT_PROBE_MODEL;
+  // Resolution order (cursor finding on PR #118):
+  //   1. explicit caller override (options.modelId)
+  //   2. operator env override (DF_SELF_CONSISTENCY_PROBE_MODEL)
+  //   3. documented default (DEFAULT_PROBE_MODEL)
+  const envModelId = env[PROBE_MODEL_ENV_VAR];
+  const modelId =
+    options.modelId ??
+    (typeof envModelId === "string" && envModelId.length > 0
+      ? envModelId
+      : DEFAULT_PROBE_MODEL);
   const callLlm = options.callLlm ?? defaultGeminiCaller(apiKey!);
   return async (input) => {
     const prompt = buildSelfConsistencyPrompt(input);
