@@ -166,6 +166,25 @@ describe("Phase F-LOCAL — df doctor", () => {
     expect((parsed as { ok: boolean }).ok).toBe(r.exitCode === 0);
   });
 
+  it("--json always emits the `profile` key (default `local`) without --profile or AGENT_REVIEW_PROFILE", async () => {
+    // Consumer-pinned contract: the schema promises `profile` as a stable
+    // field. `JSON.stringify` omits `undefined` properties, so emitting
+    // an unset profile would silently break consumer hooks that pattern-
+    // match on `report.profile`. The CLI must always emit a concrete
+    // string value (defaulting to "local") so the field is present on
+    // every invocation path — including the no-flag, no-env default.
+    const r = await runDfCli(["doctor", "--json"], {
+      DF_DOCTOR_CI: "1",
+      AGENT_REVIEW_PROFILE: "",
+    });
+    expect([0, 1]).toContain(r.exitCode);
+    const parsed: unknown = JSON.parse(r.stdout);
+    expect(
+      Object.prototype.hasOwnProperty.call(parsed, "profile"),
+    ).toBe(true);
+    expect((parsed as { profile: unknown }).profile).toBe("local");
+  });
+
   it("--help mentions --json + the cloud-env markers", async () => {
     const r = await runDfCli(["doctor", "--help"]);
     expect(r.exitCode).toBe(0);

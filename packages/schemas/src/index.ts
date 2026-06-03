@@ -699,8 +699,12 @@ export interface DoctorCheck {
 //     markers fired). Consumer-side pre-push hooks read this BEFORE
 //     reading `triage` so the cloud-env bypass remediation is one
 //     branch upstream of the auth_pending branch.
-//   - `profile` — the resolved profile name (may be undefined when
-//     no `--profile` AND no `AGENT_REVIEW_PROFILE` were supplied).
+//   - `profile` — the resolved profile name. Always a concrete string
+//     (`resolveProfile` defaults to `"local"` when neither `--profile`
+//     nor `AGENT_REVIEW_PROFILE` is supplied), so consumer hooks can
+//     pattern-match on `report.profile` without an `undefined` branch.
+//     `JSON.stringify` omits properties whose value is `undefined`, so
+//     this typing is load-bearing for the stable-field-set contract.
 //   - `ok` — the same exit-code-equivalent flag (true ⇒ all required
 //     checks passed, identical to `process.exit(0)` from `cmdDoctor`).
 //   - `checks` — the full per-check array `runDoctor` returns, in
@@ -725,7 +729,7 @@ export interface DoctorReportV1 {
      */
     markers: string[];
   };
-  profile: string | undefined;
+  profile: string;
   ok: boolean;
   checks: DoctorCheck[];
 }

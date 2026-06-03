@@ -421,9 +421,77 @@ This verifies:
 - `core.hooksPath` points at `.husky`.
 - Artifact dir is writable.
 - Doppler bootstrap (if configured).
-- Per-adapter `doctor()` — i.e., each vendor's subscription login works.
+- Cloud-env detection (see §9.a.i below) — informational; never fails a gate.
+- Per-adapter `doctor()` — subscription auth lives here. On a workstation (no cloud-env marker set) each vendor's subscription login is probed and a failed probe is a red row. Inside a cloud env where any of the four markers from §9.a.i is truthy, per-critic subscription probes are **skipped** (OAuth is structurally unavailable) and replaced with a single `<criticId>.subscription_auth_unavailable_cloud_env` INFO row whose `remediation` is the canonical bypass string from §13. API-key critics (`auth: "api"`, or no pin) still run their probe in cloud envs — API keys ARE expected to live there via Doppler / env vars.
 
 Fix every red row before opening your first PR.
+
+### 9.a.i `df doctor --json` — machine-readable contract for consumer hooks
+
+Consumer-side pre-push hooks (`.husky/pre-push`) call `df doctor --json` to fail-fast on `auth_pending` before invoking the gate engine. The shape is pinned by `DoctorReportV1` in [`packages/schemas/src/index.ts`](https://github.com/momentiq-ai/dark-factory/blob/main/packages/schemas/src/index.ts):
+
+```bash
+./node_modules/.bin/df doctor --json
+```
+
+```json
+{
+  "version": 1,
+  "schema": "df-doctor-report-v1",
+  "triage": { "state": "ok | auth_pending | config_missing", "line": "<headline>" },
+  "cloudEnv": { "detected": false, "markers": [] },
+  "profile": "local",
+  "ok": true,
+  "checks": [ /* DoctorCheck[] — full per-check array in emission order */ ]
+}
+```
+
+Field-by-field contract:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `version` | `1` | Bumps with `schema` for breaking changes. Additive fields stay on `v1`. |
+| `schema` | `"df-doctor-report-v1"` | Pin against this literal in consumer parsers. |
+| `triage.state` | `"ok" \| "auth_pending" \| "config_missing"` | The 3-state classification (issue #51). Consumers branch on this. |
+| `triage.line` | `string` | The human headline `cmdDoctor` prints (suitable for surfacing in hook output). |
+| `cloudEnv.detected` | `boolean` | `true` iff any cloud-env marker is truthy. See `markers` for which. |
+| `cloudEnv.markers` | `string[]` | Subset of `CODESPACES` / `REMOTE_CONTAINERS` / `CLAUDE_CODE_SANDBOX` / `DEVCONTAINER` that fired. Append-only across versions. |
+| `profile` | `string` | Resolved profile name (defaults to `"local"`). Always present — never omitted. |
+| `ok` | `boolean` | Mirrors the exit code: `true` ⇔ exit `0` (all required checks passed). |
+| `checks` | `DoctorCheck[]` | Full per-check array, same shape as the human output (`name`, `passed`, `detail`, optional `remediation`, optional `optional`). |
+
+**Cloud-env markers** (any one truthy fires `cloudEnv.detected: true`):
+
+| Env var | Surface |
+|---|---|
+| `CODESPACES` | GitHub Codespaces |
+| `REMOTE_CONTAINERS` | VS Code Dev Containers |
+| `CLAUDE_CODE_SANDBOX` | Claude Code web sandbox (`claude.ai/code`) |
+| `DEVCONTAINER` | generic devcontainer images |
+
+**Truthy-token rule:** detection fires only on the canonical tokens `"true"` / `"1"` / `"yes"` (case-insensitive after `trim()`). Presence-only side-effect vars (e.g. `CODESPACE_NAME`) are intentionally ignored — the detector is structural, not heuristic, so consumer hooks cannot be tricked by an environment that merely *looks like* a cloud env.
+
+**Pre-push branch order — `cloudEnv` BEFORE `triage`.** Consumer hooks MUST read `cloudEnv.detected` first so the cloud-env bypass remediation is one branch upstream of the auth-pending branch:
+
+```bash
+report=$(./node_modules/.bin/df doctor --json) || true
+if printf '%s' "$report" | jq -e '.cloudEnv.detected' >/dev/null; then
+  # Cloud env: subscription probes are skipped by design. The canonical
+  # bypass from §13 is the right exit; do NOT fail the push on
+  # auth_pending here — auth is structurally unavailable, not missing.
+  markers=$(printf '%s' "$report" | jq -r '.cloudEnv.markers | join(", ")')
+  printf 'df doctor: cloud env detected (%s) — see §13 for the AGENT_REVIEW_BYPASS pattern.\n' "$markers"
+  exit 0
+fi
+state=$(printf '%s' "$report" | jq -r '.triage.state')
+if [ "$state" = "auth_pending" ]; then
+  printf '%s' "$report" | jq -r '.triage.line' >&2
+  printf 'Run `./node_modules/.bin/df doctor` for the per-critic remediation.\n' >&2
+  exit 1
+fi
+```
+
+Exit-code semantics are unchanged from the human path: `0` if every required check passed, `1` otherwise. `--json` is opt-in; the default `df doctor` output (and its exit code) is byte-stable for existing hooks that don't yet read the JSON surface.
 
 **b. First PR.** Open a no-op PR that touches `docs/CONSUMER-ADOPTION.md` or similar low-risk file. Expect:
 
@@ -751,6 +819,8 @@ AGENT_REVIEW_BYPASS="cloud env — local quorum unavailable; W3 critic is the ga
 ```
 
 The bypass is **loud + audited** — `.git/agent-reviews/_runs.ndjson` records the reason verbatim and `make df-stats` surfaces it. The merge gate is the **hosted W3 critic** (`dark-factory/critic`), enforced by your repo's branch ruleset (§8). Cloud-env pushes are a *cooperation pattern* with the hosted gate, not a defeat of it.
+
+Pre-push hooks branch on this structurally via the `cloudEnv.detected` field of `df doctor --json` (see §9.a.i for the field contract + the canonical hook branch). The cloud-env branch comes BEFORE the `triage.state === "auth_pending"` branch — inside a cloud env, missing subscription auth is *expected* (probes are skipped), not a hook failure.
 
 ### 13.1 Sage-blueprint consumers (recommended path)
 

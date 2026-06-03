@@ -85,6 +85,7 @@ import {
   detectCloudEnv,
   runDoctor,
 } from "./doctor.js";
+import type { DoctorReportV1 } from "@momentiq/dark-factory-schemas";
 import { resolveProfile } from "./policy/profile.js";
 import {
   commitsForPushUpdate,
@@ -1007,15 +1008,20 @@ async function cmdDoctor(rest: string[]): Promise<number> {
   // are the same as the human path: 0 = all required checks passed,
   // 1 = at least one required check failed.
   if (flags["json"]) {
-    const report = {
-      version: 1 as const,
-      schema: "df-doctor-report-v1" as const,
+    const report: DoctorReportV1 = {
+      version: 1,
+      schema: "df-doctor-report-v1",
       triage: { state: triage.state, line: triage.line },
       cloudEnv: {
         detected: cloudEnv.detected,
         markers: cloudEnv.markers,
       },
-      profile: profileName,
+      // `profile` is part of the stable field set; `JSON.stringify`
+      // omits `undefined`, so we default explicitly here even though
+      // `resolveProfile` already returns `"local"` on the no-flag /
+      // no-env path. Belt-and-braces — keeps the contract intact if the
+      // resolver signature ever loosens.
+      profile: profileName || "local",
       ok: allOk,
       checks,
     };
