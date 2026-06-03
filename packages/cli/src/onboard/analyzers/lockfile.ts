@@ -16,7 +16,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import TOML from "@iarna/toml";
-import { parse as parseYarnLock } from "@yarnpkg/lockfile";
+// @yarnpkg/lockfile is CJS; ESM only sees the default export.
+// Pull `parse` off the default to keep ESM consumers + Node ESM-loader happy.
+import yarnpkgLockfile from "@yarnpkg/lockfile";
+const { parse: parseYarnLock } = yarnpkgLockfile;
 import type { Analyzer } from "../analyzer.js";
 import type { Dependency, Decision } from "../schema.js";
 
