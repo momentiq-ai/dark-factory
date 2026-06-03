@@ -120,8 +120,11 @@ export async function buildReviewPacket(
   // a trusted-surface input (it lives under .git/agent-reviews/,
   // outside the tracked tree, so the parent-ref rebind doesn't apply
   // and would also fail — git can't `show ref:_dockerbuild-evidence.json`
-  // because the file is never committed).
-  const dockerBuildEvidence = await readDockerBuildEvidence(loaded);
+  // because the file is never committed). The reader's second arg is
+  // the SHA-binding gate: records whose `reviewedSha` doesn't match the
+  // commit under review are dropped as stale (mirror of the
+  // `readQualityGateEvidence` stale-handling path).
+  const dockerBuildEvidence = await readDockerBuildEvidence(loaded, sha);
 
   return {
     repoRoot,

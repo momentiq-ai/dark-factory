@@ -361,6 +361,15 @@ export interface DockerBuildEvidence {
   // Schema version of the evidence record. Bump on field rename or
   // semantic change so a stale shim's older shape can be detected.
   schemaVersion: string;
+  // Commit SHA the shim built against — the binding that defends
+  // against stale or forged evidence. Mirrors
+  // `QualityGateEvidence.commit`: the reader rejects records whose
+  // `reviewedSha` does not match the packet's `commit.sha` (a stale
+  // record from an earlier push, or a re-run hours later, cannot
+  // silently convert an unverified build into a host-verified success).
+  // The shim writes the full 40-character HEAD SHA at build time;
+  // SHA equality is the staleness check.
+  reviewedSha: string;
   // Repo-relative path to the Dockerfile that was built (e.g.,
   // ".devcontainer/Dockerfile"). Used to correlate evidence with the
   // critic's view of the diff — a finding about an unrelated
@@ -387,9 +396,10 @@ export interface DockerBuildEvidence {
   // useful for the prompt to point operators at the full log if the
   // critic flags follow-up questions.
   buildLogPath?: string;
-  // ISO-8601 timestamp the shim wrote the evidence. Used to surface
-  // staleness if the evidence pre-dates the commit's diff (e.g., a
-  // critic re-run hours later against an unrelated Dockerfile change).
+  // ISO-8601 timestamp the shim wrote the evidence. Informational only:
+  // staleness is enforced by `reviewedSha` equality (see above), not
+  // by timestamp comparison. Surfaced in the prompt so the critic can
+  // report when the build ran.
   timestamp: string;
 }
 
