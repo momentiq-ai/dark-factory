@@ -532,3 +532,94 @@ test("StaticSchemaLintAdapter diff fallback ignores deletion-only hunks", async 
   expect_eq(result.verdict, "APPROVED");
   expect_eq(result.findings.length, 0);
 });
+
+// codex critic #116 — modify-only-payload-line case. The PR edits only
+// the payload line inside an existing annotated fenced block; the
+// surrounding fence + `<!-- schema: ... -->` annotation are context
+// lines. Without context preservation, the reconstructed body would be
+// JUST the JSON payload — no fence, no annotation — and the gate would
+// silently APPROVE the schema-invalid edit. With context preservation,
+// extractSchemaBlocks sees the fence + annotation around the added line
+// and the violation is caught.
+test("StaticSchemaLintAdapter diff fallback catches in-place edits inside existing annotated blocks", async () => {
+  const diff = [
+    "diff --git a/CLAUDE.md b/CLAUDE.md",
+    "index abc..def 100644",
+    "--- a/CLAUDE.md",
+    "+++ b/CLAUDE.md",
+    "@@ -10,5 +10,5 @@ Some heading",
+    " <!-- schema: claude-code-settings -->",
+    " ```jsonc",
+    " {",
+    '-  "effortLevel": "high"',
+    '+  "effortLevel": "max"',
+    " }",
+    " ```",
+    "",
+  ].join("\n");
+  const packet = makePacket([{ path: "CLAUDE.md", status: "modified" }]);
+  packet.diff = diff;
+  const adapter = new StaticSchemaLintAdapter();
+  const result = await adapter.review(packet, CRITIC, REVIEW_OPTIONS);
+  expect_eq(result.verdict, "CHANGES_REQUESTED");
+  // Find the effortLevel finding (truncation guard is not active here —
+  // packet.diffTruncated is false in makePacket()).
+  const f = result.findings.find((x) => /effortLevel/.test(x.evidence));
+  expect_truthy(f !== undefined);
+  expect_eq(f!.severity, "high");
+  expect_eq(f!.file, "CLAUDE.md");
+});
+
+// cursor critic #116 — diff-truncation guard. When the adapter relied on
+// the diff-fallback path for any scanned file AND packet.diffTruncated is
+// true, the adapter MUST emit a blocking-severity finding rather than
+// silently APPROVE. The unified diff was cut by rebind.ts at
+// DEFAULT_DIFF_BUDGET, so the adapter cannot prove the absence of
+// violations in the truncated tail.
+test("StaticSchemaLintAdapter emits blocking finding when diff fallback used AND diffTruncated", async () => {
+  // A benign diff (no schema violations) that exercises ONLY the diff-
+  // fallback path. With diffTruncated=true, the adapter must still
+  // surface a blocking finding because the truncated tail is opaque.
+  const diff = [
+    "diff --git a/CLAUDE.md b/CLAUDE.md",
+    "index abc..def 100644",
+    "--- a/CLAUDE.md",
+    "+++ b/CLAUDE.md",
+    "@@ -0,0 +1,2 @@",
+    "+# CLAUDE.md",
+    "+(content not schema-annotated)",
+    "",
+  ].join("\n");
+  const packet = makePacket([{ path: "CLAUDE.md", status: "modified" }]);
+  packet.diff = diff;
+  packet.diffTruncated = true;
+  const adapter = new StaticSchemaLintAdapter();
+  const result = await adapter.review(packet, CRITIC, REVIEW_OPTIONS);
+  expect_eq(result.verdict, "CHANGES_REQUESTED");
+  const f = result.findings.find((x) => /diffTruncated/.test(x.evidence));
+  expect_truthy(f !== undefined);
+  expect_eq(f!.severity, "high");
+  expect_match(f!.requiredFix, /includeFullChangedFiles: true/);
+});
+
+// Companion: when packet.diff is truncated but the adapter did NOT use
+// the fallback path (file.content present), there is no fail-open risk —
+// the adapter saw the full file content directly. The truncation guard
+// must NOT fire in that case.
+test("StaticSchemaLintAdapter truncation guard quiet when file.content present", async () => {
+  const goodContent = [
+    "<!-- schema: claude-code-settings -->",
+    "```jsonc",
+    '{ "effortLevel": "high" }',
+    "```",
+  ].join("\n");
+  const packet = makePacket([
+    { path: "CLAUDE.md", status: "modified", content: goodContent },
+  ]);
+  packet.diff = "diff --git a/CLAUDE.md b/CLAUDE.md\n... [diff truncated]\n";
+  packet.diffTruncated = true;
+  const adapter = new StaticSchemaLintAdapter();
+  const result = await adapter.review(packet, CRITIC, REVIEW_OPTIONS);
+  expect_eq(result.verdict, "APPROVED");
+  expect_eq(result.findings.length, 0);
+});

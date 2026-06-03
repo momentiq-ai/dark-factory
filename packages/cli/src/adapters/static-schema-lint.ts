@@ -488,38 +488,60 @@ function parseBlockBody(block: ExtractedBlock): unknown {
 // adapter can scan.
 //
 // Caveats (documented in CONSUMER-ADOPTION §4.1):
-//   - Only `+` lines contribute — deletions are correctly NOT reported
-//     as new findings (a removed annotated block is not regressed).
-//   - Context lines (no leading `+`) are dropped, so an annotation
-//     ONLY visible in pre-existing context is not picked up. This is
-//     by design: the gate's job is to catch regressions introduced by
-//     the current PR, not to lint historical content.
+//   - Only hunks that ADD at least one `+` line contribute — a pure
+//     deletion hunk (the consumer fixed the violation) is correctly NOT
+//     reported as a new finding.
+//   - Within a contributing hunk, BOTH `+` (added) and ` ` (context) lines
+//     are preserved so the surrounding fenced-block boundary and the
+//     `<!-- schema: ... -->` / `// schema: ...` / `# schema: ...`
+//     annotation survive the reconstruction. Without context preservation,
+//     a PR that modifies only the payload line inside an existing
+//     annotated fenced block produces a body without a fence or schema
+//     marker, `extractSchemaBlocks` returns nothing, and the gate
+//     silently APPROVES the violation (codex critic #116 — fail-open
+//     contract breach for the deterministic backstop).
+//   - Deletion (`-`) lines are still dropped — they are NOT current
+//     repo state.
+//   - Hunks across the same file accumulate; each contributing hunk
+//     is appended with a blank line separator so distinct hunks do not
+//     fuse into one virtual fenced block.
 //   - If the diff itself is truncated (`packet.diffTruncated: true`),
-//     fallback coverage is partial. The recommended posture is to set
-//     `context.includeFullChangedFiles: true` for repos where this
-//     matters; the doctor surfaces the truncation case in a future
-//     extension.
+//     fallback coverage is partial. The adapter emits a BLOCKING-
+//     severity finding when diffFallbacks were used on any scanned file
+//     and the diff was truncated (cursor critic #116) — see review()
+//     below.
 
 export function reconstructAddedContentFromDiff(diff: string): Map<string, string> {
   const out = new Map<string, string>();
   if (!diff) return out;
   const lines = diff.split("\n");
   let currentPath: string | null = null;
-  let buffer: string[] = [];
-  const flush = (): void => {
-    if (currentPath !== null && buffer.length > 0) {
+  // Per-hunk buffers: lines accumulate into the CURRENT hunk's buffer;
+  // when the hunk ends (next `@@` header, file boundary, or end of diff)
+  // it flushes into the file's content map IFF it contained at least one
+  // `+` (added) line. Pure context-only hunks (impossible in normal git
+  // diff output but defended against here) and pure deletion-only hunks
+  // contribute nothing — matching the cycle's "regressions introduced by
+  // this PR" charter.
+  let hunkBuffer: string[] = [];
+  let hunkHasAdd = false;
+  const flushHunk = (): void => {
+    if (currentPath !== null && hunkHasAdd && hunkBuffer.length > 0) {
       const prior = out.get(currentPath);
-      const joined = buffer.join("\n");
-      out.set(currentPath, prior ? `${prior}\n${joined}` : joined);
+      const joined = hunkBuffer.join("\n");
+      // Separate distinct hunks with a blank line so an unclosed fence in
+      // one hunk does not fuse into a fenced block from a later hunk.
+      out.set(currentPath, prior ? `${prior}\n\n${joined}` : joined);
     }
-    buffer = [];
+    hunkBuffer = [];
+    hunkHasAdd = false;
   };
   for (const line of lines) {
     // `+++ b/<path>` — header for the destination file in a hunk header.
     // The leading `b/` is the standard `git diff` prefix; strip it if
     // present, fall back to the raw path otherwise.
     if (line.startsWith("+++ ")) {
-      flush();
+      flushHunk();
       const rest = line.slice(4).trim();
       if (rest === "/dev/null") {
         currentPath = null;
@@ -530,15 +552,40 @@ export function reconstructAddedContentFromDiff(diff: string): Map<string, strin
       }
       continue;
     }
-    if (line.startsWith("--- ") || line.startsWith("diff --git ") || line.startsWith("@@")) {
-      // Header lines — do NOT contribute content, do NOT switch path.
+    if (line.startsWith("--- ") || line.startsWith("diff --git ")) {
+      // File-level headers — DO NOT contribute content, DO NOT switch
+      // path (the `+++` line is the authoritative path source).
       continue;
     }
-    if (line.startsWith("+") && currentPath !== null) {
-      buffer.push(line.slice(1));
+    if (line.startsWith("@@")) {
+      // Hunk boundary. Flush whatever the previous hunk gathered.
+      flushHunk();
+      continue;
     }
+    if (currentPath === null) continue;
+    if (line.startsWith("+")) {
+      hunkBuffer.push(line.slice(1));
+      hunkHasAdd = true;
+      continue;
+    }
+    if (line.startsWith("-")) {
+      // Deletion — NOT current state. Drop.
+      continue;
+    }
+    if (line.startsWith(" ")) {
+      // Context line. Preserve it (strip the single leading space) so
+      // surrounding fence + schema annotations survive when the PR
+      // edits only the payload line inside an existing annotated block.
+      hunkBuffer.push(line.slice(1));
+      continue;
+    }
+    if (line === "\\ No newline at end of file") {
+      // Standard git diff marker. Skip.
+      continue;
+    }
+    // Anything else (blank line between hunks, etc.) — drop.
   }
-  flush();
+  flushHunk();
   return out;
 }
 
@@ -673,6 +720,13 @@ export class StaticSchemaLintAdapter implements CriticAdapter {
     let scannedFiles = 0;
     let extractedBlocks = 0;
     let parseFailures = 0;
+    // Track which scanned files relied on the diff-fallback path so we
+    // can emit a blocking finding when `packet.diffTruncated === true`
+    // (cursor critic #116 — on large PRs with includeFullChangedFiles:
+    // false, the truncation cap in rebind.ts can cut a violating hunk
+    // before it reaches the adapter, and the gate would otherwise
+    // silently APPROVE).
+    const diffFallbackFiles: string[] = [];
 
     // Fallback-source map: when a changed file body is not loaded into
     // `changedFiles[].content` (the consumer set
@@ -686,9 +740,13 @@ export class StaticSchemaLintAdapter implements CriticAdapter {
     for (const file of packet.changedFiles) {
       if (!this.scannedFilePatterns.some((re) => re.test(file.path))) continue;
       if (file.omittedReason) continue;
-      const content =
-        file.content ?? file.compactedContent ?? diffFallbacks.get(file.path);
+      const direct = file.content ?? file.compactedContent;
+      const fallback = direct === undefined ? diffFallbacks.get(file.path) : undefined;
+      const content = direct ?? fallback;
       if (!content) continue;
+      if (fallback !== undefined) {
+        diffFallbackFiles.push(file.path);
+      }
       scannedFiles++;
 
       const blocks = extractSchemaBlocks(content);
@@ -749,6 +807,28 @@ export class StaticSchemaLintAdapter implements CriticAdapter {
           );
         }
       }
+    }
+
+    // cursor critic #116 — diff-truncation fail-open guard. If ANY scanned
+    // file used the diff-fallback path AND packet.diffTruncated is true,
+    // emit a blocking finding: the truncation cap in rebind.ts can cut a
+    // violating hunk before it reaches this adapter, so the deterministic
+    // backstop's silence is NOT meaningful evidence of correctness for
+    // this PR. The consumer must either flip `context.includeFullChangedFiles:
+    // true` (so this adapter reads file bodies directly, bypassing the
+    // truncated diff) or shrink the changeset.
+    if (packet.diffTruncated && diffFallbackFiles.length > 0) {
+      findings.push({
+        severity: "high",
+        category: "schema",
+        file: diffFallbackFiles[0]!,
+        line: 1,
+        evidence: `packet.diffTruncated=true AND ${diffFallbackFiles.length} scanned file(s) relied on diff-fallback content reconstruction (no file.content / file.compactedContent): ${diffFallbackFiles.join(", ")}. The unified diff was capped at the rebind.ts DEFAULT_DIFF_BUDGET (1_500_000 bytes); annotations in the truncated tail are NOT visible to the adapter.`,
+        impact:
+          "Under `context.includeFullChangedFiles: false`, the deterministic schema-lint backstop can silently APPROVE schema-invalid doc examples (the same fail-open class as consumer DFP #107) when the violating hunk falls outside the truncated diff budget. The adapter cannot prove the absence of violations in the truncated tail, so silence here is NOT evidence of correctness.",
+        requiredFix:
+          "Set `context.includeFullChangedFiles: true` in the consumer `.agent-review/config.json` (the adapter then reads file bodies directly via `git show <sha>:<path>` and bypasses the truncated diff), OR shrink the PR so the unified diff fits inside `DEFAULT_DIFF_BUDGET` (1.5MB). See docs/CONSUMER-ADOPTION.md §4.1 for the full mitigation matrix.",
+      });
     }
 
     const verdict =
