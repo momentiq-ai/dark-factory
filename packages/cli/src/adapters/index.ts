@@ -119,6 +119,22 @@ export {
   type CursorCliRunner,
 } from "./cursor-cli.js";
 
+// Consumer dark-factory-platform#107 — deterministic schema-lint adapter.
+// Validates JSON-Schema-tagged code blocks in markdown / config-file
+// examples (e.g. CLAUDE.md `~/.claude/settings.json` examples). No LLM,
+// no network, no auth; runs in <100ms. Closes the local-quorum
+// coverage gap where the LLM critics passed a schema-invalid example
+// that the cloud-cursor adapter (different prompt envelope) caught.
+export {
+  StaticSchemaLintAdapter,
+  STATIC_SCHEMA_LINT_ADAPTER_ID,
+  STATIC_SCHEMAS,
+  extractSchemaBlocks,
+  stripJsoncSyntax,
+  type StaticSchemaLintAdapterOptions,
+  type ExtractedBlock,
+} from "./static-schema-lint.js";
+
 export {
   AdapterRegistry,
   collectRequiredEnvVars,

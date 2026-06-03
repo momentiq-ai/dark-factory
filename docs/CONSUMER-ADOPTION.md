@@ -256,6 +256,86 @@ Copy the [dark-factory canonical config](../.agent-review/config.json) into your
 
 Also drop a critic-prompt fragment at `.agent-review/prompts/local-critic.md` with your repo-specific quality bar. See [dark-factory's own](../.agent-review/prompts/local-critic.md) as a starting template.
 
+### 4.1 Deterministic schema-lint critic (`static-schema-lint`)
+
+In addition to the LLM critics, the local fleet ships a **deterministic** critic that runs JSON-Schema validation on schema-annotated code blocks inside changed `*.md` files. It has **no API key, no subscription, no network call** — pure `ajv`-backed validation. Runtime: <100ms per PR.
+
+**Why it exists.** Consumer dark-factory-platform#107: a `~/.claude/settings.json` example documenting `effortLevel: "max"` (schema-invalid — the persisted enum is `low|medium|high|xhigh`) sailed past the local quorum (cursor-cli + codex) and was caught by the cloud `cursor-sdk` adapter. The local LLM critics are not optimized for schema-shape regressions in tiny code-block examples. A deterministic backstop closes the gap.
+
+**Adapter id.** `static-schema-lint`. Critic-id template: `<name>-schema-lint-chief-engineer` (the local profile uses `schema-lint-chief-engineer`).
+
+**Wire it in.** Add the critic + the id to your local profile (cloud profile gets it too — same deterministic result either side, belt-and-suspenders). Quorum stays unchanged: schema-lint is `required: false` and its job is to surface **blocking-severity findings** that veto regardless of quorum (the existing single-critic-veto pattern under `min-complete-quorum`).
+
+**Source of markdown content.** The adapter prefers `changedFiles[i].content` when the consumer config has `context.includeFullChangedFiles: true` (the recommended default — that's what dark-factory itself uses). When `includeFullChangedFiles: false`, the adapter falls back to reconstructing the current state of each changed file from `packet.diff` — within each hunk that ADDS at least one line, it preserves both the `+` (added) and context lines so the surrounding fenced-block boundary and `<!-- schema: ... -->` annotation survive; pure deletion hunks contribute nothing. Set `includeFullChangedFiles: true` if you want the adapter to scan the full file (catches annotations in unmodified parts of the file outside any hunk); leave it `false` if you want it to scan only the changed hunks. Either way the DFP #107 fixture is blocked end-to-end.
+
+> **Caveat — diff truncation under `includeFullChangedFiles: false`.** The unified diff in `packet.diff` is capped at `DEFAULT_DIFF_BUDGET` (currently `1_500_000` bytes) by the trusted-surface rebind. Above that cap, `packet.diffTruncated` is `true` and the tail is dropped. When the adapter relies on the diff-fallback path for any scanned file AND the diff is truncated, the deterministic backstop emits a **blocking-severity finding** rather than silently APPROVING (the truncated tail could contain a schema-invalid annotated block the adapter cannot see). To avoid this on intentionally large changesets, either (a) set `context.includeFullChangedFiles: true` so the adapter reads file bodies directly via `git show <sha>:<path>` and bypasses the truncated diff, or (b) shrink the changeset below the 1.5MB budget. The blocker is loud + auditable, not silent.
+
+**Verify the wiring with `df doctor`.** After adding the critic, run `df doctor` (or invoke the MCP `df_doctor` tool from your agent client). Confirm two checks pass:
+
+- `schema-lint-chief-engineer.static_schema_lint_registry` — the registry compiled and reports the built-in schema count.
+- `schema-lint-chief-engineer.static_schema_lint_smoke` — a known-good `effortLevel: "high"` payload validates clean against the bundled `claude-code-settings` schema.
+
+If either check is missing, the MCP loader didn't pick up the adapter (open an issue against `momentiq-ai/dark-factory`). If the smoke check fails, re-install: `npm ci --workspace=@momentiq/dark-factory-cli`.
+
+<!-- schema: df-agent-review-config -->
+```jsonc
+{
+  "version": 2,
+  "critics": [
+    {
+      "id": "schema-lint-chief-engineer",
+      "name": "Schema-Lint Critic",
+      "adapter": "static-schema-lint",
+      "required": false,
+      "runtime": "local",
+      "model": { "id": "deterministic-1.0", "params": [] }
+    }
+  ],
+  "profiles": {
+    "local": {
+      "criticIds": [
+        "cursor-local-chief-engineer",
+        "codex-local-chief-engineer",
+        "schema-lint-chief-engineer"
+      ],
+      "quorum": 2
+    }
+  }
+}
+```
+
+**Authoring schema-linted examples.** Two annotation forms — pick whichever fits the fence language:
+
+JSONC (the common case — comments allowed):
+
+<!-- schema: claude-code-settings -->
+```jsonc
+// schema: claude-code-settings
+{ "model": "opus", "effortLevel": "xhigh" }
+```
+
+Strict JSON (no inline comments) — use the HTML-comment form IMMEDIATELY before the fence:
+
+<!-- schema: claude-code-settings -->
+```json
+{ "model": "opus", "effortLevel": "xhigh" }
+```
+
+Both forms above will be validated; the value `"effortLevel": "max"` would produce a `severity: high` finding in either form. YAML fences use `# schema: <name>` and are parsed via the `yaml` package:
+
+<!-- schema: claude-code-settings -->
+```yaml
+# schema: claude-code-settings
+model: opus
+effortLevel: "xhigh"
+```
+
+Block-comment-friendly fences use `/* schema: <name> */`. Built-in schema names: `claude-code-settings`, `df-agent-review-config`. Extend via the `schemas` constructor option if you have additional shapes worth linting.
+
+**Unknown schema names are blocking.** A typo in the annotation (e.g. `// schema: claude-code-setting` missing the trailing `s`) emits a `severity: high` finding so the misconfiguration surfaces at gate time instead of failing open. Register the schema or fix the annotation.
+
+**What it does NOT do.** It does not auto-detect schemas from file paths (the opt-in annotation is required — false positives erode trust faster than false negatives). It does not call any LLM. It does not validate the full markdown body — only annotated code blocks.
+
 ## 5. `docs/roadmap/cycles/` — Spec-Driven Traceability (MANDATORY)
 
 Per the AI-Native Manifesto §10 (`sage3c:docs/engineering/ai-native-manifesto.md`), Dark Factory consumer repos MUST carry a `docs/roadmap/cycles/` directory containing cycle docs. The `cycle-doc-validation` reusable workflow (extracted from `sage3c/scripts/ci/validate_cycle_doc.py`) enforces:

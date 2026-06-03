@@ -473,6 +473,12 @@ const ADAPTER_LOADERS: ReadonlyArray<{
   { id: "codex-sdk", modulePath: "./adapters/codex-sdk.js", className: "CodexSdkAdapter" },
   { id: "gemini-sdk", modulePath: "./adapters/gemini-sdk.js", className: "GeminiSdkAdapter" },
   { id: "grok-direct-sdk", modulePath: "./adapters/grok-direct-sdk.js", className: "GrokDirectSdkAdapter" },
+  // Consumer dark-factory-platform#107 — deterministic schema-lint adapter.
+  // No vendor SDK, no env vars, no network; pure ajv-backed validation of
+  // schema-annotated code blocks in changed markdown / config files.
+  // Loads alongside the LLM adapters so the local profile can include it
+  // without any additional toolchain.
+  { id: "static-schema-lint", modulePath: "./adapters/static-schema-lint.js", className: "StaticSchemaLintAdapter" },
 ];
 
 async function buildDefaultAdapterRegistry(): Promise<AdapterRegistry> {

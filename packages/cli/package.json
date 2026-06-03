@@ -70,6 +70,8 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@momentiq/dark-factory-schemas": "0.5.0",
     "@openai/codex-sdk": "^0.130.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "openai": "^6.37.0",
     "yaml": "^2.9.0",
     "zod": "^3.23.0",
