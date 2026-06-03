@@ -169,10 +169,21 @@ export function registerSkillsTools(
       }
       let targetSkills: string[];
       if (all === true) {
+        if (targetDir !== undefined) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `**df_skills_install**: all=true is incompatible with targetDir (bundled skills share target filenames like SKILL.md, so a single dir would overwrite). Install each skill separately, or omit targetDir to use the default <cwd>/.claude/skills/<name>/.`,
+              },
+            ],
+          };
+        }
         try {
           const loaded = loadDarkFactoryConfig(cwd);
-          targetSkills = enabledSkillNames(loaded.config);
-          if (targetSkills.length === 0) {
+          const enabled = enabledSkillNames(loaded.config);
+          if (enabled.length === 0) {
             return {
               isError: true,
               content: [
@@ -185,6 +196,19 @@ export function registerSkillsTools(
               ],
             };
           }
+          const unknown = enabled.filter((name) => !KNOWN_SKILLS.includes(name));
+          if (unknown.length > 0) {
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: `**df_skills_install**: all=true rejected — unknown skill name(s) in ${loaded.configPath}: ${unknown.join(", ")}. Known skills: ${KNOWN_SKILLS.join(", ")}.`,
+                },
+              ],
+            };
+          }
+          targetSkills = enabled;
         } catch (err) {
           return {
             isError: true,
@@ -223,11 +247,23 @@ export function registerSkillsTools(
         }
       }
 
+      // Mirror the CLI's exit-code 3 contract: when ANY rendered file was
+      // skipped (hand-edited, body-mismatch, or pre-template detection),
+      // surface that as an MCP-level error so the agent caller does not
+      // silently accept a partial install. The structuredContent still
+      // carries the full per-file detail so the caller can decide whether
+      // to retry with force=true.
+      const hasSkipped = results.some((r) =>
+        r.files.some((f) => f.action === "skipped"),
+      );
+      const summary = renderInstallMarkdown(results);
+      const text = hasSkipped
+        ? `${summary}\n\nOne or more files were skipped. Re-call with force=true to overwrite.`
+        : summary;
       return {
+        ...(hasSkipped ? { isError: true } : {}),
         structuredContent: { installed: results },
-        content: [
-          { type: "text", text: renderInstallMarkdown(results) },
-        ],
+        content: [{ type: "text", text }],
       };
     },
   );

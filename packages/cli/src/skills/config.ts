@@ -36,6 +36,7 @@
 // CLI surfaces); zod validates the shape so a malformed config fails closed
 // at load time with a useful error.
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -151,18 +152,76 @@ export function loadDarkFactoryConfig(
 }
 
 /**
+ * Parse a git remote URL into `<owner>/<repo>`. Handles both the SSH
+ * shorthand (`git@github.com:owner/repo[.git]`) and the HTTPS form
+ * (`https://github.com/owner/repo[.git]`). Returns null when neither
+ * shape matches — we don't want to populate `OWNER_REPO` from a URL we
+ * couldn't confidently parse.
+ */
+export function parseGitRemoteOwnerRepo(remoteUrl: string): string | null {
+  const trimmed = remoteUrl.trim();
+  // SSH: git@host:owner/repo[.git]
+  const ssh = trimmed.match(/^[^@]+@[^:]+:([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (ssh) return `${ssh[1]}/${ssh[2]}`;
+  // HTTPS/HTTP: https://host[:port]/owner/repo[.git]
+  const https = trimmed.match(
+    /^https?:\/\/[^/]+\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
+  );
+  if (https) return `${https[1]}/${https[2]}`;
+  return null;
+}
+
+/**
+ * Best-effort inference of `<owner>/<repo>` from the consumer's
+ * `origin` git remote. Returns null when the repo is not a git checkout,
+ * has no origin, or origin has an unparseable URL. Never throws — the
+ * caller treats null as "no inference available, fall back to manifest
+ * default".
+ */
+export function inferGitOriginOwnerRepo(repoRoot: string): string | null {
+  let url: string;
+  try {
+    url = execFileSync("git", ["config", "--get", "remote.origin.url"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+  if (url.length === 0) return null;
+  return parseGitRemoteOwnerRepo(url);
+}
+
+export interface ResolveSkillOverridesOptions {
+  readonly config: DarkFactoryConfig;
+  /**
+   * Consumer repo root. When provided, `OWNER_REPO` / `REPO_SLUG` fall back
+   * to git-remote inference when the yaml does not provide them. Omit in
+   * unit tests that want pure-config behavior.
+   */
+  readonly repoRoot?: string;
+}
+
+/**
  * Resolve the install-time variable overrides for one skill, given the
  * loaded consumer config. The output is the `overrides` arg to
  * `renderTemplateBody` — a map from variable name to value (scalar string)
  * or values (string[] for kind:"list").
+ *
+ * Precedence for `OWNER_REPO` / `REPO_SLUG`:
+ *   1. yaml `repo.ownerRepo` / `repo.slug` (explicit; wins)
+ *   2. git remote inference from `repoRoot` (when supplied)
+ *   3. manifest default (renderer falls back when this map omits the key)
  *
  * Variable→config-key mapping is hard-coded here because there is exactly
  * one consumer-config schema. A generic mapping system is not worth the
  * indirection at this size.
  */
 export function resolveSkillOverrides(
-  config: DarkFactoryConfig,
+  options: ResolveSkillOverridesOptions,
 ): Record<string, string | string[]> {
+  const { config, repoRoot } = options;
   const overrides: Record<string, string | string[]> = {};
   if (config.repo?.displayName !== undefined) {
     overrides.REPO_NAME = config.repo.displayName;
@@ -172,6 +231,21 @@ export function resolveSkillOverrides(
   }
   if (config.repo?.ownerRepo !== undefined) {
     overrides.OWNER_REPO = config.repo.ownerRepo;
+  }
+  if (
+    (overrides.OWNER_REPO === undefined || overrides.REPO_SLUG === undefined) &&
+    repoRoot !== undefined
+  ) {
+    const inferred = inferGitOriginOwnerRepo(repoRoot);
+    if (inferred !== null) {
+      const slashIndex = inferred.indexOf("/");
+      if (overrides.OWNER_REPO === undefined) {
+        overrides.OWNER_REPO = inferred;
+      }
+      if (overrides.REPO_SLUG === undefined && slashIndex > 0) {
+        overrides.REPO_SLUG = inferred.slice(slashIndex + 1);
+      }
+    }
   }
   if (config.docs?.manifesto !== undefined) {
     overrides.MANIFESTO_PATH = config.docs.manifesto;

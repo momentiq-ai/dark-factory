@@ -42,7 +42,6 @@ import {
   extractReferencedVariables,
   renderTemplateBody,
   type SkillManifest,
-  type VariableOverride,
 } from "./template.js";
 
 /**
@@ -285,39 +284,6 @@ function stripInstallMarker(body: string): string {
 }
 
 /**
- * Read + render a single template file. Returns the body with the install
- * marker injected.
- */
-function renderOneTemplate(
-  skillSourceDir: string,
-  template: { template: string; target: string },
-  manifest: SkillManifest,
-  overrides: Readonly<Record<string, VariableOverride>>,
-  installHash: string,
-): { body: string; substituted: ReadonlyArray<{ name: string; value: string }> } {
-  const templatePath = join(skillSourceDir, template.template);
-  if (!existsSync(templatePath)) {
-    throw new Error(
-      `df skills install: template file missing at ${templatePath} (skill: ${manifest.name}).`,
-    );
-  }
-  const raw = readFileSync(templatePath, "utf8");
-  // Lint: every variable referenced in the template must be declared.
-  const referenced = extractReferencedVariables(raw);
-  for (const varName of referenced) {
-    if (!(varName in manifest.variables)) {
-      throw new Error(
-        `df skills install: template ${template.template} references undeclared variable "{{${varName}}}" — add to skill.json#variables for skill "${manifest.name}".`,
-      );
-    }
-  }
-  const rendered = renderTemplateBody(raw, { manifest, overrides });
-  // The marker for non-main files: same shape, no frontmatter, so just top-of-file.
-  const final = injectInstallMarker(rendered.body, manifest.name, installHash);
-  return { body: final, substituted: rendered.substituted };
-}
-
-/**
  * Install one skill into the consumer's `.claude/skills/<name>/`.
  */
 export function installSkill(options: InstallOptions): InstallResult {
@@ -333,7 +299,7 @@ export function installSkill(options: InstallOptions): InstallResult {
   // Load consumer config + resolve overrides.
   const loaded: LoadedDarkFactoryConfig = loadDarkFactoryConfig(options.cwd);
   const config: DarkFactoryConfig = loaded.config;
-  const overrides = resolveSkillOverrides(config);
+  const overrides = resolveSkillOverrides({ config, repoRoot: options.cwd });
 
   const targetDir =
     options.targetDir ??
@@ -395,23 +361,33 @@ export function installSkill(options: InstallOptions): InstallResult {
       }
     }
     if (exists && existing.present && existing.hash === installHash) {
-      // No-op re-render — same inputs → same hash → no need to rewrite.
-      files.push({
-        relTarget: r.target,
-        absoluteTarget: absTarget,
-        action: "unchanged",
-      });
-      continue;
-    }
-    if (exists && existing.present && existing.hash && existing.hash !== installHash) {
-      // Compare bodies (modulo the marker) — if a human edited only the
-      // marker we still want to consider this an "updated" overwrite, not
-      // a refuse.
+      // Hash matches → same manifest version + same resolved vars. Compare
+      // the body (modulo the marker) to detect a hand-edit the hash cannot
+      // catch: a user can edit the prose without touching the marker, and
+      // both `manifest.version` + the resolved-variable set stay identical,
+      // so the recomputed `installHash` still matches. Without this guard
+      // the next install silently treats the modified body as "unchanged"
+      // and the consumer drifts from the source-of-truth template.
       const currentBody = readFileSync(absTarget, "utf8");
       const currentWithoutMarker = stripInstallMarker(currentBody).trim();
       const newWithoutMarker = stripInstallMarker(finalBody).trim();
-      if (currentWithoutMarker !== newWithoutMarker) {
-        // OK — body differs because variables resolved differently. Overwrite.
+      if (currentWithoutMarker === newWithoutMarker) {
+        files.push({
+          relTarget: r.target,
+          absoluteTarget: absTarget,
+          action: "unchanged",
+        });
+        continue;
+      }
+      if (!options.force) {
+        files.push({
+          relTarget: r.target,
+          absoluteTarget: absTarget,
+          action: "skipped",
+          reason:
+            "rendered file body has been hand-edited (install-hash matches but content differs from the upstream template). Re-run with --force to overwrite.",
+        });
+        continue;
       }
     }
 

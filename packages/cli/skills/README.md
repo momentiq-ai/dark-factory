@@ -43,7 +43,7 @@ skills/
 | Variable | Typical default | Source |
 |---|---|---|
 | `{{REPO_NAME}}` | `this repo` | `darkfactory.yaml: repo.displayName` |
-| `{{REPO_SLUG}}` | (empty) | git remote inference / `repo.slug` |
+| `{{REPO_SLUG}}` | (empty) | `repo.slug` > `<repo>` portion of git `origin` remote |
 | `{{MANIFESTO_PATH}}` | `docs/PRINCIPLES.md` | `docs.manifesto` |
 | `{{ADR_DIR}}` | `docs/ADR` | `docs.adrDir` |
 | `{{CYCLE_DOCS_DIR}}` | `docs/roadmap/cycles` | `docs.cycleDocsDir` |
@@ -52,16 +52,38 @@ skills/
 | `{{CE_AGENT_PATH}}` | `.claude/agents/chief-engineer.md` | `agents.chiefEngineer` |
 | `{{QUALITY_GATE_TARGETS}}` | `make quality-gates` | `qualityGates` (list) |
 | `{{WORKTREE_ROOT}}` | `.claude/worktrees` | `worktreeRoot` |
-| `{{OWNER_REPO}}` | (empty) | `repo.ownerRepo` / git remote |
+| `{{OWNER_REPO}}` | (empty) | `repo.ownerRepo` > parsed from `git config --get remote.origin.url` |
 | `{{AGENT_COMMITTER_ORG}}` | `momentiq` | `agentCommitterOrg` |
+
+`OWNER_REPO` / `REPO_SLUG` precedence at install time: explicit
+`darkfactory.yaml` value wins. When the yaml does not provide it, the
+renderer falls back to parsing the consumer repo's `origin` git remote
+(both SSH `git@github.com:owner/repo.git` and HTTPS
+`https://github.com/owner/repo.git` forms are recognized). If neither
+yields a value, the renderer uses the manifest default (empty by
+convention — the consumer accepts that templated `gh` commands will
+require an explicit `--repo` flag).
 
 ## Adding a new skill
 
 1. Create `skills/<name>/`.
 2. Write `skill.json` declaring all variables your templates use.
 3. Write `SKILL.md.tmpl` (and any sibling templates/, references/).
-4. Add the skill name to `KNOWN_SKILLS` in `src/skills/index.ts`.
+4. Add the skill name to `KNOWN_SKILLS` in `src/skills/install.ts`.
 5. Add a vitest case in `tests/skills/install.test.ts` that renders the skill
    against the default config and snapshots the output.
-6. Ensure `scripts/copy-assets.mjs` picks up `.tmpl` + `skill.json` (it does,
-   via the COPY_EXTENSIONS allowlist).
+
+## How skills ship in the npm tarball
+
+Bundled skills ship via the top-level `files: ["skills"]` array in
+`packages/cli/package.json` — the whole `skills/` directory is copied
+verbatim into the published tarball. There is **no** copy-assets step
+for `.tmpl` / `skill.json` files; `scripts/copy-assets.mjs` only mirrors
+non-TypeScript assets *inside* `src/` (e.g. Python scripts, YAML fixtures)
+into `dist/`. The skills directory sits at the package root, parallel to
+`dist/`, and `resolveSkillsRoot()` finds it relative to the compiled
+module's URL.
+
+If you need a new file extension under `skills/` (today: `.md.tmpl`,
+`.json`), nothing in the build needs to change — the `files` array
+already takes the directory as a whole.

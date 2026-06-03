@@ -18,10 +18,13 @@ export {
   loadDarkFactoryConfig,
   resolveSkillOverrides,
   enabledSkillNames,
+  inferGitOriginOwnerRepo,
+  parseGitRemoteOwnerRepo,
   DarkFactoryConfigSchema,
   CONFIG_FILENAME,
   type DarkFactoryConfig,
   type LoadedDarkFactoryConfig,
+  type ResolveSkillOverridesOptions,
 } from "./config.js";
 
 export {

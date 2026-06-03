@@ -164,14 +164,33 @@ async function cmdSkillsInstall(rest: string[], io: SkillsIo): Promise<number> {
   const cwd = process.cwd();
   let targetSkills: string[];
   if (parsed.all) {
+    // Reject --all + --target-dir at the CLI surface: every bundled skill
+    // targets SKILL.md, so a shared target-dir would have the second install
+    // overwrite the first. Surface a clear error so the consumer either drops
+    // --target-dir (gets the default per-skill .claude/skills/<name>/) or
+    // splits the invocations one-skill-at-a-time.
+    if (parsed.targetDir !== undefined) {
+      io.stderr(
+        `df skills install: --all is incompatible with --target-dir (bundled skills share target filenames like SKILL.md, so a single dir would overwrite). Install each skill separately, or omit --target-dir to use the default <cwd>/.claude/skills/<name>/.\n`,
+      );
+      return 2;
+    }
     const loaded = loadDarkFactoryConfig(cwd);
-    targetSkills = enabledSkillNames(loaded.config);
-    if (targetSkills.length === 0) {
+    const enabled = enabledSkillNames(loaded.config);
+    if (enabled.length === 0) {
       io.stderr(
         `df skills install: --all found no skills marked enabled: true in ${loaded.configPath} (${loaded.isDefault ? "no darkfactory.yaml present" : "present"}).\n`,
       );
       return 1;
     }
+    const unknown = enabled.filter((name) => !KNOWN_SKILLS.includes(name));
+    if (unknown.length > 0) {
+      io.stderr(
+        `df skills install: --all rejected — unknown skill name(s) in ${loaded.configPath}: ${unknown.join(", ")}. Known skills: ${KNOWN_SKILLS.join(", ")}.\n`,
+      );
+      return 2;
+    }
+    targetSkills = enabled;
   } else if (parsed.skillName !== undefined) {
     targetSkills = [parsed.skillName];
   } else {
