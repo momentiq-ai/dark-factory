@@ -100,10 +100,23 @@ jobs:
       - name: Mint CI bot installation token
         id: app-token
         if: steps.detect-app.outputs.has_app == 'true'
+        # continue-on-error covers the "secrets present but App not
+        # installed on this repo" case (HTTP 404 from
+        # /repos/{owner}/{repo}/installation). Without this, that state
+        # fails the entire release-please job. With it, the step's
+        # outputs.token is empty and the `||` fallback below provides
+        # GITHUB_TOKEN -- same behavior as if creds were absent. See
+        # issue #123 for the failure mode this guards against.
+        continue-on-error: true
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.CI_BOT_APP_ID }}
           private-key: ${{ secrets.CI_BOT_PRIVATE_KEY }}
+
+      - name: Warn if App-token step degraded
+        if: steps.app-token.outcome == 'failure'
+        run: |
+          echo "::warning::App credentials present but actions/create-github-app-token failed (likely App not installed on this repo). Falling back to GITHUB_TOKEN; release PRs will require admin-merge until installation is fixed. See issue #123."
 
       - uses: googleapis/release-please-action@v4
         id: release
