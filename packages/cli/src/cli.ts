@@ -41,6 +41,7 @@ import {
   constants as fsConstants,
   existsSync,
   readFileSync,
+  realpathSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,6 +75,10 @@ import {
 import { loadAgentReviewConfig, type LoadedConfig } from "./policy/config.js";
 import { buildCriticReport, buildZeroEvidenceDiagnostic } from "./report.js";
 import { runReview, runCommitGate } from "./runner.js";
+import {
+  buildDefaultSelfConsistencyProbe,
+  type SelfConsistencyProbeFn,
+} from "./self-consistency.js";
 import { resolveArtifactDir, telemetryPath } from "./paths.js";
 // Phase F-LOCAL — hook-facing subcommand support.
 import {
@@ -560,6 +565,35 @@ function appendStepSummary(markdown: string): void {
   }
 }
 
+/**
+ * Cursor finding (cli.ts:560) — resolve the production
+ * self-consistency probe so the policy `unilateralVetoRules.requireCorroborationFor`
+ * actually demotes findings on the default OSS CLI path. Returns the
+ * probe callable when (a) the loaded policy lists `self_inconsistent`
+ * AND (b) `buildDefaultSelfConsistencyProbe()` returns a non-null
+ * factory (i.e. the env has a `GEMINI_API_KEY`). Otherwise returns
+ * undefined, which makes the runner skip the probe pass entirely
+ * (byte-identical pre-#112 behavior).
+ *
+ * Operators who want a non-Gemini probe (or the hosted worker's
+ * proprietary calibrated probe) replace the callable by importing
+ * `runReview` directly with their own `selfConsistencyProbe`.
+ */
+export function resolveProductionSelfConsistencyProbe(
+  loaded: LoadedConfig,
+): SelfConsistencyProbeFn | undefined {
+  const flags = loaded.config.aggregation.unilateralVetoRules?.requireCorroborationFor ?? [];
+  if (!flags.includes("self_inconsistent")) return undefined;
+  const probe = buildDefaultSelfConsistencyProbe();
+  if (probe === null) {
+    process.stderr.write(
+      "[critic] self-consistency probe disabled — GEMINI_API_KEY unset; policy `unilateralVetoRules.requireCorroborationFor: [self_inconsistent]` is configured but probe-flagged findings will not be demoted on this run.\n",
+    );
+    return undefined;
+  }
+  return probe;
+}
+
 async function cmdCritic(rest: string[]): Promise<number> {
   if (rest.includes("--help") || rest.includes("-h")) {
     process.stdout.write(
@@ -605,11 +639,13 @@ async function cmdCritic(rest: string[]): Promise<number> {
     const artifactDir = await resolveArtifactDir(loaded);
     const sink = new FileTelemetrySink(telemetryPath(artifactDir));
 
+    const selfConsistencyProbe = resolveProductionSelfConsistencyProbe(loaded);
     const outcome = await runReview({
       loaded,
       registry,
       ref: opts.ref,
       telemetry: sink,
+      ...(selfConsistencyProbe !== undefined ? { selfConsistencyProbe } : {}),
     });
 
     // sage3c#2213 — surface per-critic errors + a loud degradation
@@ -827,12 +863,14 @@ async function cmdReview(rest: string[]): Promise<number> {
   const foreground =
     flags["foreground"] === true || flags["foreground"] === "true";
   try {
+    const selfConsistencyProbe = resolveProductionSelfConsistencyProbe(loaded);
     const outcome = await runReview({
       loaded,
       registry,
       ref,
       telemetry: sink,
       profileName,
+      ...(selfConsistencyProbe !== undefined ? { selfConsistencyProbe } : {}),
     });
     // Issue #51 — loud post-completion diagnostic for zero-evidence
     // reviews. When every critic errored (no completed verdicts), the
@@ -2051,12 +2089,33 @@ async function main(argv: string[]): Promise<number> {
   return notImplemented(sub);
 }
 
-main(process.argv).then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (err: unknown) => {
-    process.stderr.write(`df: fatal: ${(err as Error).message}\n`);
-    process.exitCode = 1;
-  },
-);
+// Only run main() when this module is the program entry point.
+// Tests and other modules can `import` cli.ts to reuse helpers
+// (e.g. `resolveProductionSelfConsistencyProbe`) without triggering
+// `main(process.argv)` as a side-effect of the import. The realpath
+// dance handles symlinked installs (npm bin shims often symlink
+// `dist/cli.js` into `node_modules/.bin/df`). Same posture as
+// sage-cli (see commit f0f945e). Cursor finding (cli.ts:560) tests
+// reach `resolveProductionSelfConsistencyProbe` by importing this
+// module; without the guard they'd trigger the help path on import.
+function isInvokedAsMain(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedAsMain()) {
+  main(process.argv).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (err: unknown) => {
+      process.stderr.write(`df: fatal: ${(err as Error).message}\n`);
+      process.exitCode = 1;
+    },
+  );
+}

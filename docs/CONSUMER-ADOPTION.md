@@ -336,6 +336,78 @@ Block-comment-friendly fences use `/* schema: <name> */`. Built-in schema names:
 
 **What it does NOT do.** It does not auto-detect schemas from file paths (the opt-in annotation is required — false positives erode trust faster than false negatives). It does not call any LLM. It does not validate the full markdown body — only annotated code blocks.
 
+### 4.2 `aggregation.unilateralVetoRules` — self-consistency demotion (schemas 0.5.0 / CLI 1.2.0)
+
+> **Optional, additive in `@momentiq/dark-factory-schemas@0.5.0` + `@momentiq/dark-factory-cli@1.2.0`.** Pre-existing configs without this block parse identically and the runtime stays byte-identical to pre-#112 behavior. Bump both pins together — the CLI dependency on schemas is exact, and the two MUST move in lockstep.
+
+Single-critic vetoes (one critic raising a `blocker|high` finding alone) sustain the §11 "single rigorous critic" safety net by default. This means a critic that hallucinates an empirical claim about a specific file can block byte-identical code another critic already approved. The `unilateralVetoRules.requireCorroborationFor` field lets the operator demand corroboration BEFORE the veto applies, narrowed to specific per-finding flags so the safety net stays intact for findings the critic can defend.
+
+```jsonc
+{
+  "aggregation": {
+    "policy": "min-complete-quorum",
+    "blockingSeverities": ["blocker", "high"],
+    "quorum": 2,
+    "unilateralVetoRules": {
+      "requireCorroborationFor": ["self_inconsistent"],
+      "requireCorroborationOnHunkRadius": 5
+    }
+  }
+}
+```
+
+**Field semantics**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `requireCorroborationFor` | `string[]` (non-empty, no duplicates) | Opaque snake_case flag names. Currently the only registered flag is `self_inconsistent`. Unknown flags are a no-op (forward-compat), so pinning policy ahead of a CLI that knows the flag is safe. |
+| `requireCorroborationOnHunkRadius` | `integer >= 0` | Line-radius (inclusive) within which a corroborating blocking finding from ANOTHER critic must land on the SAME file. `0` requires an exact-line match; `5` matches the issue's recommendation. |
+
+**Constraints (parser enforces; the parse fails loudly otherwise):**
+
+- `policy` MUST be `min-complete-quorum`. The aggregator only consults the rules under quorum policy; configuring them under `block-if-any` was a silent footgun and is now rejected at parse time.
+- `requireCorroborationFor` MUST be non-empty.
+- `requireCorroborationOnHunkRadius` MUST be `>= 0`.
+
+**What happens when the policy fires**
+
+A `blocker|high` finding carrying a listed flag (e.g. `selfInconsistent: true`) sustains a unilateral veto ONLY when ANOTHER completed critic raises a blocking finding on the same file within `requireCorroborationOnHunkRadius` lines. Otherwise the finding is demoted to a `critic_disagreement` warning on the gate result, persisted as a `ReviewArtifact.disagreements[]` entry on the on-disk JSON, surfaced as a `[self-inconsistent]` tag in the per-SHA markdown, and emitted as a `critic_disagreement` telemetry event in `_runs.ndjson`. **Findings without a listed flag still veto unconditionally** — the §11 invariant is intact for findings the critic can defend.
+
+**Self-consistency probe (the writer of the flag)**
+
+The `self_inconsistent` flag is stamped by the in-aggregator self-consistency probe — one cheap LLM call per `blocker|high` finding that compares the finding's empirical claim against the actual file content. The probe is the SOLE writer of the flag (adapters never produce it). Wiring:
+
+- **On the OSS CLI:** `df critic` and `df review` automatically wire a default Gemini-backed probe when (a) the policy lists `self_inconsistent` AND (b) `GEMINI_API_KEY` is set in the environment. When the key is unset, the CLI logs `[critic] self-consistency probe disabled — GEMINI_API_KEY unset` on stderr and proceeds with legacy aggregator semantics (no demotions).
+- **On the W3 hosted critic:** the worker injects its own probe via the same `runReview({ selfConsistencyProbe })` injection point; consumers don't need to do anything beyond setting the policy.
+
+**Failure modes (probe degradation MUST NOT escalate verdicts):**
+
+- Probe timeout, transport error, or malformed JSON output → finding is NOT tagged; the legacy unilateral-veto safety net applies for that finding.
+- Probe per-finding timeout is bounded (`DEFAULT_PROBE_TIMEOUT_MS = 15s`) so a hung vendor call cannot wedge the review run.
+
+**Telemetry events surfaced by the probe + policy:**
+
+| Event | Per-event payload | Emitted when |
+|---|---|---|
+| `self_consistency_probe` | `criticId`, `status` (`probe_consistent` / `probe_inconsistent` / `probe_error` / `no_evidence`), `detail` | Once per finding the probe processed (skipped findings are silent to avoid log noise). |
+| `critic_disagreement` | `criticId`, `status` = triggering flag (e.g. `self_inconsistent`), `detail` = `<file>:<line> — <evidence>` | Once per finding the aggregator demoted under the policy. |
+
+**Version pairing**
+
+| Component | Version |
+|---|---|
+| `@momentiq/dark-factory-schemas` | `0.5.0` (adds `AggregationConfig.unilateralVetoRules`, `ReviewFinding.selfInconsistent`, `ReviewArtifact.disagreements`, `TelemetryEvent.event` extends with `self_consistency_probe` + `critic_disagreement`) |
+| `@momentiq/dark-factory-cli` | `1.2.0` (wires the production probe; implements the demotion path in `quorumAggregateVerdict` + `evaluateQuorumCriticResults`; persists disagreements on the artifact + markdown) |
+
+**Failure modes for mismatched pins (per cursor finding on PR #118):**
+
+- `@momentiq/dark-factory-schemas@0.5.0` parses `aggregation.unilateralVetoRules` regardless of which CLI version consumes it — the parser does NOT reject a 0.5.0-shaped config on `< 1.2.0`. What you get on a CLI `< 1.2.0` pin is **silent legacy behavior**: the field round-trips through the loaded config but the runner never instantiates the self-consistency probe and never demotes flagged findings. The CLI logs a stderr `[critic] self-consistency probe disabled` line ONLY when the policy is active AND the probe wiring is reachable (i.e. on `>= 1.2.0`); on `< 1.2.0` the field is silently inert.
+- `>= 1.2.0` while shipping a 0.4.0-shaped config (i.e. WITHOUT `unilateralVetoRules`) is fine — the field is optional and absence preserves pre-#112 behavior.
+- `>= 1.2.0` + `GEMINI_API_KEY` unset but policy active → loud stderr degradation: `[critic] self-consistency probe disabled — GEMINI_API_KEY unset; policy ... is configured but probe-flagged findings will not be demoted on this run.`
+- `>= 1.2.0` + `GEMINI_API_KEY` set + policy active → automatic probe wiring on `df review`, `df critic`, AND the MCP `df_review` tool (per PR #118).
+
+**Recommendation:** bump both `@momentiq/dark-factory-schemas` and `@momentiq/dark-factory-cli` together when adopting `unilateralVetoRules`. The CLI pin is what carries the runtime behavior; the schemas pin only guarantees the on-disk artifact shape can be re-parsed losslessly by downstream consumers.
+
 ## 5. `docs/roadmap/cycles/` — Spec-Driven Traceability (MANDATORY)
 
 Per the AI-Native Manifesto §10 (`sage3c:docs/engineering/ai-native-manifesto.md`), Dark Factory consumer repos MUST carry a `docs/roadmap/cycles/` directory containing cycle docs. The `cycle-doc-validation` reusable workflow (extracted from `sage3c/scripts/ci/validate_cycle_doc.py`) enforces:

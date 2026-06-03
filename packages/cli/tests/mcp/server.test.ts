@@ -1716,6 +1716,253 @@ d
     }
   });
 
+  // -----------------------------------------------------------------
+  // Issue #118 (cursor finding on PR #118) — the MCP `df_review` tool
+  // MUST wire `resolveProductionSelfConsistencyProbe` into the
+  // `runReview` call the same way `cmdCritic` / `cmdReview` do. Without
+  // this, operators enabling `aggregation.unilateralVetoRules.
+  // requireCorroborationFor: [self_inconsistent]` + `GEMINI_API_KEY`
+  // get probe wiring on `df review` / `df critic` but a silent no-op
+  // on MCP-driven reviews. This test captures the
+  // `selfConsistencyProbe` argument the runner receives so we fail
+  // loudly if the wiring is ever dropped.
+  // -----------------------------------------------------------------
+
+  function setupReviewBypassFixtureWithProbePolicy(): { root: string; sha: string } {
+    const root = mkdtempSync(join(tmpdir(), "df-mcp-probe-wiring-"));
+    spawnSync("git", ["init", "-q", "-b", "main", root]);
+    spawnSync("git", ["config", "user.email", "t@t.com"], { cwd: root });
+    spawnSync("git", ["config", "user.name", "t"], { cwd: root });
+    spawnSync("git", ["config", "commit.gpgsign", "false"], { cwd: root });
+    writeFileSync(join(root, "README.md"), "# x\n");
+    spawnSync("git", ["add", "."], { cwd: root });
+    spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
+    const sha = String(
+      spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout,
+    ).trim();
+
+    mkdirSync(join(root, ".agent-review", "prompts"), { recursive: true });
+    writeFileSync(join(root, "CLAUDE.md"), "# CLAUDE\n", "utf8");
+    writeFileSync(
+      join(root, ".agent-review", "prompts", "local-critic.md"),
+      "# local\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(root, ".agent-review", "config.json"),
+      JSON.stringify({
+        version: 1,
+        critics: [
+          {
+            id: "cursor-local",
+            name: "Cursor",
+            adapter: "cursor-sdk",
+            required: true,
+            runtime: "local",
+            model: { id: "gpt-5.5", params: [] },
+          },
+          {
+            id: "codex-local",
+            name: "Codex",
+            adapter: "codex-sdk",
+            required: true,
+            runtime: "local",
+            model: { id: "gpt-5.5", params: [] },
+          },
+        ],
+        // The active-policy config: `unilateralVetoRules.
+        // requireCorroborationFor: [self_inconsistent]` should make
+        // the production probe resolver return a callable (when the
+        // env has GEMINI_API_KEY). Note: `unilateralVetoRules` is only
+        // valid for policy="min-complete-quorum", which requires
+        // quorum >= 2 and critics.length >= quorum (hence two critics).
+        aggregation: {
+          policy: "min-complete-quorum",
+          blockingSeverities: ["blocker", "high"],
+          quorum: 2,
+          unilateralVetoRules: {
+            requireCorroborationFor: ["self_inconsistent"],
+            requireCorroborationOnHunkRadius: 5,
+          },
+        },
+        git: { hookPath: ".husky", artifactDir: "agent-reviews", artifactScope: "git-common-dir" },
+        policy: {
+          blockOnMissingReview: true,
+          blockOnReviewError: true,
+          allowEmergencyBypass: true,
+          postCommitMode: "async",
+        },
+        context: {
+          guidanceFiles: ["CLAUDE.md"],
+          promptFragments: [".agent-review/prompts/local-critic.md"],
+          maxChangedFileBytes: 200000,
+          includeFullChangedFiles: true,
+        },
+        validation: {
+          runBeforeReview: false,
+          resultFile: "agent-reviews/quality-gates/latest.json",
+          requiredQualityGates: [],
+          optionalQualityGates: [],
+        },
+        security: { redactSecretsInDiagnostics: true, treatDiffAsUntrustedInput: true },
+      }),
+      "utf8",
+    );
+    return { root, sha };
+  }
+
+  it("df_review passes selfConsistencyProbe into runReview when policy + GEMINI_API_KEY are set (PR #118 cursor finding)", async () => {
+    const { root, sha } = setupReviewBypassFixtureWithProbePolicy();
+    const prevKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "fake-test-key-for-probe-wiring";
+    try {
+      const fakeOutcome = {
+        artifact: {
+          version: 2 as const,
+          status: "complete" as const,
+          repo: "test/test",
+          commit: sha,
+          parent: "0000000000000000000000000000000000000000",
+          range: `0000000..${sha.slice(0, 7)}`,
+          diffHash: "sha256:test",
+          artifactScope: "git-common-dir" as const,
+          gateVerdict: "APPROVED" as const,
+          aggregationPolicy: "min-complete-quorum" as const,
+          criticResults: [
+            {
+              criticId: "cursor-local",
+              status: "complete" as const,
+              verdict: "APPROVED" as const,
+              requiresHumanJudgment: false,
+              reviewer: {
+                name: "Cursor",
+                adapter: "cursor-sdk",
+                model: { id: "gpt-5.5", params: [] },
+                runtime: "local",
+              },
+              summary: "ok",
+              findings: [],
+              validation: { qualityGateResults: [], qualityGatesMissing: [] },
+              confidence: "high" as const,
+            },
+          ],
+          createdAt: "2026-05-27T15:00:00.000Z",
+        },
+        paths: {
+          jsonPath: join(root, ".git", "agent-reviews", `${sha}.json`),
+          markdownPath: null,
+        },
+        packet: {} as never,
+        acquired: true,
+      };
+
+      // Capture the options runReview is called with so we can assert
+      // the probe was threaded through.
+      let capturedOptions: { selfConsistencyProbe?: unknown } | undefined;
+      const server = createMcpServer({
+        cwd: root,
+        _testRunReview: async (options) => {
+          capturedOptions = options;
+          return fakeOutcome;
+        },
+      });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      await client.callTool({ name: "df_review", arguments: { commit: sha } });
+
+      // Let the fire-and-forget `.then()` callback land.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      expect(capturedOptions).toBeDefined();
+      // The wiring assertion: when policy is active + key is set, the
+      // production probe resolver MUST return a callable that the
+      // runner receives via selfConsistencyProbe. A regression dropping
+      // the wire (cursor finding's silent-no-op scenario) fails here.
+      expect(typeof capturedOptions?.selfConsistencyProbe).toBe("function");
+
+      await client.close();
+      await server.close();
+    } finally {
+      if (prevKey === undefined) {
+        delete process.env.GEMINI_API_KEY;
+      } else {
+        process.env.GEMINI_API_KEY = prevKey;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("df_review omits selfConsistencyProbe when the policy is not active (legacy/pre-#112 behavior)", async () => {
+    const { root, sha } = setupReviewBypassFixture();
+    const prevKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "fake-test-key-for-probe-wiring";
+    try {
+      const fakeOutcome = {
+        artifact: {
+          version: 2 as const,
+          status: "complete" as const,
+          repo: "test/test",
+          commit: sha,
+          parent: "0000000000000000000000000000000000000000",
+          range: `0000000..${sha.slice(0, 7)}`,
+          diffHash: "sha256:test",
+          artifactScope: "git-common-dir" as const,
+          gateVerdict: "APPROVED" as const,
+          aggregationPolicy: "block-if-any" as const,
+          criticResults: [],
+          createdAt: "2026-05-27T15:00:00.000Z",
+        },
+        paths: {
+          jsonPath: join(root, ".git", "agent-reviews", `${sha}.json`),
+          markdownPath: null,
+        },
+        packet: {} as never,
+        acquired: true,
+      };
+
+      let capturedOptions: { selfConsistencyProbe?: unknown } | undefined;
+      const server = createMcpServer({
+        cwd: root,
+        _testRunReview: async (options) => {
+          capturedOptions = options;
+          return fakeOutcome;
+        },
+      });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client(
+        { name: "df-conformance-test", version: "0.0.0" },
+        { capabilities: {} },
+      );
+      await client.connect(clientTransport);
+
+      await client.callTool({ name: "df_review", arguments: { commit: sha } });
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      expect(capturedOptions).toBeDefined();
+      // Policy absent → undefined / not present (legacy behavior).
+      expect(capturedOptions?.selfConsistencyProbe).toBeUndefined();
+
+      await client.close();
+      await server.close();
+    } finally {
+      if (prevKey === undefined) {
+        delete process.env.GEMINI_API_KEY;
+      } else {
+        process.env.GEMINI_API_KEY = prevKey;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("tools/call df_review_status returns isError for an unknown job_id", async () => {
     const { root } = setupReviewBypassFixture();
     try {
