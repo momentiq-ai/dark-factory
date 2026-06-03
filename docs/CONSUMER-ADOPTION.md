@@ -155,10 +155,37 @@ if [[ ! -f "${CLI}" ]]; then
   exit 1
 fi
 
-# `df gate-push` reads git's pre-push protocol on stdin and gates each
-# commit in the pushed range against its per-SHA artifact.
+# `df gate-push` reads git's pre-push protocol on stdin and (since CLI
+# 1.2.0 / Cycle 13 / dark-factory-platform#149) gates ONLY the HEAD (final)
+# commit of each push update. Intermediate commits' per-SHA artifacts at
+# `.git/agent-reviews/<sha>.json` are iteration receipts — inspect them
+# with `df findings --range <base>..<head>` but they do NOT influence the
+# gate. Legacy per-commit gating is opt-in via `--full-range` or
+# `DF_GATE_FULL_RANGE=1`; use it for forensic replay / per-commit deploy-
+# log audit. Soundness caveat: each per-SHA artifact reviews
+# `parent..commit`, NOT `base..tip` — HEAD's APPROVED verdict proves only
+# the last incremental change. For cumulative-state evidence either set
+# `DF_GATE_FULL_RANGE=1` or rely on the CI cold-path `agent-critic`
+# workflow (which runs against the full PR diff).
 printf '%s' "${STDIN_BUF}" | "${CLI}" gate-push
 ```
+
+**Audit the un-gated intermediates.** When you want to see what the
+critic said about every commit in the iteration trail — not just the
+HEAD that was actually gated — run:
+
+```bash
+df findings --range origin/main..HEAD            # one line per commit
+df findings --range origin/main..HEAD --json     # df_findings-shaped array (jq-friendly)
+```
+
+`df findings` is **NOT** a gate. It does not re-run critics; it only
+walks `.git/agent-reviews/<sha>.json` for every commit in the range.
+Commits with no artifact (hook-skipped, etc.) surface as
+`{ commit, error }` entries so gaps are explicit. Exit 1 when
+`.agent-review/config.json` is missing/invalid (matches `df status`
+contract); exit 1 when the git range fails to parse; exit 0 otherwise
+(missing per-commit artifacts are not failures — they are receipts).
 
 Make both executable:
 
@@ -491,7 +518,8 @@ The `--json` outputs are **byte-equivalent** with their MCP-tool counterparts' `
 - `df_cycle_list` / `df_cycle_read(cycle_id)` — your repo's cycle docs as structured `{ frontmatter, sections }`
 - `df_adr_list` / `df_adr_read(adr_id)` — ADRs under `docs/ADR/`
 - `df_critics_config` — parsed `.agent-review/config.json` (narrowed view)
-- `df_stats({since?, until?})` / `df_gate_push({stdin_protocol})` — audit + pre-push gate
+- `df_stats({since?, until?})` — audit-trail summary (NDJSON-backed)
+- `df_gate_push({stdin_protocol, full_range?})` — pre-push gate. Default (Cycle 13 / dark-factory-platform#149): evaluates ONLY HEAD; intermediate commits are receipts. Set `full_range: true` to opt into the pre-Cycle-13 per-commit semantic (mirrors the CLI `--full-range` flag / `DF_GATE_FULL_RANGE=1` env). Soundness caveat applies on both sides — see §3 for the cumulative-state note.
 - `df_review` (async) / `df_review_status(job_id)` — kick off + poll a critic run
 - `df_bypass({reason, sha, issue_url?})` — record an audit-logged emergency bypass; elicits a missing `issue_url` from the user when the client supports MCP elicitation
 - `df_cycle_doc_generate` / `df_adr_generate` — server asks the **client's** LLM (via MCP sampling) to populate a skeleton, validates, writes the file

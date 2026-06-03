@@ -163,8 +163,14 @@ function printHelp(meta: PackageMeta): void {
       "  df review                   Run the local critic against a commit",
       "                              (subscription auth — Cursor / Codex /",
       "                              Claude logins, NOT pay-per-token keys).",
-      "  df gate-push                Pre-push gate — block a push when a",
-      "                              prior commit has unresolved blockers.",
+      "  df gate-push                Pre-push gate — block a push when HEAD's",
+      "                              critic verdict has unresolved blockers.",
+      "                              Default since Cycle 13 (dark-factory-",
+      "                              platform#149): gates the HEAD commit",
+      "                              only; intermediate commits are iteration",
+      "                              receipts (see `df findings --range`).",
+      "                              Legacy per-commit gating via",
+      "                              `--full-range` / `DF_GATE_FULL_RANGE=1`.",
       "  df show                     Render the per-commit review artifact",
       "                              (with --json for the structured form).",
       "  df status                   Terse verdict + per-critic status for",
@@ -860,13 +866,22 @@ function hasProfileEntry(
 //     visible via `df findings --range <base>..<head>`, but they do
 //     NOT influence the push outcome. This matches the documented
 //     find-fix-new-commit pattern: commit B fixes commit A's blockers,
-//     B's diff is the cumulative resolved state, B's verdict is what
-//     gates the push.
+//     B's verdict is what gates the push.
+//
+//     Soundness caveat: each per-SHA artifact reviews `parent..commit`
+//     only, NOT `base..tip`. HEAD's APPROVED verdict therefore proves
+//     the LAST incremental change is safe; it does NOT prove the
+//     cumulative `base..tip` diff is safe. The banner + help text
+//     surface this so operators can choose `--full-range` (or rely on
+//     the CI cold-path agent-critic workflow that reviews the full PR
+//     diff) when cumulative soundness matters more than termination of
+//     the find-fix loop.
 //
 //   LEGACY MODE: full-range — gate every commit in the push update,
 //     block on any single commit's blockers. Opt-in via `--full-range`
 //     OR `DF_GATE_FULL_RANGE=1`. Use cases: forensic replay, per-commit
-//     audit (each commit is independently reviewed in a deploy log).
+//     audit (each commit is independently reviewed in a deploy log),
+//     cumulative-state evidence requirements.
 //
 //   The legacy mode was the implicit default before Cycle 13. It
 //   makes the find-fix-new-commit pattern non-terminating in practice
@@ -918,6 +933,14 @@ async function cmdGatePush(rest: string[]): Promise<number> {
         "  blocks the push. Use for forensic replay or per-commit deploy-log",
         "  audit. Note: this was the implicit default before Cycle 13 and is",
         "  what produced the find-fix-new-commit termination failure.",
+        "",
+        "Soundness caveat (default mode):",
+        "  Each per-SHA artifact reviews `parent..commit` only, NOT `base..tip`.",
+        "  HEAD's APPROVED verdict therefore proves the LAST incremental change",
+        "  is safe; it does NOT prove the cumulative `base..tip` diff is safe.",
+        "  For cumulative-state evidence either pass `--full-range` (or set",
+        "  `DF_GATE_FULL_RANGE=1`) for per-commit gating, or rely on the CI",
+        "  cold-path agent-critic workflow (which reviews the full PR diff).",
         "",
         "Exit code:",
         "  1 if the gating verdict (HEAD-only or full-range, per mode) blocks.",
@@ -1017,6 +1040,9 @@ async function cmdGatePush(rest: string[]): Promise<number> {
     if (commits.length > 1) {
       process.stdout.write(
         `  intermediate commits (${commits.length - 1}) are iteration receipts; inspect with: df findings --range ${update.remoteRef === "" ? "<base>" : `${update.remoteSha.slice(0, 12)}..${headSha.slice(0, 12)}`}\n`,
+      );
+      process.stdout.write(
+        `  soundness caveat: HEAD's verdict covers parent..HEAD only, NOT base..HEAD; use --full-range (or the CI agent-critic on the full PR diff) when cumulative-state evidence is required.\n`,
       );
     }
     const result = await runCommitGate({

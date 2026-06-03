@@ -460,6 +460,61 @@ describe("df gate-push — Cycle 13 (dark-factory-platform#149) final-commit-onl
     // Also still mentions the bypass surface and CI-replay path.
     expect(r.stdout).toContain("AGENT_REVIEW_BYPASS");
     expect(r.stdout).toContain("CI replay");
+    // Soundness caveat must be documented so operators understand that
+    // HEAD's APPROVED verdict covers parent..HEAD only, not base..HEAD.
+    // Addresses the codex blocker on the design trade-off (cumulative-
+    // state evidence is opt-in, not implicit in the default).
+    expect(r.stdout).toMatch(/Soundness caveat/i);
+    expect(r.stdout).toContain("parent..commit");
+    expect(r.stdout).toContain("base..tip");
+  });
+
+  it("multi-commit push surfaces the soundness caveat in the per-update banner", async () => {
+    // The codex blocker pointed out that default-mode HEAD-only gating
+    // is not a cumulative-state proof. The banner must surface that
+    // limitation in-line whenever intermediates exist (so operators
+    // are reminded at the moment of decision, not only in --help).
+    const { root, headSha, remoteSha } = await fixtureIterationTrail(3);
+    try {
+      const r = await runDfCli(["gate-push"], {
+        cwd: root,
+        stdin: prePushStdin(
+          "refs/heads/main",
+          headSha,
+          "refs/heads/main",
+          remoteSha,
+        ),
+      });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("GATE MODE: final-commit-only");
+      expect(r.stdout).toMatch(/soundness caveat/i);
+      expect(r.stdout).toContain("--full-range");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("single-commit push does NOT print the soundness caveat (no intermediate gap exists)", async () => {
+    // The caveat is about the gap between HEAD's parent..HEAD review
+    // and the cumulative base..HEAD diff. When there's only one commit
+    // in the push range, parent..HEAD == base..HEAD, so the caveat is
+    // a non-sequitur. Banner noise discipline: don't show it.
+    const root = initRepo();
+    writeConfig(root);
+    const baseSha = makeCommit(root, "README.md", "# fixture\n", "base");
+    const a = makeCommit(root, "a.ts", "export const a = 1;\n", "a");
+    await seedArtifact(root, a, "APPROVED");
+    try {
+      const r = await runDfCli(["gate-push"], {
+        cwd: root,
+        stdin: prePushStdin("refs/heads/main", a, "refs/heads/main", baseSha),
+      });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("GATE MODE: final-commit-only");
+      expect(r.stdout.toLowerCase()).not.toContain("soundness caveat");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -619,6 +674,53 @@ describe("df findings --range — audit-mode inspection (dark-factory-platform#1
       );
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("git rev-list");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("missing .agent-review/config.json exits 1 with config-load error (matches df status contract)", async () => {
+    // The help text advertises exit 1 on "config load failure". Sibling
+    // `df status` honors that contract; `df findings` must too so
+    // automation walking the range artifacts can detect broken/missing
+    // config via exit code instead of mis-labeling it as "(no artifact)"
+    // text. Regression for the [high] schema critic finding.
+    const root = initRepo();
+    // INTENTIONALLY skip writeConfig(root) — no .agent-review/config.json.
+    const baseSha = makeCommit(root, "README.md", "# fixture\n", "base");
+    const a = makeCommit(root, "a.ts", "export const a = 1;\n", "a");
+    try {
+      const r = await runDfCli(
+        ["findings", "--range", `${baseSha}..${a}`],
+        { cwd: root },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("agent-review config");
+      // The stderr message must NOT silently masquerade as a per-commit
+      // "no artifact" entry — the failure is config-level, not artifact-
+      // level, and a one-line stderr is the documented surface.
+      expect(r.stdout).not.toContain("(no artifact)");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("missing config + --json exits 1 with stderr error (no partial JSON written)", async () => {
+    // JSON-consuming pipelines need a clean failure signal: exit 1 +
+    // empty stdout, not a JSON array of `{ commit, error }` records
+    // that incorrectly suggests artifact-level gaps when the real cause
+    // is a missing config.
+    const root = initRepo();
+    const baseSha = makeCommit(root, "README.md", "# fixture\n", "base");
+    const a = makeCommit(root, "a.ts", "export const a = 1;\n", "a");
+    try {
+      const r = await runDfCli(
+        ["findings", "--range", `${baseSha}..${a}`, "--json"],
+        { cwd: root },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("agent-review config");
+      expect(r.stdout.trim()).toBe("");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

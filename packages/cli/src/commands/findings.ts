@@ -40,6 +40,7 @@ import {
   mapArtifactForFindings,
   type DfFindingsResult,
 } from "../lib/show-status-core.js";
+import { loadAgentReviewConfig } from "../policy/config.js";
 
 const runFile = promisify(execFile);
 
@@ -179,6 +180,19 @@ export async function cmdFindings(rest: string[], io: FindingsIo): Promise<numbe
   if ("error" in parsed) {
     io.stderr(`df findings: ${parsed.error}\nRun \`df findings --help\` for usage.\n`);
     return 2;
+  }
+  // Preload the agent-review config once before the per-commit walk. A
+  // missing/invalid `.agent-review/config.json` is a config-level failure
+  // that the help text promises (exit 1 / stderr), not a per-commit
+  // artifact gap. Loading inside `loadForCommit` for each iteration would
+  // re-surface the same error N times as "(no artifact)" lines, masking
+  // the real cause and returning exit 0. Fail fast here so automation
+  // can distinguish "broken config" from "missing intermediate receipt".
+  try {
+    await loadAgentReviewConfig({ cwd: parsed.cwd });
+  } catch (err) {
+    io.stderr(`df findings: failed to load .agent-review/config.json: ${(err as Error).message}\n`);
+    return 1;
   }
   let commits: string[];
   try {

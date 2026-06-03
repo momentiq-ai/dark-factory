@@ -926,11 +926,15 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": false,
         "readOnlyHint": true,
       },
-      "description": "Evaluate \`df gate-push\`'s gate against each commit in a git pre-push protocol range. The \`stdin_protocol\` input is what git would write to the husky pre-push hook's stdin — newline-separated \`<localRef> <localSha> <remoteRef> <remoteSha>\` lines. Returns the aggregate verdict + per-commit blocking reasons. Read-only (does not push, does not write artifacts).",
+      "description": "Evaluate \`df gate-push\`'s gate over a git pre-push protocol range. Default (Cycle 13 / dark-factory-platform#149): evaluates ONLY the HEAD (final) commit of each push update; intermediate commits are iteration receipts (inspect with the matching \`df findings --range\` CLI subcommand or the \`df://repo/findings/{sha}\` resource) and do not influence the verdict. Set \`full_range: true\` to opt into the legacy per-commit semantic (gates every commit; any blocker vetoes). Soundness caveat: each per-SHA artifact reviews \`parent..commit\` only, NOT \`base..tip\` — HEAD's APPROVED verdict proves only the last incremental change. Use \`full_range: true\` (or the CI cold-path) when cumulative soundness matters. The \`stdin_protocol\` input is what git would write to the husky pre-push hook's stdin — newline-separated \`<localRef> <localSha> <remoteRef> <remoteSha>\` lines. Returns the aggregate verdict + per-commit blocking reasons. Read-only (does not push, does not write artifacts).",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
         "properties": {
+          "full_range": {
+            "description": "When true, restores the pre-Cycle-13 per-commit semantic: every commit in the push range is gated and any blocker vetoes the push. Default false (HEAD-only). Mirrors the \`df gate-push --full-range\` CLI flag and the DF_GATE_FULL_RANGE=1 env. Use for forensic replay or per-commit deploy-log audit.",
+            "type": "boolean",
+          },
           "profile": {
             "description": "Profile name (overrides AGENT_REVIEW_PROFILE env). Defaults to \`local\`.",
             "type": "string",
