@@ -106,6 +106,31 @@ describe("df --help — user-facing surface scrub (issue #89)", () => {
     expect(r.stdout).toContain("df show");
     expect(r.stdout).toContain("df status");
   });
+
+  it("top-level help describes df gate-push with the Cycle 13 final-commit-only default", async () => {
+    // The top-level `df --help` blurb must not contradict the
+    // subcommand-level `df gate-push --help` text (which documents
+    // HEAD-only gating, --full-range opt-in, and the df findings
+    // companion). Operators reading the top-level overview otherwise
+    // start with the wrong mental model.
+    const top = await runDfCli(["--help"]);
+    expect(top.exitCode).toBe(0);
+    // The stale phrasing "a prior commit has unresolved blockers"
+    // implied per-commit gating; the new semantic gates HEAD only.
+    expect(top.stdout).not.toMatch(/a prior commit has unresolved blockers/i);
+    // Positive: the top-level blurb must surface the HEAD-only default
+    // and point at the audit companion + the legacy opt-in.
+    expect(top.stdout).toMatch(/HEAD/);
+    expect(top.stdout).toContain("--full-range");
+    expect(top.stdout).toContain("df findings --range");
+
+    // The subcommand-level help (load-bearing semantic source) must
+    // still cover the same vocabulary so the two surfaces stay aligned.
+    const sub = await runDfCli(["gate-push", "--help"]);
+    expect(sub.exitCode).toBe(0);
+    expect(sub.stdout).toContain("--full-range");
+    expect(sub.stdout).toContain("df findings --range");
+  });
 });
 
 describe("notImplemented (issue #89)", () => {

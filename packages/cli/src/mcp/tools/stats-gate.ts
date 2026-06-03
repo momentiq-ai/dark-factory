@@ -14,12 +14,29 @@
 // available via the resource surface (`df://repo/audit-log` for raw
 // NDJSON; clients can recompute).
 //
-// df_gate_push wraps `runCommitGate` for each commit in the pushed
-// range. The spec explicitly notes: "the stdio MCP server already
-// owns stdin; pass the protocol data as a tool argument." So the
-// `stdin_protocol` input string is what git's pre-push hook would
-// write to stdin — newline-separated `<localRef> <localSha>
-// <remoteRef> <remoteSha>` lines.
+// df_gate_push wraps `runCommitGate` for each pushed range. The spec
+// explicitly notes: "the stdio MCP server already owns stdin; pass the
+// protocol data as a tool argument." So the `stdin_protocol` input
+// string is what git's pre-push hook would write to stdin — newline-
+// separated `<localRef> <localSha> <remoteRef> <remoteSha>` lines.
+//
+// Default semantic (Cycle 13 / dark-factory-platform#149) — mirrors the
+// CLI `df gate-push` flip: ONLY the HEAD (last) commit of each push
+// update is evaluated. Intermediate commits' per-SHA artifacts at
+// `.git/agent-reviews/<sha>.json` are iteration receipts (inspect them
+// with `df findings --range <base>..<head>` or the matching MCP
+// resource at `df://repo/findings/{sha}`), but they do not influence
+// the verdict. Opt back into the legacy per-commit semantic with the
+// `full_range: true` input — use it for forensic replay or per-commit
+// deploy-log audit.
+//
+// Soundness caveat — the same one applies to the CLI default: each
+// per-SHA artifact reviews `parent..commit`, NOT `base..tip`. HEAD's
+// APPROVED verdict therefore proves only the LAST INCREMENTAL change
+// is safe; cumulative review of `base..tip` is not produced by the
+// per-commit hook path. Set `full_range: true` (or run the CI cold-
+// path agent-critic on the full PR diff) when cumulative soundness
+// matters more than termination of the find-fix loop.
 //
 // The `'bypass-required'` verdict signals: the gate would block, AND
 // the policy permits an emergency bypass (`policy.allowEmergencyBypass:
@@ -262,13 +279,23 @@ export function registerStatsGateTools(
     {
       title: "Evaluate the pre-push gate for a pushed range",
       description:
-        "Evaluate `df gate-push`'s gate against each commit in a " +
-        "git pre-push protocol range. The `stdin_protocol` input is " +
-        "what git would write to the husky pre-push hook's stdin — " +
-        "newline-separated `<localRef> <localSha> <remoteRef> " +
-        "<remoteSha>` lines. Returns the aggregate verdict + " +
-        "per-commit blocking reasons. Read-only (does not push, " +
-        "does not write artifacts).",
+        "Evaluate `df gate-push`'s gate over a git pre-push protocol " +
+        "range. Default (Cycle 13 / dark-factory-platform#149): " +
+        "evaluates ONLY the HEAD (final) commit of each push update; " +
+        "intermediate commits are iteration receipts (inspect with " +
+        "the matching `df findings --range` CLI subcommand or the " +
+        "`df://repo/findings/{sha}` resource) and do not influence the " +
+        "verdict. Set `full_range: true` to opt into the legacy per-" +
+        "commit semantic (gates every commit; any blocker vetoes). " +
+        "Soundness caveat: each per-SHA artifact reviews `parent.." +
+        "commit` only, NOT `base..tip` — HEAD's APPROVED verdict proves " +
+        "only the last incremental change. Use `full_range: true` (or " +
+        "the CI cold-path) when cumulative soundness matters. The " +
+        "`stdin_protocol` input is what git would write to the husky " +
+        "pre-push hook's stdin — newline-separated `<localRef> " +
+        "<localSha> <remoteRef> <remoteSha>` lines. Returns the " +
+        "aggregate verdict + per-commit blocking reasons. Read-only " +
+        "(does not push, does not write artifacts).",
       inputSchema: {
         stdin_protocol: z
           .string()
@@ -284,6 +311,17 @@ export function registerStatsGateTools(
           .describe(
             "Profile name (overrides AGENT_REVIEW_PROFILE env). " +
               "Defaults to `local`.",
+          ),
+        full_range: z
+          .boolean()
+          .optional()
+          .describe(
+            "When true, restores the pre-Cycle-13 per-commit semantic: " +
+              "every commit in the push range is gated and any blocker " +
+              "vetoes the push. Default false (HEAD-only). Mirrors the " +
+              "`df gate-push --full-range` CLI flag and the " +
+              "DF_GATE_FULL_RANGE=1 env. Use for forensic replay or " +
+              "per-commit deploy-log audit.",
           ),
       },
       outputSchema: {
@@ -324,7 +362,7 @@ export function registerStatsGateTools(
         openWorldHint: false,
       },
     },
-    async ({ stdin_protocol, profile }) => {
+    async ({ stdin_protocol, profile, full_range }) => {
       const cwd = resolve(opts.cwd ?? process.cwd());
       let loaded;
       try {
@@ -353,11 +391,22 @@ export function registerStatsGateTools(
       const reasons: DfGatePushReason[] = [];
       let blocked = false;
       let commitsEvaluated = 0;
+      const useFullRange = full_range === true;
 
       for (const update of updates) {
         if (update.isDelete) continue;
         const commits = await commitsForPushUpdate(update, cwd);
-        for (const sha of commits) {
+        if (commits.length === 0) continue;
+        // Default (Cycle 13): gate ONLY HEAD — the last element of the
+        // rev-list-reverse walk. Intermediate commits' artifacts are
+        // iteration receipts (inspect via `df findings --range` or the
+        // `df://repo/findings/{sha}` resource). Legacy / opt-in
+        // (`full_range: true`): gate every commit in the range and let
+        // any blocker veto.
+        const toEvaluate = useFullRange
+          ? commits
+          : [commits[commits.length - 1] ?? ""];
+        for (const sha of toEvaluate) {
           commitsEvaluated += 1;
           const gateRes = await runCommitGate({
             loaded,

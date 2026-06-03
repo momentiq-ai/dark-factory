@@ -54,7 +54,9 @@ npm install @momentiq/dark-factory-cli
 
 df review --commit HEAD --profile local   # run the critic quorum on a commit
 df doctor                                  # check vendor auth + per-adapter config
-df gate-push                               # pre-push gate (reads pre-existing artifacts)
+df gate-push                               # pre-push gate (gates HEAD only — default since Cycle 13)
+df gate-push --full-range                  # legacy: gate every commit in the push range
+df findings --range origin/main..HEAD      # audit-inspect per-commit findings (NOT a gate)
 df mcp                                     # start the stdio MCP server
 ```
 

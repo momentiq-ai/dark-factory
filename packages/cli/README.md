@@ -99,11 +99,16 @@ df admit-pr --files docs/roadmap/cycles/cycle1.md,packages/cli/src/cli.ts
 
 # Hook-facing subcommands (subscription cost model).
 df review --commit HEAD --profile local --foreground
-df gate-push                          # local pre-push, reads stdin
+df gate-push                          # local pre-push, reads stdin (default: gate HEAD only)
+df gate-push --full-range             # legacy: gate every commit in the push range
 df gate-push --commit HEAD --ci       # CI replay
 df doctor --profile local             # env + per-adapter auth check
 df gates                              # static gates, no LLM
 df stats                              # alias for `df audit stats`
+
+# Audit-mode inspection (NOT a gate).
+df findings --range origin/main..HEAD          # per-commit findings for the range
+df findings --range origin/main..HEAD --json   # df_findings-shaped JSON array
 
 # Stdio Model Context Protocol server — exposes the CLI surface to any
 # MCP-speaking agent.
@@ -133,7 +138,8 @@ Codex / Claude CLI logins) are flat-rate.
 | Subcommand | Hook | Cost model |
 | --- | --- | --- |
 | `df review` | `.husky/post-commit` (background) | **Subscription** — consumes Cursor / Codex / Claude CLI logins via the active profile's `auth` pins. No API spend by default. |
-| `df gate-push` | `.husky/pre-push` | Free — reads pre-existing artifacts, no LLM calls. |
+| `df gate-push` | `.husky/pre-push` | Free — reads pre-existing artifacts, no LLM calls. Default (Cycle 13 / dark-factory-platform#149): gates the HEAD commit only; intermediate commits are iteration receipts (`df findings --range` surfaces them un-gated). Opt-in legacy: `--full-range` or `DF_GATE_FULL_RANGE=1` gates every commit in the range. **Soundness caveat:** HEAD's per-SHA artifact reviews `parent..HEAD` only, NOT `base..HEAD` — use `--full-range` or the CI cold-path `agent-critic` workflow (which reviews the full PR diff) when cumulative-state evidence is required. |
+| `df findings --range <base>..<head>` | None (operator-run) | Free. Walks every commit's per-SHA artifact in the range for audit-mode inspection. NOT a gate; does not re-run critics. The companion-surface to the final-commit-only `df gate-push` default. |
 | `df doctor` | None (operator-run) | Free. Validates that per-adapter auth source is reachable. |
 | `df gates` | None (operator-run) | Free. Runs static quality gates per `validation.requiredQualityGates`. |
 | `df stats` | None (operator-run) | Free. Reads `.git/agent-reviews/_runs.ndjson`. |
