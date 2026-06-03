@@ -701,6 +701,33 @@ export interface ReviewArtifact {
   updatedAt?: string;
   bypass?: BypassRecord;
   rangeKind?: ReviewArtifactRangeKind;
+  // Cursor finding (report.ts:981) — when the aggregator demotes a
+  // finding under `unilateralVetoRules.requireCorroborationFor`, the
+  // demotion is persisted here so operators auditing the on-disk JSON
+  // can grep them. Each entry names the critic, file, optional line,
+  // severity, and the flag (e.g. `self_inconsistent`) that fired.
+  // Always present (empty array when no demotions) so callers can
+  // branch on `.length` without an undefined check.
+  disagreements?: ReviewArtifactDisagreement[];
+}
+
+/**
+ * On-disk shape of a `critic_disagreement` note surfaced on
+ * `ReviewArtifact.disagreements`. Mirrors the CLI's internal
+ * `CriticDisagreementNote` shape; the type lives in the schemas
+ * package so external consumers can read the JSON without importing
+ * the CLI.
+ */
+export interface ReviewArtifactDisagreement {
+  criticId: string;
+  file: string;
+  line?: number;
+  severity: ReviewSeverity;
+  /** The flag name from the policy that triggered the demotion (e.g.
+   * `self_inconsistent`). */
+  flag: string;
+  /** Short summary cut from the finding's `evidence` for the note. */
+  evidence: string;
 }
 
 // ---------------------------------------------------------------------
@@ -963,7 +990,17 @@ export interface TelemetryEvent {
     // patterns. NOT emitted when the probe is disabled (no
     // selfConsistencyProbe injected OR policy doesn't list
     // `self_inconsistent`).
-    | "self_consistency_probe";
+    | "self_consistency_probe"
+    // Cursor finding (runner.ts:465) — emitted once per finding the
+    // aggregator demoted from a unilateral veto to an informational
+    // note under `unilateralVetoRules.requireCorroborationFor`.
+    // `criticId` identifies the demoted critic; `status` carries the
+    // triggering flag (e.g. `self_inconsistent`); `detail` carries
+    // `<file>:<line> <evidence>` so an operator can correlate to
+    // source. Operators grep this event family to audit which
+    // findings were demoted during a review run without re-walking
+    // the artifact JSON.
+    | "critic_disagreement";
   commit?: string;
   criticId?: string;
   adapter?: string;
@@ -1358,6 +1395,20 @@ export function parseAgentReviewConfig(raw: unknown): AgentReviewConfig {
   const unilateralVetoRulesRaw = aggregationRaw["unilateralVetoRules"];
   let unilateralVetoRules: UnilateralVetoRules | undefined;
   if (unilateralVetoRulesRaw !== undefined && unilateralVetoRulesRaw !== null) {
+    // Cursor finding (gate.ts:274) — the rules are only threaded into
+    // the min-complete-quorum aggregator path; under `block-if-any`
+    // they are silently ignored, which is a footgun: an operator
+    // setting `unilateralVetoRules` expects demotion semantics, and
+    // any unflagged blocker still vetoes under block-if-any without a
+    // policy change. Reject the combination at parse time so the
+    // operator gets a loud SchemaError instead of legacy behavior
+    // masquerading as policy-aware.
+    if (aggregationPolicy !== "min-complete-quorum") {
+      throw new SchemaError(
+        "$.aggregation.unilateralVetoRules",
+        `unilateralVetoRules is only valid for policy="min-complete-quorum"; remove it or switch policy (current: "${aggregationPolicy}")`,
+      );
+    }
     const rulesObj = need(
       isObject,
       unilateralVetoRulesRaw,
@@ -2225,6 +2276,20 @@ export function parseReviewArtifact(raw: unknown, blockingSeverities: ReviewSeve
     rangeKind = needEnum(REVIEW_ARTIFACT_RANGE_KINDS, rangeKindRaw, "$.rangeKind");
   }
 
+  // Cursor finding (report.ts:981) — optional disagreements array.
+  // Pre-#112 artifacts omit the field entirely; preserve that case
+  // (the field stays undefined on the parsed value). Newer artifacts
+  // emit `[]` even when no demotions occurred so callers can branch
+  // on `.length` without an undefined check.
+  let disagreements: ReviewArtifactDisagreement[] | undefined;
+  const disagreementsRaw = root["disagreements"];
+  if (disagreementsRaw !== undefined && disagreementsRaw !== null) {
+    const arr = need(isArray, disagreementsRaw, "$.disagreements", "array");
+    disagreements = arr.map((entry, i) =>
+      parseDisagreementNote(entry, `$.disagreements[${i}]`),
+    );
+  }
+
   return {
     version: 2,
     status,
@@ -2241,6 +2306,29 @@ export function parseReviewArtifact(raw: unknown, blockingSeverities: ReviewSeve
     ...(gateVerdict !== undefined ? { gateVerdict } : {}),
     ...(bypass !== undefined ? { bypass } : {}),
     ...(rangeKind !== undefined ? { rangeKind } : {}),
+    ...(disagreements !== undefined ? { disagreements } : {}),
+  };
+}
+
+function parseDisagreementNote(raw: unknown, path: string): ReviewArtifactDisagreement {
+  const obj = need(isObject, raw, path, "object");
+  const criticId = need(isNonEmptyString, obj["criticId"], `${path}.criticId`, "non-empty string");
+  const file = need(isNonEmptyString, obj["file"], `${path}.file`, "non-empty string");
+  const lineRaw = obj["line"];
+  const line =
+    lineRaw === undefined || lineRaw === null
+      ? undefined
+      : need(isInteger, lineRaw, `${path}.line`, "integer");
+  const severity = needEnum(REVIEW_SEVERITIES, obj["severity"], `${path}.severity`);
+  const flag = need(isNonEmptyString, obj["flag"], `${path}.flag`, "non-empty string");
+  const evidence = need(isString, obj["evidence"], `${path}.evidence`, "string");
+  return {
+    criticId,
+    file,
+    ...(line !== undefined ? { line } : {}),
+    severity,
+    flag,
+    evidence,
   };
 }
 

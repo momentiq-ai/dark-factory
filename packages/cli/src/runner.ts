@@ -462,12 +462,30 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
     // Issue dark-factory-platform#112 — thread the optional
     // `unilateralVetoRules` so the `aggregateReason` telemetry value
     // matches the artifact verdict (both now honor corroboration).
-    const aggregateReason = quorumAggregateVerdict(
+    const quorumOutcome = quorumAggregateVerdict(
       results,
       loaded.config.aggregation.blockingSeverities,
       quorum,
       loaded.config.aggregation.unilateralVetoRules,
-    ).reason;
+    );
+    const aggregateReason = quorumOutcome.reason;
+
+    // Cursor finding (runner.ts:465) — emit one `critic_disagreement`
+    // event per demotion so operators auditing `_runs.ndjson` can
+    // grep the demotion stream during the review run. Without this,
+    // demotion visibility depends on later gate evaluation and the
+    // per-decision audit pattern documented for #112 is broken.
+    for (const note of quorumOutcome.disagreements) {
+      const loc = note.line !== undefined ? `${note.file}:${note.line}` : note.file;
+      emit(sink, {
+        ts: finishedAt,
+        event: "critic_disagreement",
+        commit: sha,
+        criticId: note.criticId,
+        status: note.flag,
+        detail: `${loc} — ${note.evidence}`,
+      });
+    }
 
     emit(sink, {
       ts: finishedAt,

@@ -160,10 +160,19 @@ export function buildAggregate(inputs: AggregateInputs): ReviewArtifact {
   const blockingSeverities = loaded.config.aggregation.blockingSeverities;
 
   let gateVerdict: ReviewVerdict | undefined;
+  let disagreements: CriticDisagreementNote[] = [];
   if (status === "complete") {
-    gateVerdict = aggregateVerdict(criticResults, blockingSeverities, loaded, quorumOverride);
+    const aggregate = aggregateOutcome(criticResults, blockingSeverities, loaded, quorumOverride);
+    gateVerdict = aggregate.verdict;
+    disagreements = aggregate.disagreements;
   }
 
+  // Cursor finding (report.ts:981) — persist the demoted findings on
+  // the artifact so operators auditing the on-disk JSON see the
+  // demotion without re-running the aggregator. Always emit `[]` on
+  // complete artifacts so consumers can branch on `.length` without
+  // an undefined check; omit on pending/error artifacts (no
+  // aggregation ran, no policy outcome to record).
   const artifact: ReviewArtifact = {
     version: 2,
     status,
@@ -177,8 +186,43 @@ export function buildAggregate(inputs: AggregateInputs): ReviewArtifact {
     criticResults,
     createdAt,
     ...(gateVerdict !== undefined ? { gateVerdict } : {}),
+    ...(status === "complete" ? { disagreements } : {}),
   };
   return artifact;
+}
+
+/**
+ * Cursor finding (report.ts:981) — return both the verdict AND the
+ * demoted findings so `buildAggregate` can persist them on the
+ * artifact. Pre-#112 callers only needed the verdict and reached
+ * `aggregateVerdict` directly; that helper is preserved as a thin
+ * wrapper for back-compat.
+ */
+interface AggregateOutcome {
+  verdict: ReviewVerdict;
+  disagreements: CriticDisagreementNote[];
+}
+
+function aggregateOutcome(
+  results: CriticResult[],
+  blockingSeverities: ReviewSeverity[],
+  loaded: LoadedConfig,
+  quorumOverride?: number,
+): AggregateOutcome {
+  if (loaded.config.aggregation.policy === "min-complete-quorum") {
+    const quorum = quorumOverride ?? loaded.config.aggregation.quorum;
+    const outcome = quorumAggregateVerdict(
+      results,
+      blockingSeverities,
+      quorum ?? 2,
+      loaded.config.aggregation.unilateralVetoRules,
+    );
+    return { verdict: outcome.verdict, disagreements: outcome.disagreements };
+  }
+  return {
+    verdict: aggregateVerdict(results, blockingSeverities, loaded, quorumOverride),
+    disagreements: [],
+  };
 }
 
 function aggregateVerdict(
@@ -521,7 +565,31 @@ export function quorumAggregateVerdict(
   // Quorum met and no veto — vote the majority of completed critics.
   // Without veto, every completed critic has APPROVED OR (no verdict
   // — schema impossible, but defensive). Count APPROVED vs other.
-  const approveCount = completed.filter((r) => r.verdict === "APPROVED").length;
+  //
+  // Issue dark-factory-platform#112 — when a corroboration policy is
+  // active and a critic's CHANGES_REQUESTED verdict is downstream of
+  // a now-demoted blocker (every blocking finding the critic produced
+  // was demoted under the policy), treat that critic as effectively
+  // APPROVED for majority counting. Without this, the critic that
+  // produced the demoted blocker would still flip the majority to
+  // CHANGES_REQUESTED via its CR verdict, which would undo the
+  // demotion the policy just performed. This is the spec's DoD case:
+  // "verdict flips from CHANGES_REQUESTED to APPROVED after the
+  // probe-tagged blocker is demoted, no other critic finds a
+  // corroborating blocker on the same file within radius."
+  const effectivelyApproved = (r: CriticResult): boolean => {
+    if (r.verdict === "APPROVED") return true;
+    if (ctx === undefined) return false;
+    // If the critic returned CR with at least one blocker and every
+    // blocker was demoted to a disagreement note attributed to this
+    // critic, the CR verdict is downstream of the now-demoted
+    // finding(s).
+    const blockers = r.findings.filter((f) => blockingSeverities.includes(f.severity));
+    if (blockers.length === 0) return false;
+    const demotedForThisCritic = disagreements.filter((d) => d.criticId === r.criticId).length;
+    return demotedForThisCritic >= blockers.length;
+  };
+  const approveCount = completed.filter(effectivelyApproved).length;
   const changesCount = completed.length - approveCount;
   // Ties favor CHANGES_REQUESTED (conservative). With 0 changes, all
   // approved → APPROVED. With any changes >= approveCount → CHANGES_REQUESTED.
@@ -981,7 +1049,14 @@ export function renderMarkdown(artifact: ReviewArtifact): string {
         for (const f of subset) {
           lines.push("");
           const tag = f.manifestoSection ? ` ${f.manifestoSection}` : "";
-          lines.push(`- **${f.category}${tag}** — \`${f.file ?? "(no file)"}\`${f.line !== undefined ? `:${f.line}` : ""}${f.symbol ? ` (\`${f.symbol}\`)` : ""}`);
+          // Cursor finding (report.ts:981) — surface the
+          // self-consistency-probe verdict alongside the location so a
+          // reader scanning the markdown immediately sees which
+          // blockers were probe-flagged. The aggregator may have
+          // demoted these to disagreement notes — see the
+          // "Demoted findings" section at the end of the artifact.
+          const probeTag = f.selfInconsistent === true ? " [self-inconsistent]" : "";
+          lines.push(`- **${f.category}${tag}** — \`${f.file ?? "(no file)"}\`${f.line !== undefined ? `:${f.line}` : ""}${f.symbol ? ` (\`${f.symbol}\`)` : ""}${probeTag}`);
           lines.push(`  - Evidence: ${f.evidence}`);
           lines.push(`  - Impact: ${f.impact}`);
           lines.push(`  - Required fix: ${f.requiredFix}`);
@@ -1004,6 +1079,26 @@ export function renderMarkdown(artifact: ReviewArtifact): string {
     if (result.validation.qualityGatesMissing.length > 0) {
       lines.push("");
       lines.push(`**Missing required gates:** ${result.validation.qualityGatesMissing.join(", ")}`);
+    }
+    lines.push("");
+  }
+  // Cursor finding (report.ts:981) — surface the aggregator's
+  // demoted findings so a reader of the per-SHA markdown sees the
+  // policy outcome (which blockers became disagreement notes and
+  // why). Omitted entirely when no demotions occurred (the common
+  // case for runs without `unilateralVetoRules` set or for runs
+  // where every flagged blocker corroborated).
+  if (artifact.disagreements && artifact.disagreements.length > 0) {
+    lines.push("## Demoted findings");
+    lines.push("");
+    lines.push(
+      "Findings the aggregator demoted from a unilateral veto to an informational `critic_disagreement` note under `unilateralVetoRules.requireCorroborationFor`.",
+    );
+    lines.push("");
+    for (const d of artifact.disagreements) {
+      const loc = d.line !== undefined ? `${d.file}:${d.line}` : d.file;
+      lines.push(`- **${d.criticId}** — \`${loc}\` (${d.severity}, flag: \`${d.flag}\`)`);
+      lines.push(`  - Evidence: ${d.evidence}`);
     }
     lines.push("");
   }
