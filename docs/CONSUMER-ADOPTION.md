@@ -478,19 +478,18 @@ report=$(./node_modules/.bin/df doctor --json) || true
 ok=$(printf '%s' "$report" | jq -r '.ok')
 state=$(printf '%s' "$report" | jq -r '.triage.state')
 if printf '%s' "$report" | jq -e '.cloudEnv.detected' >/dev/null; then
-  # Cloud env: subscription probes are skipped by design, so an
-  # `auth_pending` state here means "subscription auth unavailable" —
-  # the canonical §13 bypass is the right exit and we do NOT fail the
-  # push. But API-key critics, config checks, hook wiring, and artifact
-  # dir writability ALL still run in cloud envs, so a non-auth failure
-  # (`config_missing`, unwritable artifact dir, Doppler bootstrap, …)
-  # must still block. Only bypass when triage is `ok` or `auth_pending`.
+  # Cloud env: subscription probes were skipped (recorded as passing
+  # `subscription_auth_unavailable_cloud_env` rows by `runDoctor`), so
+  # `ok=true` is the only safe bypass signal. API-key critics, config
+  # checks, hook wiring, and artifact-dir writability still run and
+  # MUST aggregate to `ok=true` for the push to proceed; any other
+  # failure flows to the §13 explicit-bypass path below.
   markers=$(printf '%s' "$report" | jq -r '.cloudEnv.markers | join(", ")')
-  if [ "$ok" = "true" ] || [ "$state" = "auth_pending" ]; then
-    printf 'df doctor: cloud env detected (%s) — see §13 for the AGENT_REVIEW_BYPASS pattern.\n' "$markers"
+  if [ "$ok" = "true" ]; then
+    printf 'df doctor: cloud env detected (%s) — subscription probes skipped; see §13 for the AGENT_REVIEW_BYPASS pattern if needed.\n' "$markers"
     exit 0
   fi
-  printf 'df doctor: cloud env detected (%s) but non-auth checks failed (state=%s).\n' "$markers" "$state" >&2
+  printf 'df doctor: cloud env detected (%s) but required checks failed (state=%s).\n' "$markers" "$state" >&2
   printf '%s' "$report" | jq -r '.triage.line' >&2
   printf 'Cloud env does NOT bypass config / artifact / API-key failures. Run `./node_modules/.bin/df doctor` for per-check remediation.\n' >&2
   exit 1
