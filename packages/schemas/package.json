@@ -3,6 +3,29 @@
   "version": "0.5.0",
   "description": "Dark Factory schemas — TypeScript types and JSON Schemas for darkfactory.yaml, evidence, and cycle-doc trailers",
   "license": "Apache-2.0",
+  "homepage": "https://momentiq.ai/dark-factory",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/momentiq-ai/dark-factory.git",
+    "directory": "packages/schemas"
+  },
+  "bugs": {
+    "url": "https://github.com/momentiq-ai/dark-factory/issues"
+  },
+  "author": "Momentiq AI",
+  "keywords": [
+    "ai-agents",
+    "code-review",
+    "github-actions",
+    "pr-automation",
+    "multi-vendor",
+    "agentic-sdlc",
+    "claude-code",
+    "cursor-sdk",
+    "dark-factory",
+    "critic",
+    "quorum"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
