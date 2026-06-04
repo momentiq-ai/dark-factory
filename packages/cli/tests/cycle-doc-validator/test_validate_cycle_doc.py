@@ -15,6 +15,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -762,3 +763,122 @@ def test_cycle_docs_transitioned_to_terminal_fails_closed_on_non_404_gh_exit_one
 
     assert "exit 1" in str(excinfo.value)
     assert "rate limit" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Multi-layout cycle-doc path support (docs/roadmap/cycles + docs/cycles)
+# ---------------------------------------------------------------------------
+
+
+def test_is_cycle_doc_path_accepts_legacy_layout():
+    """Legacy ``docs/roadmap/cycles/`` is still recognized."""
+    assert validator._is_cycle_doc_path("docs/roadmap/cycles/cycle1-foo.md") is True
+    assert validator._is_cycle_doc_path("docs/roadmap/cycles/cycle331.5-bar.md") is True
+
+
+def test_is_cycle_doc_path_accepts_new_layout():
+    """New ``docs/cycles/`` layout (dark-factory-dashboard convention post-PR #105)
+    is recognized without configuration."""
+    assert validator._is_cycle_doc_path("docs/cycles/cycle1-foo.md") is True
+    assert validator._is_cycle_doc_path("docs/cycles/cycle6-sota-chat.md") is True
+
+
+def test_is_cycle_doc_path_rejects_non_cycle_files_in_either_layout():
+    """README/notes/etc. inside either cycle dir are NOT cycle docs."""
+    assert validator._is_cycle_doc_path("docs/roadmap/cycles/README.md") is False
+    assert validator._is_cycle_doc_path("docs/cycles/README.md") is False
+    assert validator._is_cycle_doc_path("docs/roadmap/notes.md") is False
+
+
+def test_find_cycle_doc_searches_both_layouts(tmp_path, monkeypatch):
+    """``find_cycle_doc`` searches every dir in CYCLE_DOC_DIRS on disk so
+    consumers who've moved to ``docs/cycles/`` get a working lookup
+    without configuration."""
+    new_layout = tmp_path / "docs" / "cycles"
+    new_layout.mkdir(parents=True)
+    (new_layout / "cycle6-sota-chat.md").write_text(
+        "---\ncycle: 6\nstatus: in-progress\n---\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+
+    doc = validator.find_cycle_doc("6")
+    assert doc is not None
+    assert doc.path.name == "cycle6-sota-chat.md"
+    assert doc.status == "in-progress"
+
+
+def test_base_cycle_doc_falls_through_to_new_layout_on_legacy_404(
+    tmp_path, monkeypatch
+):
+    """When ``docs/roadmap/cycles/`` 404s on the base ref (consumer moved
+    to the new layout per PR #105), the validator MUST try
+    ``docs/cycles/`` next instead of raising. This is the bug that
+    blocked dark-factory-dashboard#136 (Cycle 6 plan PR) and
+    every Cycle 6.x code PR after it from passing without an
+    admin-override."""
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        # First call (legacy dir) → 404; second call (new dir) → success.
+        if "docs/roadmap/cycles" in args[2]:
+            raise subprocess.CalledProcessError(
+                1,
+                args[0],
+                stderr="gh: Not Found (HTTP 404)",
+            )
+        # Second call: return a valid contents-API listing for docs/cycles/.
+        return SimpleNamespace(
+            stdout=(
+                '[{"name": "cycle6-sota-chat.md", "type": "file",'
+                ' "path": "docs/cycles/cycle6-sota-chat.md"}]'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(validator.subprocess, "run", fake_run)
+
+    # The function will also fetch the file contents after the listing;
+    # short-circuit by raising 404 there too so we just verify the
+    # listing-fallthrough happens, then absorb the inner 404.
+    # To keep the test focused, accept BaseCycleDocFetchError as long as
+    # the second `gh api` call DID hit `docs/cycles`.
+    try:
+        validator.base_cycle_doc(
+            repo="momentiq-ai/dark-factory-dashboard",
+            cycle_id="6",
+            base_ref="base-sha",
+            gh_token=None,
+        )
+    except validator.BaseCycleDocFetchError:
+        # Acceptable — the FILE fetch after the directory listing also
+        # short-circuits via fake_run; we only care that the listing
+        # fell through to the new layout.
+        pass
+
+    # Both calls must have happened, in legacy-first order.
+    assert len(calls) >= 2
+    assert "docs/roadmap/cycles" in calls[0][2]
+    assert "docs/cycles" in calls[1][2]
+
+
+def test_base_cycle_doc_raises_when_all_layouts_404(tmp_path, monkeypatch):
+    """If NEITHER cycle-doc dir exists on the base ref, the validator
+    should raise with a clear error naming the candidates tried."""
+
+    def fake_run(args, **kwargs):
+        raise subprocess.CalledProcessError(
+            1,
+            args[0],
+            stderr="gh: Not Found (HTTP 404)",
+        )
+
+    monkeypatch.setattr(validator.subprocess, "run", fake_run)
+
+    with pytest.raises(validator.BaseCycleDocFetchError):
+        validator.base_cycle_doc(
+            repo="momentiq-ai/no-cycle-docs",
+            cycle_id="6",
+            base_ref="base-sha",
+            gh_token=None,
+        )

@@ -134,7 +134,17 @@ def _resolve_repo_root() -> Path:
 
 
 REPO_ROOT = _resolve_repo_root()
+# Cycle-doc lookup paths in priority order. Legacy `docs/roadmap/cycles/` is
+# tried first for backward compatibility with sage3c / dark-factory-platform;
+# `docs/cycles/` is the newer dark-factory-dashboard convention (PR #105
+# moved it there to align with the eventual upstream convention). Consumers
+# that have moved to the new path get a working validator without
+# configuration; consumers still on the legacy path are unchanged.
+CYCLE_DOC_DIRS: tuple[str, ...] = ("docs/roadmap/cycles", "docs/cycles")
 CYCLES_DIR = REPO_ROOT / "docs" / "roadmap" / "cycles"
+# Glob and the singular `CYCLES_DIR` retained for backward compatibility with
+# downstream tooling that imports them. New code should prefer `CYCLE_DOC_DIRS`
+# + `_is_cycle_doc_path()` which check both layouts.
 CYCLE_DOC_GLOB = "docs/roadmap/cycles/cycle*.md"
 
 # Trailers we recognize. ``git-interpret-trailers`` defines a trailer as
@@ -238,14 +248,27 @@ def normalize_cycle_id(raw: str) -> str | None:
 
 
 def find_cycle_doc(cycle_id: str) -> CycleDoc | None:
-    """Locate ``docs/roadmap/cycles/cycle<id>*.md`` and read its status."""
-    matches = sorted(CYCLES_DIR.glob(f"cycle{cycle_id}-*.md")) + sorted(
-        CYCLES_DIR.glob(f"cycle{cycle_id}.md")
-    )
+    """Locate ``<cycle_dir>/cycle<id>*.md`` and read its status.
+
+    Searches every candidate dir in ``CYCLE_DOC_DIRS`` (legacy
+    ``docs/roadmap/cycles/`` first, then ``docs/cycles/``) so consumers
+    that have moved get a working lookup without configuration. If the
+    same cycle exists in both dirs (transitional state), prefers the
+    longer-named match across all hits — same disambiguation rule as
+    before, just over a wider candidate set.
+    """
+    matches: list[Path] = []
+    for cycle_dir in CYCLE_DOC_DIRS:
+        dir_path = REPO_ROOT / cycle_dir
+        if not dir_path.exists():
+            continue
+        matches.extend(sorted(dir_path.glob(f"cycle{cycle_id}-*.md")))
+        matches.extend(sorted(dir_path.glob(f"cycle{cycle_id}.md")))
     if not matches:
         return None
-    # If multiple matches exist (legacy ``cycle318.md`` + new ``cycle318-foo.md``),
-    # prefer the one with the longer name (more descriptive slug).
+    # If multiple matches exist (legacy ``cycle318.md`` + new ``cycle318-foo.md``,
+    # or one in each layout), prefer the one with the longer name (more
+    # descriptive slug).
     path = max(matches, key=lambda p: len(p.name))
     status, superseded_by = read_cycle_frontmatter(path)
     return CycleDoc(path=path, status=status, superseded_by=superseded_by)
@@ -304,6 +327,20 @@ def read_cycle_frontmatter_from_text(text: str) -> tuple[str | None, str | None]
     return status, superseded_by
 
 
+def _is_not_found_stderr(stderr: str | None) -> bool:
+    """Return True if a ``gh api`` stderr looks like a 404.
+
+    Used by ``base_cycle_doc()`` to distinguish "this candidate cycle-doc
+    directory doesn't exist on the base ref" (treat as: try the next
+    candidate) from any other failure mode (auth, rate-limit, server
+    error — bubble up). The ``gh`` CLI's 404 stderr is consistently
+    ``"gh: Not Found (HTTP 404)"`` across recent versions.
+    """
+    if not stderr:
+        return False
+    return "404" in stderr or "Not Found" in stderr
+
+
 class BaseCycleDocFetchError(RuntimeError):
     """Raised when the base-ref cycle document cannot be read."""
 
@@ -332,38 +369,67 @@ def base_cycle_doc(
     if gh_token:
         env["GH_TOKEN"] = gh_token
 
-    try:
-        listing_result = subprocess.run(
-            [
-                "gh",
-                "api",
-                f"repos/{repo}/contents/docs/roadmap/cycles?ref={base_ref}",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=60,
+    # Try each candidate cycle-doc dir on the base ref. A 404 on one dir is
+    # normal for consumers that have moved (or not yet moved) to the other
+    # layout; fail only if ALL candidates 404 (cycle docs truly missing) or
+    # if a non-404 error fires. Networking/CLI errors short-circuit and
+    # surface as the existing BaseCycleDocFetchError.
+    listing_result = None
+    listing_dir = None
+    last_404: BaseCycleDocFetchError | None = None
+    for cycle_dir in CYCLE_DOC_DIRS:
+        try:
+            listing_result = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/contents/{cycle_dir}?ref={base_ref}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=60,
+            )
+            listing_dir = cycle_dir
+            break  # first hit wins
+        except FileNotFoundError as exc:
+            # gh CLI itself missing — environmental, fail loud regardless
+            # of which cycle_dir we were probing.
+            raise BaseCycleDocFetchError(
+                "gh CLI not on PATH; cannot read cycle docs from base ref."
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            # Treat 404 (or "not found") as "try the next candidate". Any
+            # other non-zero exit (auth, rate-limit, server error) escapes.
+            if _is_not_found_stderr(exc.stderr):
+                last_404 = BaseCycleDocFetchError(
+                    f"gh api repos/{repo}/contents/{cycle_dir} returned 404 "
+                    f"(exit {exc.returncode}): {exc.stderr.strip()}"
+                )
+                continue
+            raise BaseCycleDocFetchError(
+                f"gh api repos/{repo}/contents/{cycle_dir} failed "
+                f"(exit {exc.returncode}): {exc.stderr.strip()}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise BaseCycleDocFetchError(
+                f"gh api repos/{repo}/contents/{cycle_dir} timed out after {exc.timeout}s"
+            ) from exc
+
+    if listing_result is None:
+        # All candidate dirs 404'd — no cycle docs anywhere on base ref.
+        # Surface the last 404 so consumers see a concrete actionable error.
+        raise last_404 or BaseCycleDocFetchError(
+            "no candidate cycle-doc directory found on base ref "
+            f"(tried: {', '.join(CYCLE_DOC_DIRS)})"
         )
-    except FileNotFoundError as exc:
-        raise BaseCycleDocFetchError(
-            "gh CLI not on PATH; cannot read cycle docs from base ref."
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        raise BaseCycleDocFetchError(
-            f"gh api repos/{repo}/contents/docs/roadmap/cycles failed "
-            f"(exit {exc.returncode}): {exc.stderr.strip()}"
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise BaseCycleDocFetchError(
-            f"gh api repos/{repo}/contents/docs/roadmap/cycles timed out after {exc.timeout}s"
-        ) from exc
 
     try:
         entries = json.loads(listing_result.stdout)
     except json.JSONDecodeError as exc:
         raise BaseCycleDocFetchError(
-            "GitHub contents API returned malformed JSON for cycle docs listing."
+            f"GitHub contents API returned malformed JSON for {listing_dir} listing."
         ) from exc
 
     pattern = re.compile(rf"^cycle{re.escape(cycle_id)}(?:-.+)?\.md$")
@@ -657,18 +723,22 @@ def _parse_paginated_commit_messages(raw: str) -> str:
 
 
 def _is_cycle_doc_path(path: str) -> bool:
-    """Match ``docs/roadmap/cycles/cycle<id>(-<slug>)?.md``.
+    """Match ``<cycle_dir>/cycle<id>(-<slug>)?.md`` under any layout.
 
-    The classifier counts only files whose basename starts with
-    ``cycle`` followed by an id character. Sibling files like
-    ``docs/roadmap/cycles/README.md`` are index/meta content and do
-    NOT trigger the plan-PR contract.
+    Accepts both legacy ``docs/roadmap/cycles/`` and the newer
+    ``docs/cycles/`` per ``CYCLE_DOC_DIRS``. The classifier counts only
+    files whose basename starts with ``cycle`` followed by an id
+    character. Sibling files like ``<cycle_dir>/README.md`` are
+    index/meta content and do NOT trigger the plan-PR contract.
     """
-    prefix = "docs/roadmap/cycles/cycle"
-    if not path.startswith(prefix) or not path.endswith(".md"):
+    if not path.endswith(".md"):
         return False
-    next_char = path[len(prefix) : len(prefix) + 1]
-    return next_char.isdigit()
+    for cycle_dir in CYCLE_DOC_DIRS:
+        prefix = f"{cycle_dir}/cycle"
+        if path.startswith(prefix):
+            next_char = path[len(prefix) : len(prefix) + 1]
+            return next_char.isdigit()
+    return False
 
 
 def is_plan_pr(
@@ -731,7 +801,9 @@ def status_completion_in_diff(diff: str) -> list[str]:
             in_frontmatter = False
             seen_completed_in_frontmatter = False
             continue
-        if not current_file or not current_file.startswith("docs/roadmap/cycles/"):
+        if not current_file or not any(
+            current_file.startswith(f"{d}/") for d in CYCLE_DOC_DIRS
+        ):
             continue
         # Naive frontmatter tracking inside the diff hunk: ``---`` delimiters
         # toggle the flag. False positives are acceptable here — the goal
@@ -789,7 +861,7 @@ def cycle_docs_transitioned_to_terminal(
     cycle_paths = [
         p
         for p in changed_files
-        if p.startswith("docs/roadmap/cycles/cycle") and p.endswith(".md")
+        if any(p.startswith(f"{d}/cycle") for d in CYCLE_DOC_DIRS) and p.endswith(".md")
     ]
     if not cycle_paths:
         return []
@@ -1056,7 +1128,9 @@ def validate(
         # PR that doesn't touch its cycle's doc is mis-labelled.
         assert doc is not None  # plan PR without cycle_id already returned
         cycle_paths = [
-            f for f in changed_files if f.startswith("docs/roadmap/cycles/")
+            f
+            for f in changed_files
+            if any(f.startswith(f"{d}/") for d in CYCLE_DOC_DIRS)
         ]
         doc_relative = doc.path.relative_to(REPO_ROOT).as_posix()
         if doc_relative not in cycle_paths:
