@@ -15,6 +15,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -762,3 +763,206 @@ def test_cycle_docs_transitioned_to_terminal_fails_closed_on_non_404_gh_exit_one
 
     assert "exit 1" in str(excinfo.value)
     assert "rate limit" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Multi-layout cycle-doc path support (docs/roadmap/cycles + docs/cycles)
+# ---------------------------------------------------------------------------
+
+
+def test_is_cycle_doc_path_accepts_legacy_layout():
+    """Legacy ``docs/roadmap/cycles/`` is still recognized."""
+    assert validator._is_cycle_doc_path("docs/roadmap/cycles/cycle1-foo.md") is True
+    assert validator._is_cycle_doc_path("docs/roadmap/cycles/cycle331.5-bar.md") is True
+
+
+def test_is_cycle_doc_path_accepts_new_layout():
+    """New ``docs/cycles/`` layout (dark-factory-dashboard convention post-PR #105)
+    is recognized without configuration."""
+    assert validator._is_cycle_doc_path("docs/cycles/cycle1-foo.md") is True
+    assert validator._is_cycle_doc_path("docs/cycles/cycle6-sota-chat.md") is True
+
+
+def test_is_cycle_doc_path_rejects_non_cycle_files_in_either_layout():
+    """README/notes/etc. inside either cycle dir are NOT cycle docs."""
+    assert validator._is_cycle_doc_path("docs/roadmap/cycles/README.md") is False
+    assert validator._is_cycle_doc_path("docs/cycles/README.md") is False
+    assert validator._is_cycle_doc_path("docs/roadmap/notes.md") is False
+
+
+def test_find_cycle_doc_searches_both_layouts(tmp_path, monkeypatch):
+    """``find_cycle_doc`` searches every dir in CYCLE_DOC_DIRS on disk so
+    consumers who've moved to ``docs/cycles/`` get a working lookup
+    without configuration."""
+    new_layout = tmp_path / "docs" / "cycles"
+    new_layout.mkdir(parents=True)
+    (new_layout / "cycle6-sota-chat.md").write_text(
+        "---\ncycle: 6\nstatus: in-progress\n---\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+
+    doc = validator.find_cycle_doc("6")
+    assert doc is not None
+    assert doc.path.name == "cycle6-sota-chat.md"
+    assert doc.status == "in-progress"
+
+
+def test_base_cycle_doc_falls_through_to_new_layout_on_legacy_404(
+    tmp_path, monkeypatch
+):
+    """When ``docs/roadmap/cycles/`` 404s on the base ref (consumer moved
+    to the new layout per dark-factory-dashboard#105), the validator MUST
+    try ``docs/cycles/`` next instead of raising. This is the bug that
+    blocked dark-factory-dashboard#136 (Cycle 6 plan PR) and every
+    Cycle 6.x code PR after it from passing without an admin-override.
+
+    Also exercises the "iterate ALL dirs" semantics — the listing loop
+    intentionally does NOT break on the first successful response,
+    because a consumer can have BOTH layouts present in a transitional
+    state and the cycle may live in the second-listed dir even when the
+    first listed dir exists with unrelated cycles.
+    """
+    listing_calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        listing_calls.append(args)
+        # First call (legacy dir) → 404; second call (new dir) → success.
+        if "docs/roadmap/cycles" in args[2]:
+            raise subprocess.CalledProcessError(
+                1,
+                args[0],
+                stderr="gh: Not Found (HTTP 404)",
+            )
+        # docs/cycles → has the cycle 6 doc the PR cites.
+        return SimpleNamespace(
+            stdout=(
+                '[{"name": "cycle6-sota-chat.md", "type": "file",'
+                ' "path": "docs/cycles/cycle6-sota-chat.md"}]'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(validator.subprocess, "run", fake_run)
+
+    # The function ALSO fetches the file contents after the listing —
+    # short-circuit by absorbing that inner BaseCycleDocFetchError. We're
+    # only verifying that the listing loop fell through to the new layout
+    # (i.e., a `docs/cycles/...` listing call DID happen after the
+    # legacy 404).
+    try:
+        validator.base_cycle_doc(
+            repo="momentiq-ai/dark-factory-dashboard",
+            cycle_id="6",
+            base_ref="base-sha",
+            gh_token=None,
+        )
+    except validator.BaseCycleDocFetchError:
+        pass
+
+    legacy_calls = [a for a in listing_calls if "docs/roadmap/cycles" in a[2]]
+    new_calls = [a for a in listing_calls if "docs/cycles" in a[2]]
+    assert legacy_calls, "legacy dir MUST be probed first"
+    assert new_calls, "fallthrough to docs/cycles/ MUST occur after legacy 404"
+
+
+def test_base_cycle_doc_iterates_all_dirs_when_first_has_no_matching_cycle(
+    tmp_path, monkeypatch
+):
+    """The listing loop MUST NOT break on the first successful response —
+    a consumer with BOTH layouts present (e.g. sage3c-derived repo with
+    legacy cycle331.x docs at ``docs/roadmap/cycles/`` PLUS a new cycle
+    at ``docs/cycles/``) must have ALL dirs scanned so the cited cycle
+    is found wherever it lives.
+
+    Regresses the round-1 bug: prior code broke on the first listing
+    that returned a 200 even if the listing held no matching cycle —
+    a real failure mode for repos in transitional state.
+    """
+    listing_calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        listing_calls.append(args)
+        if "docs/roadmap/cycles" in args[2]:
+            # Legacy dir EXISTS with unrelated cycles — the cited cycle
+            # is NOT in this dir.
+            return SimpleNamespace(
+                stdout=(
+                    '[{"name": "cycle331.1-foo.md", "type": "file",'
+                    ' "path": "docs/roadmap/cycles/cycle331.1-foo.md"}]'
+                ),
+                stderr="",
+            )
+        # docs/cycles → has the cited cycle 6.
+        return SimpleNamespace(
+            stdout=(
+                '[{"name": "cycle6-bar.md", "type": "file",'
+                ' "path": "docs/cycles/cycle6-bar.md"}]'
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(validator.subprocess, "run", fake_run)
+    try:
+        validator.base_cycle_doc(
+            repo="momentiq-ai/transitional",
+            cycle_id="6",
+            base_ref="base-sha",
+            gh_token=None,
+        )
+    except validator.BaseCycleDocFetchError:
+        # The file-content fetch after the listing may fail under the
+        # stub; we're only asserting the listing-loop coverage here.
+        pass
+
+    legacy_listings = [a for a in listing_calls if "docs/roadmap/cycles" in a[2]]
+    new_listings = [a for a in listing_calls if "docs/cycles" in a[2]]
+    assert legacy_listings, "legacy dir must be probed"
+    assert new_listings, (
+        "must continue past a non-404 legacy response that lacks the cited cycle "
+        "— prior break-on-first-success behavior would have stopped here"
+    )
+
+
+def test_base_cycle_doc_raises_when_all_layouts_404(tmp_path, monkeypatch):
+    """If NEITHER cycle-doc dir exists on the base ref, the validator
+    should raise with a clear error naming the candidates tried."""
+
+    def fake_run(args, **kwargs):
+        raise subprocess.CalledProcessError(
+            1,
+            args[0],
+            stderr="gh: Not Found (HTTP 404)",
+        )
+
+    monkeypatch.setattr(validator.subprocess, "run", fake_run)
+
+    with pytest.raises(validator.BaseCycleDocFetchError):
+        validator.base_cycle_doc(
+            repo="momentiq-ai/no-cycle-docs",
+            cycle_id="6",
+            base_ref="base-sha",
+            gh_token=None,
+        )
+
+
+def test_is_gh_not_found_error_distinguishes_404_from_other_errors():
+    """``_is_gh_not_found_error`` is what ``base_cycle_doc`` uses to
+    decide "try next dir" vs "bubble up real error". Pin both branches.
+    """
+    err_404 = subprocess.CalledProcessError(
+        1, ["gh"], stderr="gh: Not Found (HTTP 404)"
+    )
+    err_404_lower = subprocess.CalledProcessError(
+        1, ["gh"], stderr="not found"
+    )
+    err_403 = subprocess.CalledProcessError(
+        1, ["gh"], stderr="gh: API rate limit exceeded (HTTP 403)"
+    )
+    err_500 = subprocess.CalledProcessError(
+        1, ["gh"], stderr="gh: server error (HTTP 500)"
+    )
+
+    assert validator._is_gh_not_found_error(err_404) is True
+    assert validator._is_gh_not_found_error(err_404_lower) is True
+    assert validator._is_gh_not_found_error(err_403) is False
+    assert validator._is_gh_not_found_error(err_500) is False
