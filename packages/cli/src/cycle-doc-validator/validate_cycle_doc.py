@@ -327,20 +327,6 @@ def read_cycle_frontmatter_from_text(text: str) -> tuple[str | None, str | None]
     return status, superseded_by
 
 
-def _is_not_found_stderr(stderr: str | None) -> bool:
-    """Return True if a ``gh api`` stderr looks like a 404.
-
-    Used by ``base_cycle_doc()`` to distinguish "this candidate cycle-doc
-    directory doesn't exist on the base ref" (treat as: try the next
-    candidate) from any other failure mode (auth, rate-limit, server
-    error — bubble up). The ``gh`` CLI's 404 stderr is consistently
-    ``"gh: Not Found (HTTP 404)"`` across recent versions.
-    """
-    if not stderr:
-        return False
-    return "404" in stderr or "Not Found" in stderr
-
-
 class BaseCycleDocFetchError(RuntimeError):
     """Raised when the base-ref cycle document cannot be read."""
 
@@ -369,13 +355,19 @@ def base_cycle_doc(
     if gh_token:
         env["GH_TOKEN"] = gh_token
 
-    # Try each candidate cycle-doc dir on the base ref. A 404 on one dir is
-    # normal for consumers that have moved (or not yet moved) to the other
-    # layout; fail only if ALL candidates 404 (cycle docs truly missing) or
-    # if a non-404 error fires. Networking/CLI errors short-circuit and
-    # surface as the existing BaseCycleDocFetchError.
-    listing_result = None
-    listing_dir = None
+    # Collect candidates across EVERY candidate cycle-doc dir on the base
+    # ref — DON'T break on the first successful listing. A consumer can
+    # have BOTH layouts present (transitional state — e.g. dark-factory-
+    # dashboard pre-#105 had cycle1-5 at legacy + cycle6 at the new path
+    # for one PR's worth of overlap), and a legacy dir that exists but
+    # lacks the cited cycle (sage3c with cycle331.x at legacy + a new
+    # cycle 6 at the new path) must fall through to the next dir. Per-dir
+    # 404 is the normal "consumer has not moved (or has moved fully) to
+    # this layout" signal; only fail if EVERY dir 404s or any dir hits a
+    # non-404 error.
+    pattern = re.compile(rf"^cycle{re.escape(cycle_id)}(?:-.+)?\.md$")
+    candidates: list[dict] = []
+    dirs_listed: list[str] = []
     last_404: BaseCycleDocFetchError | None = None
     for cycle_dir in CYCLE_DOC_DIRS:
         try:
@@ -391,8 +383,6 @@ def base_cycle_doc(
                 env=env,
                 timeout=60,
             )
-            listing_dir = cycle_dir
-            break  # first hit wins
         except FileNotFoundError as exc:
             # gh CLI itself missing — environmental, fail loud regardless
             # of which cycle_dir we were probing.
@@ -400,48 +390,54 @@ def base_cycle_doc(
                 "gh CLI not on PATH; cannot read cycle docs from base ref."
             ) from exc
         except subprocess.CalledProcessError as exc:
-            # Treat 404 (or "not found") as "try the next candidate". Any
-            # other non-zero exit (auth, rate-limit, server error) escapes.
-            if _is_not_found_stderr(exc.stderr):
+            # Treat 404 (or "not found") as "this dir doesn't exist on
+            # base ref; keep trying the others". Any other non-zero exit
+            # (auth, rate-limit, server error) escapes immediately —
+            # don't silently swallow a real failure as a missing-dir.
+            if _is_gh_not_found_error(exc):
                 last_404 = BaseCycleDocFetchError(
                     f"gh api repos/{repo}/contents/{cycle_dir} returned 404 "
-                    f"(exit {exc.returncode}): {exc.stderr.strip()}"
+                    f"(exit {exc.returncode}): {(exc.stderr or '').strip()}"
                 )
                 continue
             raise BaseCycleDocFetchError(
                 f"gh api repos/{repo}/contents/{cycle_dir} failed "
-                f"(exit {exc.returncode}): {exc.stderr.strip()}"
+                f"(exit {exc.returncode}): {(exc.stderr or '').strip()}"
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise BaseCycleDocFetchError(
                 f"gh api repos/{repo}/contents/{cycle_dir} timed out after {exc.timeout}s"
             ) from exc
 
-    if listing_result is None:
-        # All candidate dirs 404'd — no cycle docs anywhere on base ref.
-        # Surface the last 404 so consumers see a concrete actionable error.
+        dirs_listed.append(cycle_dir)
+        try:
+            entries = json.loads(listing_result.stdout)
+        except json.JSONDecodeError as exc:
+            raise BaseCycleDocFetchError(
+                f"GitHub contents API returned malformed JSON for {cycle_dir} listing."
+            ) from exc
+
+        candidates.extend(
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("type") == "file"
+            and isinstance(entry.get("name"), str)
+            and pattern.match(entry["name"])
+        )
+
+    if not dirs_listed:
+        # EVERY candidate dir 404'd — no cycle docs anywhere on base ref.
+        # Surface the last 404 so consumers see a concrete actionable error
+        # naming what was tried.
         raise last_404 or BaseCycleDocFetchError(
             "no candidate cycle-doc directory found on base ref "
             f"(tried: {', '.join(CYCLE_DOC_DIRS)})"
         )
 
-    try:
-        entries = json.loads(listing_result.stdout)
-    except json.JSONDecodeError as exc:
-        raise BaseCycleDocFetchError(
-            f"GitHub contents API returned malformed JSON for {listing_dir} listing."
-        ) from exc
-
-    pattern = re.compile(rf"^cycle{re.escape(cycle_id)}(?:-.+)?\.md$")
-    candidates = [
-        entry
-        for entry in entries
-        if isinstance(entry, dict)
-        and entry.get("type") == "file"
-        and isinstance(entry.get("name"), str)
-        and pattern.match(entry["name"])
-    ]
     if not candidates:
+        # At least one dir existed but doesn't hold the cited cycle —
+        # treat as "new cycle, OK to proceed" (the doc lands in this PR).
         return None
 
     chosen = max(candidates, key=lambda entry: len(entry["name"]))
@@ -1102,8 +1098,9 @@ def validate(
         if doc is None:
             errors.append(
                 f"[cycle-doc] FAIL ({pr_type}): cycle `{cycle_id}` not found in "
-                f"`docs/roadmap/cycles/`. Either fix the trailer or open a plan "
-                "PR that creates the cycle doc first."
+                f"any of: {', '.join(f'`{d}/`' for d in CYCLE_DOC_DIRS)}. "
+                "Either fix the trailer or open a plan PR that creates the "
+                "cycle doc first."
             )
             return errors
 
