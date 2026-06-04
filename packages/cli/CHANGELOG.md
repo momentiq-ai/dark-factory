@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.1.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.0.0...dark-factory-cli-v2.1.0) (2026-06-04)
+
+
+### Features
+
+* **onboard:** analyze() orchestrator + schema validation — cycle 15 Phase A ([0482a61](https://github.com/momentiq-ai/dark-factory/commit/0482a6162f9d59786791fbcef005102d806ab400))
+* **onboard:** Analyzer interface + runAnalyzers orchestrator helper — cycle 15 Phase A ([dab07c0](https://github.com/momentiq-ai/dark-factory/commit/dab07c0e2a900f52ddccb9e4c84d92a120efa9c7))
+* **onboard:** CI analyzer (workflow parse + deploy-story heuristic) — cycle 15 Phase A ([add221b](https://github.com/momentiq-ai/dark-factory/commit/add221bb724c1793387a656a2dbdb07bd8151184))
+* **onboard:** df onboard --analysis-only --json CLI command — cycle 15 Phase A ([883ec73](https://github.com/momentiq-ai/dark-factory/commit/883ec73007970f2de6d0a997c3f4beb52542d74f))
+* **onboard:** docs + DF-gate-presence analyzer — cycle 15 Phase A ([039eb21](https://github.com/momentiq-ai/dark-factory/commit/039eb210ac2932564c4aeb88fdfc9044febfe761))
+* **onboard:** git analyzer (canonical name, conventions, default branch) — cycle 15 Phase A ([666be66](https://github.com/momentiq-ai/dark-factory/commit/666be664009f10fa5ab7146179815b1450d440e8))
+* **onboard:** lockfile analyzer (decision-surface heuristics) — cycle 15 Phase A ([4a27cb1](https://github.com/momentiq-ai/dark-factory/commit/4a27cb1cc4e3b76fd089574f4750372fc0fe3650))
+* **onboard:** manifest analyzer (9 stacks) — cycle 15 Phase A ([d767715](https://github.com/momentiq-ai/dark-factory/commit/d767715e556c377b3e4646c801be7c6b7f2b6707))
+* **onboard:** Phase A repo analyzer (df onboard --analysis-only --json) — cycle 15 Phase A (consumer momentiq-ai/dark-factory-platform[#21](https://github.com/momentiq-ai/dark-factory/issues/21)) ([70b1b17](https://github.com/momentiq-ai/dark-factory/commit/70b1b171afe95057bf5075ddb56fabc6d35ddaad))
+* **onboard:** RepoAnalysis Zod schema + tests — cycle 15 Phase A ([d3f31bd](https://github.com/momentiq-ai/dark-factory/commit/d3f31bdc7ff6cd5a7a3b6a67a625fbd661294421))
+* **onboard:** tree analyzer (dir classify, lang breakdown, services discovery) — cycle 15 Phase A ([ebb4f8c](https://github.com/momentiq-ai/dark-factory/commit/ebb4f8c220df2b613499e48d3e780dcdf0688cb7))
+
+
+### Bug Fixes
+
+* **cycle-doc-validator:** accept both docs/cycles and docs/roadmap/cycles layouts ([#133](https://github.com/momentiq-ai/dark-factory/issues/133)) ([31c3394](https://github.com/momentiq-ai/dark-factory/commit/31c33940f369894027cd3cb6d7ed07ed24cef52d))
+
 ## [2.0.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v1.2.0...dark-factory-cli-v2.0.0) (2026-06-03)
 
 
