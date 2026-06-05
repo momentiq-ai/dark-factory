@@ -24,7 +24,11 @@ const PACKAGE_ROOT = join(HERE, "..");
 const SRC_ROOT = join(PACKAGE_ROOT, "src");
 const DIST_ROOT = join(PACKAGE_ROOT, "dist");
 
-const COPY_EXTENSIONS = new Set([".py", ".yaml", ".yml"]);
+// `.md` added in cycle 15 Phase B (Task 14) so the Stage B scaffold prompt
+// asset at src/onboard/prompts/scaffold.md lands in dist/onboard/prompts/.
+// Audited via `find packages/cli/src -name '*.md' -not -path '*/prompts/*'`
+// (empty) before adding; the only `.md` under src/ today is the prompt asset.
+const COPY_EXTENSIONS = new Set([".py", ".yaml", ".yml", ".md"]);
 
 async function walkAndCopy(currentDir) {
   let copied = 0;
