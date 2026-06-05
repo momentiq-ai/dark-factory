@@ -254,7 +254,7 @@ test("runDfDoctorTool registers static-schema-lint via the MCP loader list", asy
   // a passing check maps to status: 'pass' (the `optional` modifier
   // applied for non-required critics only flips FAILED checks to 'warn').
   expect(registryCheck?.status).toBe("pass");
-  // cursor critic #116 — CONSUMER-ADOPTION.md §4.1 instructs operators
+  // cursor critic #116 — CONSUMER-ADOPTION.md §6.1 instructs operators
   // to verify BOTH the registry probe AND the smoke probe. If a
   // regression broke or removed `static_schema_lint_smoke` (e.g. ajv got
   // tree-shaken away in a packaging change), this assertion catches it

@@ -96,7 +96,7 @@ over stdio:
   APPROVED` inline
 
 Pinned MCP protocol version: `2025-06-18`. See
-[`CONSUMER-ADOPTION.md §11`](docs/CONSUMER-ADOPTION.md#11-wire-the-mcp-server-into-your-agent)
+[`CONSUMER-ADOPTION.md §13`](docs/CONSUMER-ADOPTION.md#13-wire-the-mcp-server-into-your-agent)
 for wiring.
 
 ## Session continuity — the agent handoff protocol
@@ -136,12 +136,12 @@ transcribed from a comment (which is an injection vector). The `df.handoff` /
 `df.rehydrate` MCP prompts carry that judgment for the composing/resuming agent.
 
 See
-[`CONSUMER-ADOPTION.md § handoff`](docs/CONSUMER-ADOPTION.md#12-session-continuity--the-agent-handoff-protocol)
+[`CONSUMER-ADOPTION.md § handoff`](docs/CONSUMER-ADOPTION.md#14-session-continuity--the-agent-handoff-protocol)
 for the full data flows.
 
 ## Reusable workflows
 
-Consumer repos `uses:` these from their own CI. A reusable workflow invoked via `uses:` reports the status-check context as `<caller-job-id> / <callee-job-name>`; every dark-factory callee omits a job-level `name:` override so the callee segment defaults to the job id (issue #27). The right column is the EXACT string a consumer ruleset must require — see [CONSUMER-ADOPTION.md §8](docs/CONSUMER-ADOPTION.md#8-make-dark-factory-binding-required-for-enforcement) for the naming contract.
+Consumer repos `uses:` these from their own CI. A reusable workflow invoked via `uses:` reports the status-check context as `<caller-job-id> / <callee-job-name>`; every dark-factory callee omits a job-level `name:` override so the callee segment defaults to the job id (issue #27). The right column is the EXACT string a consumer ruleset must require — see [CONSUMER-ADOPTION.md §10](docs/CONSUMER-ADOPTION.md#10-make-dark-factory-binding-required-for-enforcement) for the naming contract.
 
 | File | Consumer status-check context | Purpose |
 |---|---|---|
@@ -169,7 +169,7 @@ jobs:
   # and the callee's internal job is also named `agent-critic`, so the
   # emitted context is exactly `agent-critic / agent-critic` — that is
   # the literal string your enforcement ruleset must require (see
-  # docs/CONSUMER-ADOPTION.md §8). Requiring the bare `agent-critic`
+  # docs/CONSUMER-ADOPTION.md §10). Requiring the bare `agent-critic`
   # would never match and would block every PR forever.
   agent-critic:
     uses: momentiq-ai/dark-factory/.github/workflows/agent-critic.yml@v0.1.0

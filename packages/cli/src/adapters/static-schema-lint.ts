@@ -827,7 +827,7 @@ export class StaticSchemaLintAdapter implements CriticAdapter {
         impact:
           "Under `context.includeFullChangedFiles: false`, the deterministic schema-lint backstop can silently APPROVE schema-invalid doc examples (the same fail-open class as consumer DFP #107) when the violating hunk falls outside the truncated diff budget. The adapter cannot prove the absence of violations in the truncated tail, so silence here is NOT evidence of correctness.",
         requiredFix:
-          "Set `context.includeFullChangedFiles: true` in the consumer `.agent-review/config.json` (the adapter then reads file bodies directly via `git show <sha>:<path>` and bypasses the truncated diff), OR shrink the PR so the unified diff fits inside `DEFAULT_DIFF_BUDGET` (1.5MB). See docs/CONSUMER-ADOPTION.md §4.1 for the full mitigation matrix.",
+          "Set `context.includeFullChangedFiles: true` in the consumer `.agent-review/config.json` (the adapter then reads file bodies directly via `git show <sha>:<path>` and bypasses the truncated diff), OR shrink the PR so the unified diff fits inside `DEFAULT_DIFF_BUDGET` (1.5MB). See docs/CONSUMER-ADOPTION.md §6.1 for the full mitigation matrix.",
       });
     }
 
