@@ -141,7 +141,7 @@ function sha8(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 8);
 }
 
-export async function cmdOnboard(rest: string[], io: OnboardIo): Promise<number> {
+export async function cmdOnboardCli(rest: string[], io: OnboardIo): Promise<number> {
   if (rest.includes("--help") || rest.includes("-h")) {
     io.stdout(HELP);
     return 0;

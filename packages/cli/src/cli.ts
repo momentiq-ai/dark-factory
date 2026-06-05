@@ -126,7 +126,7 @@ import { cmdFindings } from "./commands/findings.js";
 // Cycle 15 Phase A — `df onboard --analysis-only --json` runs the
 // deterministic Stage A scanner (no LLM) and emits a bounded
 // RepoAnalysis. Phase B/C extend the surface with --apply/--pr.
-import { cmdOnboard } from "./commands/onboard.js";
+import { cmdOnboardCli } from "./commands/onboard.js";
 // Cycle 12 Phase 12.2 — agent handoff protocol (v2 — Issue-anchored, native-
 // baton). The four cmd* functions below wrap the verb orchestrators exported
 // from src/handoff/index.ts and route to them at the bottom of main(). v1
@@ -415,7 +415,7 @@ const SHOW_STATUS_SUBCOMMANDS = new Set(["show", "status", "findings"]);
 const SKILLS_SUBCOMMANDS = new Set(["skills"]);
 
 // `df onboard` — cycle 15 Phase A deterministic repo analyzer. Registered
-// here so `df onboard --help` reaches cmdOnboard's per-subcommand help
+// here so `df onboard --help` reaches cmdOnboardCli's per-subcommand help
 // printer instead of falling through to the top-level printHelp.
 const ONBOARD_SUBCOMMANDS = new Set(["onboard"]);
 
@@ -2099,7 +2099,7 @@ async function main(argv: string[]): Promise<number> {
   // Cycle 15 Phase A — `df onboard --analysis-only --json [target]` runs
   // the deterministic Stage A scanner and emits a bounded RepoAnalysis.
   if (sub === "onboard") {
-    return await cmdOnboard(rest, {
+    return await cmdOnboardCli(rest, {
       stdout: (s) => process.stdout.write(s),
       stderr: (s) => process.stderr.write(s),
     });
