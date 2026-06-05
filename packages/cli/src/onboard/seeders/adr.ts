@@ -24,10 +24,10 @@ import type { Decision, RepoAnalysis } from "../schema.js";
 import type { FilePlan, Seeder, SeederInput } from "./index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-// Template lives flat alongside the seeder (per Phase C plan deliverable list);
-// `templates/` subdirectory referenced in the plan's verbatim code block is a
-// plan-internal drift — the deliverable inventory wins.
-const TEMPLATE_PATH = resolve(HERE, "adr.md.tmpl");
+// Templates live under `templates/` (plan-aligned). All three prose seeders
+// (adr, cycle1-bootstrap, runbook) share that convention so copy-assets needs
+// to whitelist only one extension+directory pattern at publish time.
+const TEMPLATE_PATH = resolve(HERE, "templates", "adr.md.tmpl");
 
 const RATIONALE_TEMPLATES: Record<Decision["surface"], string> = {
   "test-framework":

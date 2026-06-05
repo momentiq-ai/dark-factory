@@ -26,9 +26,12 @@ const DIST_ROOT = join(PACKAGE_ROOT, "dist");
 
 // `.md` added in cycle 15 Phase B (Task 14) so the Stage B scaffold prompt
 // asset at src/onboard/prompts/scaffold.md lands in dist/onboard/prompts/.
-// Audited via `find packages/cli/src -name '*.md' -not -path '*/prompts/*'`
-// (empty) before adding; the only `.md` under src/ today is the prompt asset.
-const COPY_EXTENSIONS = new Set([".py", ".yaml", ".yml", ".md"]);
+// `.tmpl` added in cycle 15 Phase C so the deterministic seeder templates
+// (src/onboard/seeders/templates/{adr,cycle1-bootstrap,runbook}.md.tmpl)
+// land in dist/onboard/seeders/templates/ — the seeders read them via
+// resolve(HERE, "templates", "<name>.md.tmpl") at runtime, so the
+// published-package runtime needs them present.
+const COPY_EXTENSIONS = new Set([".py", ".yaml", ".yml", ".md", ".tmpl"]);
 
 async function walkAndCopy(currentDir) {
   let copied = 0;

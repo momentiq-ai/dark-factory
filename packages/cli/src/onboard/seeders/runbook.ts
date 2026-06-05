@@ -32,7 +32,8 @@ export interface Seeder {
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const TEMPLATE_PATH = resolve(HERE, "runbook.md.tmpl");
+// Templates live under `templates/` (plan-aligned, shared with adr + cycle1-bootstrap).
+const TEMPLATE_PATH = resolve(HERE, "templates", "runbook.md.tmpl");
 
 const DEPLOY_NAME_REGEX = /deploy|release|publish|promote/i;
 const MAX_RUNBOOKS = 5;
