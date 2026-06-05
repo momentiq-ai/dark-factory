@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "profiles": {
+    "{{ profile }}": {
+      "critics": ["cursor-cli", "codex-sdk"],
+      "quorum": 2
+    }
+  }
+}

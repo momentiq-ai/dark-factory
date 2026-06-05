@@ -73,10 +73,23 @@ describe("df onboard CLI (Phase A)", () => {
     }
   });
 
-  it("without --analysis-only, exits 1 with a 'Phase A only' message", async () => {
-    const r = await runDfCli(["onboard"]);
-    expect(r.exitCode).toBe(1);
-    expect(r.stderr).toContain("Phase A only");
+  it("without --analysis-only or --apply/--pr, defaults to --dry-run mode (cycle 15 Phase B)", async () => {
+    // Phase B changed the no-mode-flag default from "Phase A only" hard error
+    // to "--dry-run". Without ANTHROPIC_API_KEY in env, --dry-run requires it
+    // and exits 1 with the API-key message. The test sub-shell inherits the
+    // ambient env; we only assert on the message shape, not the env state,
+    // so this test is meaningful whether the key is set or not (no env
+    // mutation needed at this layer — the CLI behavior + error string is
+    // what we're gating).
+    const origKey = process.env["ANTHROPIC_API_KEY"];
+    delete process.env["ANTHROPIC_API_KEY"];
+    try {
+      const r = await runDfCli(["onboard"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("ANTHROPIC_API_KEY");
+    } finally {
+      if (origKey !== undefined) process.env["ANTHROPIC_API_KEY"] = origKey;
+    }
   });
 
   it("--help prints the usage and exits 0", async () => {
