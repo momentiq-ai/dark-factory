@@ -93,6 +93,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.100.1",
     "@cursor/sdk": "^1.0.12",
     "@google/genai": "^2.2.0",
     "@iarna/toml": "2.2.5",
@@ -102,12 +103,14 @@
     "@yarnpkg/lockfile": "1.1.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
+    "diff": "^5.2.2",
     "openai": "^6.37.0",
     "yaml": "^2.9.0",
     "zod": "^3.23.0",
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
+    "@types/diff": "^5.2.3",
     "@types/node": "^20.11.0",
     "@types/yarnpkg__lockfile": "^1.1.9",
     "@vitest/coverage-v8": "^2.1.9",
