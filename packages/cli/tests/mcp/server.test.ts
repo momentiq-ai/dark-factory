@@ -120,6 +120,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
       "df_gate_push",
       "df_handoff",
       "df_handoffs",
+      "df_onboard",
       "df_rehydrate",
       "df_review",
       "df_review_status",

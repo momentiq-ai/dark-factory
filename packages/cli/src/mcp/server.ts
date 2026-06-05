@@ -43,6 +43,7 @@ import { registerGenerateTools } from "./tools/generate.js";
 import { registerHandoffTools } from "./tools/handoff.js";
 import { registerReviewBypassTools } from "./tools/review-bypass.js";
 import { registerSkillsTools } from "./tools/skills-install.js";
+import { registerOnboardTool } from "./tools/onboard.js";
 import { registerStatsGateTools } from "./tools/stats-gate.js";
 
 interface PackageMeta {
@@ -141,6 +142,7 @@ export function createMcpServer(opts: CreateMcpServerOptions = {}): McpServer {
   registerGenerateTools(server, toolOpts);      // step 8 — df_cycle_doc_generate + df_adr_generate (sampling)
   registerHandoffTools(server, toolOpts);        // cycle12.2 — df_handoff + df_accept + df_rehydrate + df_handoffs (v2 Issue-anchor)
   registerSkillsTools(server, toolOpts);         // DFP #192 — df_skills_install + df_skills_list (consumer-shape skills)
+  registerOnboardTool(server, toolOpts);         // cycle 15 Phase C — df_onboard
 
   // step 4 — URI-addressable resources (df://repo/...). Single call
   // registers all 9 resources at once; see src/mcp/resources.ts.
