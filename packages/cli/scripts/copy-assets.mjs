@@ -31,7 +31,13 @@ const DIST_ROOT = join(PACKAGE_ROOT, "dist");
 // land in dist/onboard/seeders/templates/ — the seeders read them via
 // resolve(HERE, "templates", "<name>.md.tmpl") at runtime, so the
 // published-package runtime needs them present.
-const COPY_EXTENSIONS = new Set([".py", ".yaml", ".yml", ".md", ".tmpl"]);
+// `.json` added in cycle 15 Phase C (Task 3.6) so the agent-review-config
+// seeder's canonical bodies at
+// src/onboard/seeders/agent-review-config/{local,cloud}.canonical.json
+// land in dist/onboard/seeders/agent-review-config/ — the seeder reads
+// them via readFile at runtime, so the published-package runtime needs
+// them present.
+const COPY_EXTENSIONS = new Set([".py", ".yaml", ".yml", ".md", ".tmpl", ".json"]);
 
 async function walkAndCopy(currentDir) {
   let copied = 0;

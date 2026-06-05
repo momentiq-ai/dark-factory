@@ -36,6 +36,15 @@ export interface SeederInput {
   readonly existingCycleDocs?: readonly string[];
   readonly existingRunbooks?: readonly string[];
   readonly now: Date;
+  /**
+   * Resolved critic profile for the target repo. The agent-review config
+   * seeder (Task 3.6) uses this to pick `local.canonical.json` vs
+   * `cloud.canonical.json`. The three prose seeders ignore it. Optional with
+   * default "local" so prose-seeder unit tests need not specify the field;
+   * production callers (`cmdOnboard`) always set it explicitly to the
+   * resolved profile.
+   */
+  readonly profile?: "local" | "cloud";
 }
 
 export interface Seeder {

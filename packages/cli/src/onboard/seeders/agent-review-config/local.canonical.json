@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "profiles": {
+    "local": {
+      "criticIds": [
+        "cursor-cli-chief-engineer",
+        "codex-local-chief-engineer"
+      ],
+      "quorum": 2,
+      "modelParamOverrides": {
+        "codex-local-chief-engineer": {
+          "reasoning_effort": "high"
+        }
+      },
+      "auth": {
+        "cursor-cli-chief-engineer": "chatgpt",
+        "codex-local-chief-engineer": "chatgpt"
+      }
+    }
+  }
+}
