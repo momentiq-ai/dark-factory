@@ -118,7 +118,7 @@ Schema: `z.object({ workflows, deployStory })`. Owner analyzer: **ci**
 
 | Field | Type | Cap | Source | Description |
 |---|---|---|---|---|
-| `ci.workflows[]` | `Workflow[]` | 20 | `.github/workflows/*.{yml,yaml}` | One entry per workflow file. Non-GHA CI systems (CircleCI, GitLab CI, Buildkite) are NOT detected in v1. |
+| `ci.workflows[]` | `Workflow[]` | 50 | `.github/workflows/*.{yml,yaml}` | One entry per workflow file. Non-GHA CI systems (CircleCI, GitLab CI, Buildkite) are NOT detected in v1. Cap bumped from 20 → 50 in cycle 15 Phase C (sage3c has 28 workflows; previous cap rejected real consumer repos at the Zod boundary). |
 | `ci.workflows[].name` | `string` | — | YAML `name` key | Workflow's `name:` field, falling back to the filename when `name:` is absent. |
 | `ci.workflows[].path` | `string` | — | (filesystem path) | Repo-relative path (always `.github/workflows/<basename>`). |
 | `ci.workflows[].triggers` | `string[]` | — | YAML `on` key | Normalized list of trigger names (`push`, `pull_request`, `workflow_dispatch`, etc.). Handles all three shapes: string, array, and object. |
@@ -265,7 +265,7 @@ The budget is bounded by **three concentric layers**:
    | `stacks[]` | 12 | Polyglot monorepo headroom (most repos: 1–3). |
    | `services[]` | 30 | Multi-service mono-repo with up to ~30 services. |
    | `dependencies[]` | 20 | Top direct deps for ADR seeds; transitive deps excluded. |
-   | `ci.workflows[]` | 20 | Workflow envelope per `.github/workflows/`. |
+   | `ci.workflows[]` | 50 | Workflow envelope per `.github/workflows/`. Bumped from 20 in cycle 15 Phase C — sage3c outgrew the original heuristic. |
    | `tree.topLevelDirs[]` | 30 | Repo-root directory enumeration. |
    | `tree.testDirs[]` | 20 | Test directories at depth ≤ 3. |
    | `docs.existing[]` | 50 | Documentation enumeration. |

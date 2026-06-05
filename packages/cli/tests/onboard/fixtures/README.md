@@ -50,9 +50,12 @@ union of):
   lockfile analyzer's MAX_DEPS cap) so the tarball doesn't get blown out
   by node_modules-shadow trees (DFP's real `package-lock.json` is 124 KB).
 - `.github/workflows/*.yml`/`*.yaml`. Full content (CI analyzer parses
-  them). Capped at 20 alphabetically to mirror the schema cap on
-  `ci.workflows` — sage3c has 28 workflows; the un-capped fixture would
-  fail Zod validation.
+  them). Capped at 50 alphabetically to mirror the schema cap on
+  `ci.workflows` (bumped from 20 in cycle 15 Phase C — sage3c has 28
+  workflows; the previous 20 cap rejected real consumer repos at the
+  Zod boundary). Existing golden fixtures were generated at the old
+  cap (20); they remain valid against the new schema (any list ≤ 50
+  passes), and regenerating them is a deliberate manual step.
 - Root docs: `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`,
   `ARCHITECTURE.md`, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`. Truncated to
   `# truncated for fixture\n` when the tarball would otherwise overshoot

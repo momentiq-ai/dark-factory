@@ -9,6 +9,28 @@
 // Run from the dark-factory clone root after `npm run build --workspace
 // packages/cli`.
 //
+// ## Why this exists alongside the vitest harness (intentional duplication)
+//
+// `packages/cli/tests/onboard/sage3c-reproduction.test.ts` is the canonical
+// end-to-end harness — it spawns the CLI binary, runs real Phase B
+// generatePlan (LLM call), and asserts all 5 metrics. That harness is
+// `describe.skipIf(!ANTHROPIC_API_KEY)` because the subprocess fails
+// without the LLM key.
+//
+// The skip masks MORE than metric 1: the harness's beforeAll (clone,
+// scrub, subprocess invoke, JSON parse) never runs either, so deterministic
+// metrics 2-5 — the ones Phase C owns — are also unverified in any env
+// without an Anthropic key (CI, dev workstations without Doppler ANTHROPIC,
+// the W3 critic sandbox, etc.).
+//
+// This script bypasses subprocess + LLM by calling `analyze` + `runSeeders`
+// directly. The assertion logic intentionally duplicates the harness's
+// metric-2–5 contract so deterministic verification can run anywhere.
+// Drift is bounded by review discipline: any change to the harness's
+// deterministic-metric assertions should be mirrored here in the same PR.
+// See `feedback_deterministic_validation_harness.md` in agent memory for
+// the underlying rationale.
+//
 // Usage:
 //   node scripts/validate-phase-c-deterministic.mjs <path-to-cleaned-sage3c-clone>
 //
