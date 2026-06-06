@@ -116,15 +116,19 @@ export async function callScaffoldLlm(
     attempts++;
     try {
       const r = await client.messages.create(request);
-      // Diagnostic line — stop_reason + token counts + content shape are the
+      // Opt-in diagnostic — stop_reason + token counts + content shape are the
       // discriminating signals when downstream Zod validation fails on the
       // returned plan (truncation vs. malformed output vs. wrong block type).
-      // Cheap to emit, expensive to debug without — kept permanent.
-      console.error(
-        `[llm-diag] attempt=${attempts} stop_reason=${r.stop_reason} ` +
-          `input_tokens=${r.usage.input_tokens} output_tokens=${r.usage.output_tokens} ` +
-          `content_types=${JSON.stringify(r.content.map((b) => (b as { type: string }).type))}`,
-      );
+      // Gated behind DF_ONBOARD_DEBUG so the benign-info line does not pollute
+      // stderr in normal use (per #57's severity-routing convention — benign
+      // info on stderr lights up GKE/Cloud Logging as severity:ERROR).
+      if (process.env["DF_ONBOARD_DEBUG"]) {
+        console.error(
+          `[llm-diag] attempt=${attempts} stop_reason=${r.stop_reason} ` +
+            `input_tokens=${r.usage.input_tokens} output_tokens=${r.usage.output_tokens} ` +
+            `content_types=${JSON.stringify(r.content.map((b) => (b as { type: string }).type))}`,
+        );
+      }
       const toolBlock = r.content.find(
         (b): b is { type: "tool_use"; name: string; input: unknown } =>
           (b as { type: string }).type === "tool_use" &&
