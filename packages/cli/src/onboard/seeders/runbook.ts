@@ -13,13 +13,12 @@
 // containment; Task 3.5 (seeder orchestrator) will surface them from
 // `./index.ts` and the seeders will import them from there.
 //
-// Fix #138 — widened the selection + body so verbatim CI lines reach a
-// runbook even when:
-//   - the deploy story is composite-action / gitops (no `run:` line) — falls
-//     back to a non-deploy-named workflow with a real single-line `run:`;
-//   - every deploy-named workflow uses only multi-line `run: |` blocks
-//     (sage3c's promote-to-prod) — selects the first workflow with a
-//     `firstRunCommand` as the verbatim-line donor.
+// Fix #138 — when every deploy-named workflow has only multi-line
+// `run: |` blocks (so no single-line `run:` command exists to embed
+// verbatim), append a "donor" non-deploy-named workflow whose
+// `firstRunCommand` is non-null. The donor runbook embeds its own
+// workflow's verbatim run line. This keeps Phase C metric 4 satisfiable
+// without requiring `deployStory` to be non-null on every repo shape.
 
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -60,35 +59,35 @@ function applyTemplate(template: string, bindings: Record<string, string>): stri
 
 // Returns the subset of `workflows` that should each get a runbook emitted.
 //
-// Selection order:
+// Selection:
 //   1. All deploy-named workflows (name matches DEPLOY_NAME_REGEX).
-//   2. If NONE of the chosen workflows has a `firstRunCommand`, append the
-//      first non-deploy-named workflow that DOES have one. This ensures
-//      Phase C metric 4 ("runbook body contains a verbatim CI run: line")
-//      stays satisfiable on repos whose deploy is composite-action or
-//      gitops-driven (sage3c: promote-to-prod is all multi-line `run: |`,
-//      build-images is all multi-line — neither yields a verbatim
-//      single-line run candidate the validator's regex catches). The
-//      runbook for the "donor" workflow cites only that workflow's path
-//      and command; we don't synthesize cross-workflow attributions.
-//   3. Capped at MAX_RUNBOOKS overall.
+//   2. If NONE of the deploy-named workflows has a `firstRunCommand`,
+//      append the first non-deploy-named workflow that DOES have one.
+//      This ensures Phase C metric 4 ("runbook body contains a verbatim
+//      CI run: line") stays satisfiable on repos whose deploy is composite-
+//      action or gitops-driven (sage3c's promote-to-prod is all multi-line
+//      `run: |`; build-images is all multi-line — neither yields a
+//      verbatim single-line run candidate the validator's regex catches).
+//      The runbook for the "donor" workflow cites only that workflow's
+//      path and command; we don't synthesize cross-workflow attributions.
+//   3. Capped at MAX_RUNBOOKS overall — when a donor is needed, cap the
+//      deploy-named slice to MAX_RUNBOOKS-1 first so the donor isn't
+//      sliced off (caught by gemini critic on the first round).
 function selectRunbookWorkflows(workflows: readonly Workflow[]): Workflow[] {
   const deployNamed = workflows.filter((w) => DEPLOY_NAME_REGEX.test(w.name));
   const haveAVerbatimRun = deployNamed.some((w) => w.firstRunCommand);
   if (haveAVerbatimRun || deployNamed.length === 0) {
-    // Either we already have a verbatim donor among deploy-named workflows,
-    // OR there are no deploy-named workflows at all and the existing
-    // behavior (empty output) is intentional.
     return deployNamed.slice(0, MAX_RUNBOOKS);
   }
-  // Find a fallback donor: first workflow with a firstRunCommand that ISN'T
-  // already in the deploy-named set.
   const deployPaths = new Set(deployNamed.map((w) => w.path));
   const donor = workflows.find(
     (w) => !deployPaths.has(w.path) && w.firstRunCommand,
   );
-  const combined = donor ? [...deployNamed, donor] : deployNamed;
-  return combined.slice(0, MAX_RUNBOOKS);
+  if (!donor) return deployNamed.slice(0, MAX_RUNBOOKS);
+  // Reserve a slot for the donor so it isn't sliced off when the
+  // deploy-named set already meets/exceeds the cap.
+  const cappedDeploy = deployNamed.slice(0, MAX_RUNBOOKS - 1);
+  return [...cappedDeploy, donor];
 }
 
 export const runbookSeeder: Seeder = {
@@ -113,25 +112,20 @@ export const runbookSeeder: Seeder = {
         : "";
 
       // Triggering body precedence:
-      //   1. Primary deploy workflow → render `deployStory.command` (covers
-      //      DEPLOY_VERB matches, composite-action `uses:` refs, and gitops
-      //      first-block lines — all surfaced by the analyzer).
+      //   1. Primary deploy workflow → render the verbatim `deployStory.command`
+      //      from the verb-matched `run:` step.
       //   2. Otherwise, if the workflow has its own `firstRunCommand`, embed
       //      THAT verbatim line (provenance-correct: the runbook for
       //      workflow X cites a `run:` line from workflow X's own body).
+      //      This is the path that flips Phase C metric 4 on repos whose
+      //      deploy-named workflows lack a single-line `run:` (the donor
+      //      pattern from #138).
       //   3. Otherwise, a structural pointer to the workflow file.
       let triggering_body: string;
       if (isPrimaryDeploy && analysis.ci.deployStory) {
-        const cmd = analysis.ci.deployStory.command;
-        const target = analysis.ci.deployStory.target;
-        const intro =
-          target === "composite-action"
-            ? `The workflow is driven by a composite GitHub Action (captured verbatim from \`${w.path}\`):`
-            : target === "gitops"
-              ? `The workflow runs a gitops promotion (first non-trivial line captured verbatim from \`${w.path}\`):`
-              : `The workflow runs the following command (captured verbatim from \`${w.path}\`):`;
         triggering_body =
-          `${intro}\n\n\`\`\`\n${cmd}\n\`\`\`\n\n` +
+          `The workflow runs the following command (captured verbatim from \`${w.path}\`):\n\n` +
+          "```\n" + analysis.ci.deployStory.command + "\n```\n\n" +
           "To trigger manually outside the workflow's normal triggers, use `gh workflow run`.";
       } else if (w.firstRunCommand) {
         triggering_body =

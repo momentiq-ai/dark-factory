@@ -328,11 +328,7 @@
         "firstRunCommand": null
       }
     ],
-    "deployStory": {
-      "workflowPath": ".github/workflows/build-images.yml",
-      "command": "if [[ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]]; then",
-      "target": "other"
-    }
+    "deployStory": null
   },
   "tree": {
     "topLevelDirs": [

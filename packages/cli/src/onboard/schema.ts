@@ -40,13 +40,15 @@ const WorkflowSchema = z.object({
   jobs: z.array(z.string()),
   matrixDimensions: z.array(z.string()),
   // First non-trivial single-line `run:` command in the workflow (>10 chars,
-  // not a YAML block scalar marker like `|`/`>`). null when the workflow has
-  // only multi-line `run: |` blocks or `uses:`-only composite-action steps.
-  // Added in fix #138 so the runbook seeder can embed a verbatim CI line in
-  // workflows whose deploy semantics are gitops / composite-action driven
-  // (sage3c's promote-to-prod is all multi-line; release-please-action is
-  // composite). Phase C metric 4 ("runbook contains verbatim CI run: line")
-  // requires a single-line run on at least one emitted runbook's workflow.
+  // not a YAML block scalar marker like `|`/`>`). null when the workflow
+  // has only multi-line `run: |` blocks or `uses:`-only steps. Consumed by
+  // the runbook seeder's donor fallback (issue #138): on repos whose
+  // deploy-named workflows have no single-line `run:`, the seeder appends
+  // the first non-deploy-named workflow with a `firstRunCommand` so Phase C
+  // metric 4 ("runbook contains verbatim CI run: line") stays satisfiable.
+  // The validator's metric-4 candidate-line regex matches the same shape;
+  // capturing via parsed-YAML would silently lose the single-vs-multiline
+  // distinction (raw-text extraction is intentional — see ci.ts).
   firstRunCommand: z.string().nullable(),
 });
 
@@ -61,15 +63,6 @@ const DeployStorySchema = z.object({
     "vercel",
     "fly",
     "kubernetes",
-    // Composite-action deploys (release-please-action, vercel-action, etc.):
-    // the workflow IS the deploy but has no single canonical `run:` line.
-    // `command` carries the `uses:` reference (e.g. "googleapis/release-please-action@v4").
-    "composite-action",
-    // Gitops deploys (e.g. promote-to-prod that does `git push` to commit
-    // an image-digest manifest that ArgoCD/Flux reconciles): `command`
-    // carries the first non-trivial line from the workflow's multi-line
-    // `run: |` block(s).
-    "gitops",
     "other",
   ]),
 });
