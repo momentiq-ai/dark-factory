@@ -4,7 +4,7 @@ import { resolve as resolvePath } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 import { ensureCopierInstalled, runCopierUpdate } from "../copier.js";
-import { getBundleInfo } from "../template-resolver.js";
+import { getBundledTemplatePath, getBundleInfo } from "../template-resolver.js";
 
 export interface UpdateOptions {
   /** Path to the scaffolded product (defaults to cwd). */
@@ -45,10 +45,31 @@ export async function runUpdate(opts: UpdateOptions): Promise<number> {
   printDrift(answers, bundle, opts.dryRun);
 
   // 4. Run copier update. Copier reads .copier-answers.yml internally
-  //    to find the template; we just give it the working dir.
-  const updateOpts: Parameters<typeof runCopierUpdate>[0] = { destination };
+  //    to find the template; we pass the destination as the working
+  //    dir AND the trusted bundled template path so runCopierUpdate
+  //    can verify the destination's _src_path matches before invoking
+  //    `copier update --trust` (otherwise a hostile _src_path could
+  //    redirect --trust into an attacker-controlled template's _tasks).
+  let trustedTemplatePath: string;
+  try {
+    trustedTemplatePath = getBundledTemplatePath();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`error: ${message}\n`);
+    return 1;
+  }
+  const updateOpts: Parameters<typeof runCopierUpdate>[0] = {
+    destination,
+    trustedTemplatePath,
+  };
   if (opts.dryRun) updateOpts.dryRun = true;
-  return runCopierUpdate(updateOpts);
+  try {
+    return await runCopierUpdate(updateOpts);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`error: ${message}\n`);
+    return 1;
+  }
 }
 
 function readCopierAnswers(path: string): CopierAnswers {
