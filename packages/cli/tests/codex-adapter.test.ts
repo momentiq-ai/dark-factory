@@ -1696,15 +1696,33 @@ test("detectSandboxInitFailureInItems skips malformed items (defense in depth)",
   expect_eq(detectSandboxInitFailureInItems(items as unknown[]), null);
 });
 
-test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with FAILED command items → adapter degrades to status:error (issue #109)", async () => {
-  // This is the canonical issue #109 scenario: a hosted W3 worker's
-  // bwrap sandbox fails at startup, every diff-read attempt comes back
-  // with `status: "failed"` and the bwrap citation in aggregated_output,
-  // and the model fabricates a "blocker" finding citing the unread diff.
-  // The adapter MUST detect the environmental failure FROM THE FAILED
-  // COMMAND ITEMS (not from finalResponse alone, per PR #112 codex
-  // blocker — see PR #112 tests below) and emit status:error so the
-  // quorum aggregator can degrade per policy.
+test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with FAILED command items → adapter filters fabricated finding + flips verdict to APPROVED (issue #148 supersedes #109)", async () => {
+  // Canonical #109 scenario rewritten for the #148 narrowing.
+  //
+  // Before #148: the adapter detected the bwrap citation in the failed
+  // command_execution items and discarded the entire run as
+  // `sandbox_init_failure`. That suppressed the model's fabricated
+  // blocker (good) but ALSO suppressed valid completions (bad —
+  // GPT-5.5 on GKE Autopilot was silently degraded in
+  // consumer dark-factory-platform#289).
+  //
+  // After #148: the adapter still detects the bwrap citation but treats
+  // it as a finding-level filter — drop findings whose `evidence`
+  // substring-cites the same failure, trust the rest of the model's
+  // response. If the verdict was CHANGES_REQUESTED on the strength of
+  // those dropped findings alone, flip to APPROVED so codex contributes
+  // a non-blocking gate signal instead of silently dropping out of
+  // quorum.
+  //
+  // Net effect for this scenario (model fabricated one bwrap-citing
+  // blocker, no other findings):
+  //   - findings: 0 (fabricated dropped)
+  //   - verdict: APPROVED (flipped from CHANGES_REQUESTED because all
+  //     fabricated findings were dropped)
+  //   - status: complete (no longer error; codex is back in quorum)
+  //   - telemetry: critic_run_sandbox_filtered emitted carrying
+  //     droppedFindingCount=1, sandboxCitation, and
+  //     verdictFlippedToApproved=true
   const fabricatedFindingJson = JSON.stringify({
     status: "complete",
     verdict: "CHANGES_REQUESTED",
@@ -1752,42 +1770,42 @@ test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with F
   });
   expect_eq(
     result.status,
-    "error",
-    "MUST degrade to status:error instead of admitting the fabricated CHANGES_REQUESTED",
+    "complete",
+    "MUST stay complete so codex contributes to quorum (the original #109 fabricated blocker is suppressed via the finding filter, not via discarding the run)",
   );
-  expect_eq(result.verdict, undefined, "no verdict on error path");
-  expect_eq(result.findings.length, 0, "no findings on error path");
   expect_eq(
-    result.error?.code,
+    result.verdict,
+    "APPROVED",
+    "MUST flip from CHANGES_REQUESTED to APPROVED because the only finding (a bwrap-citing fabricated blocker) was dropped — preserves codex's gating contribution without admitting the fabricated finding",
+  );
+  expect_eq(
+    result.findings.length,
+    0,
+    "the single fabricated bwrap-citing finding MUST be filtered out",
+  );
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent, "telemetry MUST emit critic_run_sandbox_filtered for runbook grep");
+  expect_eq(
+    filterEvent?.errorCode,
     SANDBOX_INIT_FAILURE_CODE,
-    "error envelope MUST carry the sandbox_init_failure code so operators can grep _runs.ndjson",
+    "filter event MUST tag the sandbox_init_failure code so operators can correlate to the run cause",
   );
-  expect_eq(
-    result.error?.retryable,
-    false,
-    "sandbox init failure is environmental — retrying inside the same broken container wastes budget",
-  );
+  expect_eq(filterEvent?.droppedFindingCount, 1);
+  expect_eq(filterEvent?.verdictFlippedToApproved, true);
   expect_match(
-    result.error?.message ?? "",
+    filterEvent?.sandboxCitation ?? "",
     /bwrap: No permissions to create a new namespace/,
-    "error detail MUST cite the literal environmental error so operators can debug the container",
-  );
-  const errEvent = events.find(
-    (e) => e.event === "critic_run_error" && e.errorCode === SANDBOX_INIT_FAILURE_CODE,
-  );
-  expect_truthy(
-    errEvent,
-    "telemetry MUST emit a critic_run_error tagged sandbox_init_failure for runbook grep",
+    "filter event MUST carry the literal stderr citation so operators can debug the container",
   );
 });
 
-test("review: bwrap citation in command_execution.aggregated_output → adapter degrades to status:error even if finalResponse looks clean", async () => {
-  // Stronger variant of the issue #109 scenario: the model might emit
-  // a syntactically-clean JSON envelope (e.g., approved-looking final
-  // response after partial recovery) while the underlying tool calls
-  // returned bwrap citations in their outputs. The item scan is the
-  // primary detection point — if any command the model issued failed
-  // with a sandbox-init citation, the entire run cannot be trusted.
+test("review: bwrap in command items but model returned clean APPROVED → adapter passes the APPROVED through unchanged (issue #148 / #289)", async () => {
+  // Direct repro of the dark-factory-platform#289 regression: GPT-5.5
+  // on GKE Autopilot correctly handles the bwrap failure — it notes
+  // the missing workspace inspection in qualityGatesMissing and emits
+  // a clean APPROVED with no fabricated findings. Pre-#148 the adapter
+  // discarded this valid completion; post-#148 it passes through.
+  const events: TelemetryEvent[] = [];
   const mockClient = makeMockClient({
     run: async () =>
       makeTurn({
@@ -1810,10 +1828,91 @@ test("review: bwrap citation in command_execution.aggregated_output → adapter 
   });
   const result = await adapter.review(PACKET, CRITIC, {
     blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
   });
-  expect_eq(result.status, "error");
-  expect_eq(result.error?.code, SANDBOX_INIT_FAILURE_CODE);
-  expect_match(result.error?.message ?? "", /command_execution/);
+  expect_eq(
+    result.status,
+    "complete",
+    "MUST stay complete — the model handled the failure correctly and emitted a valid response (#289)",
+  );
+  expect_eq(
+    result.verdict,
+    "APPROVED",
+    "MUST preserve the model's APPROVED — no fabricated findings to filter, no verdict flip",
+  );
+  expect_eq(result.findings.length, 0);
+  // Telemetry: filter event STILL fires (with droppedFindingCount=0 and
+  // verdictFlippedToApproved=false) so operators can grep these runs and
+  // correlate the deferred shell inspection to the bwrap citation in the
+  // container, even when the model's response was unaffected.
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent, "filter event MUST fire even when no findings were dropped");
+  expect_eq(filterEvent?.droppedFindingCount, 0);
+  expect_eq(filterEvent?.verdictFlippedToApproved, false);
+});
+
+test("review: bwrap in command items but model returned real findings (no bwrap evidence) → adapter preserves verdict + findings (#148)", async () => {
+  // Mixed scenario: bwrap fired inside the sandbox so the model
+  // couldn't run its shell exploration, but the model derived genuine
+  // findings from the prompt-embedded diff. The adapter MUST preserve
+  // those findings and the CHANGES_REQUESTED verdict — only fabricated
+  // bwrap-citing findings get dropped.
+  const realFindingJson = JSON.stringify({
+    status: "complete",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: false,
+    summary: "One real finding from the inline diff.",
+    findings: [
+      {
+        severity: "high",
+        category: "contracts",
+        file: "src/handler.ts",
+        line: 42,
+        evidence: "The exported handler now returns a Promise that is not awaited by the caller in src/index.ts; the response shape regresses to the unwrapped form.",
+        impact: "Downstream consumers asserting the wrapped shape will see a runtime TypeError.",
+        requiredFix: "Re-wrap the resolved value before returning, or update the caller to await.",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: realFindingJson,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff'",
+            aggregated_output: BWRAP_NAMESPACE_FAILURE,
+            status: "failed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(
+    result.verdict,
+    "CHANGES_REQUESTED",
+    "MUST preserve the model's CHANGES_REQUESTED — there's a real (non-bwrap-citing) finding",
+  );
+  expect_eq(result.findings.length, 1, "the real finding MUST survive the filter");
+  expect_eq(result.findings[0]?.severity, "high");
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent);
+  expect_eq(filterEvent?.droppedFindingCount, 0);
+  expect_eq(filterEvent?.verdictFlippedToApproved, false);
 });
 
 test("review: SDK throws Error whose message cites bwrap → adapter classifies as permanent sandbox_init_failure (no retries)", async () => {

@@ -1050,7 +1050,22 @@ export interface TelemetryEvent {
     // source. Operators grep this event family to audit which
     // findings were demoted during a review run without re-walking
     // the artifact JSON.
-    | "critic_disagreement";
+    | "critic_disagreement"
+    // Issue #148 — emitted by the codex adapter when a known
+    // sandbox-init failure citation (bwrap user-namespace,
+    // landlock ruleset, etc.) appeared in a command_execution item
+    // AND the post-parse filter dropped one or more findings whose
+    // `evidence` cited the same failure (the #109 model-fabrication
+    // pattern). Payload (via the standard optional fields below):
+    //   - errorCode = "sandbox_init_failure"
+    //   - droppedFindingCount = N (count of fabricated findings dropped)
+    //   - sandboxCitation = the literal stderr line
+    //   - verdictFlippedToApproved = true iff the model's verdict was
+    //     CHANGES_REQUESTED on the strength of dropped findings alone
+    //     (so the adapter flipped to APPROVED post-filter)
+    // Supersedes PR #112's whole-run discard for the same symptom —
+    // see the long-form comment in `codex-sdk.ts` § attemptReview.
+    | "critic_run_sandbox_filtered";
   commit?: string;
   criticId?: string;
   adapter?: string;
@@ -1079,6 +1094,11 @@ export interface TelemetryEvent {
   errorCode?: string;
   statusMessage?: CriticStatusMessage;
   retryCount?: number;
+  // Issue #148 — populated on `critic_run_sandbox_filtered` events. See the
+  // event-tag comment above for semantics.
+  droppedFindingCount?: number;
+  sandboxCitation?: string;
+  verdictFlippedToApproved?: boolean;
   // Cycle 322.3 — quorum-aware review_finished telemetry. Populated
   // by `runner.runReview` from `quorumAggregateVerdict` regardless
   // of which aggregation policy is live: under the shadow-mode
