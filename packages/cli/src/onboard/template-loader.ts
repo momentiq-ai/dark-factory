@@ -4,7 +4,8 @@
 // Resolves a templateRef (gh:<owner>/<repo>@<ref> | file://<abs>@<ref>) to a
 // content-addressed cache directory, then walks the directory and returns
 // the file set (subject to the Phase B filter rules: no .git/node_modules,
-// ≤ 64 KB per file, no binary, ≤ 200 entries total).
+// ≤ 64 KB per file, no binary, ≤ MAX_TEMPLATE_FILES entries total — see
+// the constant definition below for the current value).
 //
 // Cache key is the resolved sha — so `latest` and the sha it resolves to
 // share one entry, no churn on re-runs.
@@ -34,7 +35,14 @@ export type { ParsedTemplateRef, GhTemplateRef, FileTemplateRef };
 
 const ex = promisify(execFile);
 
-export const MAX_TEMPLATE_FILES = 200;
+// Raise-don't-filter: sage-blueprint's file inventory is intentional template
+// content (Copier `.jinja` outputs, backend + frontend source, configs), so
+// extension-whitelisting or expanding SKIP_DIRS would drop structural files
+// the LLM needs to see. The 64 KB per-file ceiling + binary-skip are the
+// real backstops; this cap is the count tripwire. See #140 for the original
+// 200→ raise rationale. (A total-bytes cap for the assembled prompt is a
+// follow-up — tracked separately so it can land with end-to-end metering.)
+export const MAX_TEMPLATE_FILES = 1000;
 export const MAX_TEMPLATE_FILE_SIZE = 65_536;
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build"]);
 
@@ -140,7 +148,8 @@ async function walkTemplate(rootDir: string): Promise<TemplateFile[]> {
       if (out.length > MAX_TEMPLATE_FILES) {
         throw new Error(
           `df onboard: template file count exceeds ${MAX_TEMPLATE_FILES}. ` +
-            "Reduce the template surface or raise MAX_TEMPLATE_FILES (cycle 15 Phase B / B-D4).",
+            "Reduce the template surface or raise MAX_TEMPLATE_FILES " +
+            "(see #140 for the rationale behind the current ceiling).",
         );
       }
     }
