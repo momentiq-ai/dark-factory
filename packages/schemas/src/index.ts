@@ -1050,7 +1050,31 @@ export interface TelemetryEvent {
     // source. Operators grep this event family to audit which
     // findings were demoted during a review run without re-walking
     // the artifact JSON.
-    | "critic_disagreement";
+    | "critic_disagreement"
+    // Issue #148 — emitted by the codex adapter once per run on which a
+    // known sandbox-init failure citation (bwrap user-namespace, landlock
+    // ruleset, etc.) appeared in a command_execution item AND the model's
+    // response was successfully parsed. ALWAYS emitted when these
+    // conditions hold — even when `droppedFindingCount: 0` and
+    // `verdictFlippedToApproved: false` (i.e., the citation appeared but
+    // the model's response was unaffected by it). The "always emit"
+    // semantic gives operators a single grep handle for "codex ran into
+    // bwrap" regardless of whether the filter had to act, so runbooks
+    // can correlate the deferred shell inspection to the container
+    // posture even on runs the model handled correctly.
+    //
+    // Payload (via the standard optional fields below):
+    //   - errorCode = "sandbox_init_failure"
+    //   - droppedFindingCount = N (count of fabricated findings dropped;
+    //     may be 0 when the model handled the failure correctly)
+    //   - sandboxCitation = the literal stderr line
+    //   - verdictFlippedToApproved = true iff the model's verdict was
+    //     CHANGES_REQUESTED on the strength of dropped findings alone
+    //     (so the adapter flipped to APPROVED post-filter); false when
+    //     the verdict was preserved (including the no-drops case).
+    // Supersedes PR #112's whole-run discard for the same symptom —
+    // see the long-form comment in `codex-sdk.ts` § attemptReview.
+    | "critic_run_sandbox_filtered";
   commit?: string;
   criticId?: string;
   adapter?: string;
@@ -1079,6 +1103,11 @@ export interface TelemetryEvent {
   errorCode?: string;
   statusMessage?: CriticStatusMessage;
   retryCount?: number;
+  // Issue #148 — populated on `critic_run_sandbox_filtered` events. See the
+  // event-tag comment above for semantics.
+  droppedFindingCount?: number;
+  sandboxCitation?: string;
+  verdictFlippedToApproved?: boolean;
   // Cycle 322.3 — quorum-aware review_finished telemetry. Populated
   // by `runner.runReview` from `quorumAggregateVerdict` regardless
   // of which aggregation policy is live: under the shadow-mode

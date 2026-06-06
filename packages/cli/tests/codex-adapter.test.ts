@@ -37,6 +37,7 @@ import {
   SANDBOX_INIT_FAILURE_CODE,
   detectSandboxInitFailure,
   detectSandboxInitFailureInItems,
+  isFabricatedSandboxFinding,
   resolveCodexSandboxMode,
   type CodexClient,
   type CodexSandboxMode,
@@ -1696,15 +1697,191 @@ test("detectSandboxInitFailureInItems skips malformed items (defense in depth)",
   expect_eq(detectSandboxInitFailureInItems(items as unknown[]), null);
 });
 
-test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with FAILED command items → adapter degrades to status:error (issue #109)", async () => {
-  // This is the canonical issue #109 scenario: a hosted W3 worker's
-  // bwrap sandbox fails at startup, every diff-read attempt comes back
-  // with `status: "failed"` and the bwrap citation in aggregated_output,
-  // and the model fabricates a "blocker" finding citing the unread diff.
-  // The adapter MUST detect the environmental failure FROM THE FAILED
-  // COMMAND ITEMS (not from finalResponse alone, per PR #112 codex
-  // blocker — see PR #112 tests below) and emit status:error so the
-  // quorum aggregator can degrade per policy.
+// ---------------------------------------------------------------------------
+// Issue #148 — direct unit tests for `isFabricatedSandboxFinding`.
+// PR #149 round-1 cursor finding: the function is documented as
+// "exported for direct unit testing" but only had indirect coverage via
+// full review mocks. These tests cover each gate (evidence-match alone,
+// requiredFix-match alone, both, neither), each pattern in
+// FABRICATED_EVIDENCE_PATTERNS, mid-sentence vs backtick-quoted citations,
+// and the empty/missing-field guards.
+// ---------------------------------------------------------------------------
+
+test("isFabricatedSandboxFinding: returns true only when BOTH evidence cites bwrap AND requiredFix proposes an environment switch", () => {
+  // Both gates: drop.
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence: `the diff read failed with \`${BWRAP_NAMESPACE_FAILURE}\``,
+      requiredFix: "rerun in an environment with a working sandbox",
+    }),
+    true,
+    "fabricated #109 pattern — both gates fire",
+  );
+});
+
+test("isFabricatedSandboxFinding: returns false when only evidence cites bwrap (real finding quoting the citation, fix proposes code change)", () => {
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence:
+        `the regex literal at line 582 mirrors the exact stderr line \`${BWRAP_NAMESPACE_FAILURE}\` — verify intent`,
+      requiredFix:
+        "fix the multiline anchor in the second pattern to match the exact column-0 stderr emission",
+    }),
+    false,
+    "real code-review finding that quotes the canonical citation as evidence — MUST NOT drop",
+  );
+});
+
+test("isFabricatedSandboxFinding: returns false when only requiredFix mentions sandbox/environment (model proposed an env switch for a non-sandbox reason)", () => {
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence:
+        "the docker build step in CI is failing because the runner lacks Docker-in-Docker support",
+      requiredFix: "rerun this job in an environment with Docker daemon access (e.g. a self-hosted runner)",
+    }),
+    false,
+    "real CI-environment finding (no bwrap in evidence) — MUST NOT drop",
+  );
+});
+
+test("isFabricatedSandboxFinding: returns false when neither field matches", () => {
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence: "the exported handler now returns Promise<void> instead of the documented Promise<Result>",
+      requiredFix: "re-wrap the resolved value or update the Result type to allow void",
+    }),
+    false,
+    "normal code-review finding — neither gate hits",
+  );
+});
+
+test("isFabricatedSandboxFinding: empty / missing evidence → false (not enough signal to classify)", () => {
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence: "",
+      requiredFix: "rerun in a working sandbox",
+    }),
+    false,
+    "empty evidence — cannot classify as fabricated",
+  );
+  expect_eq(
+    isFabricatedSandboxFinding({
+      requiredFix: "rerun in a working sandbox",
+    }),
+    false,
+    "missing evidence — cannot classify as fabricated",
+  );
+});
+
+test("isFabricatedSandboxFinding: empty / missing requiredFix → false (not enough signal to classify)", () => {
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence: `the diff read failed with \`${BWRAP_NAMESPACE_FAILURE}\``,
+      requiredFix: "",
+    }),
+    false,
+    "empty requiredFix — cannot classify as fabricated",
+  );
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence: `the diff read failed with \`${BWRAP_NAMESPACE_FAILURE}\``,
+    }),
+    false,
+    "missing requiredFix — cannot classify as fabricated",
+  );
+});
+
+test("isFabricatedSandboxFinding: round-2 narrowing — benign code-review fixes paired with bwrap-citing evidence MUST NOT classify as fabricated", () => {
+  // PR #149 round-2 cursor BLOCKER (codex-sdk.ts:624): the previous
+  // `(working|different|another|new|a)\s+(sandbox|environment|container|host|kernel)`
+  // pattern was too broad — it matched benign code-review recommendations
+  // that mention these tokens. The round-2 narrowing pairs the tokens
+  // with explicit "rerun", "working/functional", or env-with-bwrap
+  // qualifiers. Verify the listed corner cases pass through (= not
+  // classified as fabricated) even when paired with bwrap-quoting
+  // evidence.
+  const evidenceWithBwrap = `the regex literal at line 582 mirrors the exact stderr line \`${BWRAP_NAMESPACE_FAILURE}\` — verify intent`;
+  const benignFixes = [
+    "Add regression coverage using a sandbox mock for the filter",
+    "Configure a different container image in docker-compose.yml",
+    "Add tests in a new environment module",
+    "Re-wrap the resolved value, or update the caller to await",
+    "Use a host-bound mount for the integration test fixtures",
+    "Move the regex to a new pattern array in src/patterns.ts",
+    "Run the existing tests with --watch to verify the assertion",
+  ];
+  for (const requiredFix of benignFixes) {
+    expect_eq(
+      isFabricatedSandboxFinding({ evidence: evidenceWithBwrap, requiredFix }),
+      false,
+      `benign code-review fix MUST NOT classify as fabricated: ${requiredFix}`,
+    );
+  }
+});
+
+test("isFabricatedSandboxFinding: each pattern in FABRICATED_EVIDENCE_PATTERNS hits when paired with a sandbox-rerun requiredFix", () => {
+  const requiredFix = "rerun in a working sandbox";
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence: "failed: bwrap: No permissions to create a new namespace",
+      requiredFix,
+    }),
+    true,
+    "bwrap user-namespace failure pattern",
+  );
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence: "Setting up seccomp failed - bwrap: Setting up seccomp failed",
+      requiredFix,
+    }),
+    true,
+    "bwrap seccomp failure pattern",
+  );
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence: "perm error: bwrap: setting up uid map: Permission denied",
+      requiredFix,
+    }),
+    true,
+    "bwrap uid-map failure pattern",
+  );
+  expect_eq(
+    isFabricatedSandboxFinding({
+      evidence: "landlock_create_ruleset: Operation not permitted on this kernel",
+      requiredFix,
+    }),
+    true,
+    "landlock ruleset failure pattern",
+  );
+});
+
+test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with FAILED command items → adapter filters fabricated finding + flips verdict to APPROVED (issue #148 supersedes #109)", async () => {
+  // Canonical #109 scenario rewritten for the #148 narrowing.
+  //
+  // Before #148: the adapter detected the bwrap citation in the failed
+  // command_execution items and discarded the entire run as
+  // `sandbox_init_failure`. That suppressed the model's fabricated
+  // blocker (good) but ALSO suppressed valid completions (bad —
+  // GPT-5.5 on GKE Autopilot was silently degraded in
+  // consumer dark-factory-platform#289).
+  //
+  // After #148: the adapter still detects the bwrap citation but treats
+  // it as a finding-level filter — drop findings whose `evidence`
+  // substring-cites the same failure, trust the rest of the model's
+  // response. If the verdict was CHANGES_REQUESTED on the strength of
+  // those dropped findings alone, flip to APPROVED so codex contributes
+  // a non-blocking gate signal instead of silently dropping out of
+  // quorum.
+  //
+  // Net effect for this scenario (model fabricated one bwrap-citing
+  // blocker, no other findings):
+  //   - findings: 0 (fabricated dropped)
+  //   - verdict: APPROVED (flipped from CHANGES_REQUESTED because all
+  //     fabricated findings were dropped)
+  //   - status: complete (no longer error; codex is back in quorum)
+  //   - telemetry: critic_run_sandbox_filtered emitted carrying
+  //     droppedFindingCount=1, sandboxCitation, and
+  //     verdictFlippedToApproved=true
   const fabricatedFindingJson = JSON.stringify({
     status: "complete",
     verdict: "CHANGES_REQUESTED",
@@ -1752,42 +1929,260 @@ test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with F
   });
   expect_eq(
     result.status,
-    "error",
-    "MUST degrade to status:error instead of admitting the fabricated CHANGES_REQUESTED",
+    "complete",
+    "MUST stay complete so codex contributes to quorum (the original #109 fabricated blocker is suppressed via the finding filter, not via discarding the run)",
   );
-  expect_eq(result.verdict, undefined, "no verdict on error path");
-  expect_eq(result.findings.length, 0, "no findings on error path");
   expect_eq(
-    result.error?.code,
+    result.verdict,
+    "APPROVED",
+    "MUST flip from CHANGES_REQUESTED to APPROVED because the only finding (a bwrap-citing fabricated blocker) was dropped — preserves codex's gating contribution without admitting the fabricated finding",
+  );
+  expect_eq(
+    result.findings.length,
+    0,
+    "the single fabricated bwrap-citing finding MUST be filtered out",
+  );
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent, "telemetry MUST emit critic_run_sandbox_filtered for runbook grep");
+  expect_eq(
+    filterEvent?.errorCode,
     SANDBOX_INIT_FAILURE_CODE,
-    "error envelope MUST carry the sandbox_init_failure code so operators can grep _runs.ndjson",
+    "filter event MUST tag the sandbox_init_failure code so operators can correlate to the run cause",
   );
-  expect_eq(
-    result.error?.retryable,
-    false,
-    "sandbox init failure is environmental — retrying inside the same broken container wastes budget",
-  );
+  expect_eq(filterEvent?.droppedFindingCount, 1);
+  expect_eq(filterEvent?.verdictFlippedToApproved, true);
   expect_match(
-    result.error?.message ?? "",
+    filterEvent?.sandboxCitation ?? "",
     /bwrap: No permissions to create a new namespace/,
-    "error detail MUST cite the literal environmental error so operators can debug the container",
-  );
-  const errEvent = events.find(
-    (e) => e.event === "critic_run_error" && e.errorCode === SANDBOX_INIT_FAILURE_CODE,
-  );
-  expect_truthy(
-    errEvent,
-    "telemetry MUST emit a critic_run_error tagged sandbox_init_failure for runbook grep",
+    "filter event MUST carry the literal stderr citation so operators can debug the container",
   );
 });
 
-test("review: bwrap citation in command_execution.aggregated_output → adapter degrades to status:error even if finalResponse looks clean", async () => {
-  // Stronger variant of the issue #109 scenario: the model might emit
-  // a syntactically-clean JSON envelope (e.g., approved-looking final
-  // response after partial recovery) while the underlying tool calls
-  // returned bwrap citations in their outputs. The item scan is the
-  // primary detection point — if any command the model issued failed
-  // with a sandbox-init citation, the entire run cannot be trusted.
+test("review: model emits CHANGES_REQUESTED with requiresHumanJudgment:true and only fabricated findings → filter drops findings, flips verdict AND clears requiresHumanJudgment (PR #149 round-2 cursor BLOCKER 1860)", async () => {
+  // The downstream gate vetoes any run where `requiresHumanJudgment: true`
+  // regardless of verdict. The Copilot finding on round 1 surfaced the
+  // gap (verdict-flip branch didn't clear it); the round-1 fix cleared it
+  // on flip. But round-2 cursor flagged the test gap: the existing #148
+  // test had `requiresHumanJudgment: false` as input so the assertion
+  // would pass even without the clearing line. This test exercises the
+  // actual path — input `requiresHumanJudgment: true`, ALL findings
+  // fabricated → both verdict flips AND requiresHumanJudgment clears.
+  const fabricatedWithHumanJudgmentJson = JSON.stringify({
+    status: "complete",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: true, // <-- load-bearing: gate vetoes on this regardless of verdict
+    summary: "Cannot verify the diff — escalating to human review.",
+    findings: [
+      {
+        severity: "blocker",
+        category: "contracts",
+        file: "README.md",
+        line: 138,
+        evidence:
+          `the attempted read commands failed with \`${BWRAP_NAMESPACE_FAILURE}\`; cannot verify`,
+        impact: "cannot verify the contracts surface",
+        requiredFix: "rerun in an environment with a working sandbox",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: fabricatedWithHumanJudgmentJson,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff'",
+            aggregated_output: BWRAP_NAMESPACE_FAILURE,
+            status: "failed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.verdict, "APPROVED", "verdict MUST flip — all findings were fabricated");
+  expect_eq(result.findings.length, 0);
+  expect_eq(
+    result.requiresHumanJudgment,
+    false,
+    "PR #149 round-2 cursor BLOCKER: requiresHumanJudgment MUST be cleared when verdict flips — the downstream gate vetoes the run regardless of verdict otherwise, defeating the whole filter. Without this assertion (true → false transition), the prior #148 test would pass even if the clearing code was deleted.",
+  );
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent);
+  expect_eq(filterEvent?.verdictFlippedToApproved, true);
+});
+
+test("review: 2 findings — one fabricated (bwrap evidence + sandbox-rerun requiredFix), one real (code evidence + code requiredFix) — adapter drops only the fabricated finding and preserves verdict (issue #148 mixed case)", async () => {
+  // PR #149 round-1 cursor BLOCKER: the prior 'mixed' test only had one
+  // real finding (no fabricated). This test exercises the load-bearing
+  // discrimination: when the model emits both a fabricated bwrap finding
+  // AND a real code finding in the same response, the fabricated one is
+  // dropped (both evidence and requiredFix gates hit) and the real one
+  // is preserved (only evidence quotes bwrap; requiredFix proposes a
+  // code change). Verdict stays CHANGES_REQUESTED because the real
+  // finding survives.
+  const mixedFindingsJson = JSON.stringify({
+    status: "complete",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: false,
+    summary: "One real finding from the inline diff; one fabricated finding citing bwrap.",
+    findings: [
+      {
+        // Fabricated: cites bwrap in BOTH evidence and requiredFix.
+        severity: "blocker",
+        category: "contracts",
+        file: "README.md",
+        line: 138,
+        evidence:
+          `attempted to read the diff but the command failed with \`${BWRAP_NAMESPACE_FAILURE}\`; could not verify`,
+        impact: "cannot verify the contracts surface",
+        requiredFix: "rerun in an environment with a working sandbox",
+      },
+      {
+        // Real: legit code finding from the inline diff.
+        severity: "high",
+        category: "contracts",
+        file: "src/handler.ts",
+        line: 42,
+        evidence:
+          "the exported handler now returns a Promise that is not awaited by the caller in src/index.ts; the response shape regresses to the unwrapped form",
+        impact: "Downstream consumers asserting the wrapped shape will see a runtime TypeError.",
+        requiredFix: "Re-wrap the resolved value before returning, or update the caller to await.",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: mixedFindingsJson,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff'",
+            aggregated_output: BWRAP_NAMESPACE_FAILURE,
+            status: "failed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(
+    result.verdict,
+    "CHANGES_REQUESTED",
+    "MUST preserve CHANGES_REQUESTED — the real high finding survives and warrants the verdict",
+  );
+  expect_eq(result.findings.length, 1, "ONLY the real finding MUST survive the filter");
+  expect_eq(result.findings[0]?.severity, "high");
+  expect_eq(result.findings[0]?.file, "src/handler.ts");
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent);
+  expect_eq(filterEvent?.droppedFindingCount, 1);
+  expect_eq(filterEvent?.verdictFlippedToApproved, false);
+});
+
+test("review: real finding whose evidence quotes bwrap, requiredFix proposes a CODE change (no env switch) — adapter preserves it (issue #148 corner case)", async () => {
+  // Cursor PR #149 round-1 BLOCKER (codex-sdk.ts:1205): the previous
+  // narrowing on `evidence` alone would discard a legitimate finding
+  // whose evidence happens to quote the canonical bwrap citation —
+  // e.g., a PR reviewing the bwrap pattern list itself (like #149's
+  // own diff). The discriminator is `requiredFix`: a legitimate code
+  // review recommends a code change, not an environment switch.
+  // Verify the filter passes this case through unchanged EVEN WHEN
+  // command_execution items carry the bwrap citation (the gating
+  // condition for the filter to fire at all).
+  const realFindingWithBwrapQuoteJson = JSON.stringify({
+    status: "complete",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: false,
+    summary: "The pattern list intentionally includes the bwrap citation as a canonical reference.",
+    findings: [
+      {
+        severity: "high",
+        category: "naming",
+        file: "packages/cli/src/adapters/codex-sdk.ts",
+        line: 582,
+        evidence:
+          `the regex literal /^bwrap:\\s+No permissions to create a new namespace/im at line 582 mirrors the codex CLI's exact stderr; the canonical reference is correct`,
+        impact: "no functional impact; pattern list is the canonical reference list per #109",
+        requiredFix:
+          "fix the anchor in the second pattern to match the exact stderr column before merging",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: realFindingWithBwrapQuoteJson,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff'",
+            aggregated_output: BWRAP_NAMESPACE_FAILURE,
+            status: "failed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(
+    result.verdict,
+    "CHANGES_REQUESTED",
+    "real finding MUST survive — requiredFix proposes a code change, not an environment switch",
+  );
+  expect_eq(result.findings.length, 1);
+  expect_eq(result.findings[0]?.line, 582);
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent);
+  expect_eq(filterEvent?.droppedFindingCount, 0);
+  expect_eq(filterEvent?.verdictFlippedToApproved, false);
+});
+
+test("review: bwrap in command items but model returned clean APPROVED → adapter passes the APPROVED through unchanged (issue #148 / #289)", async () => {
+  // Direct repro of the dark-factory-platform#289 regression: GPT-5.5
+  // on GKE Autopilot correctly handles the bwrap failure — it notes
+  // the missing workspace inspection in qualityGatesMissing and emits
+  // a clean APPROVED with no fabricated findings. Pre-#148 the adapter
+  // discarded this valid completion; post-#148 it passes through.
+  const events: TelemetryEvent[] = [];
   const mockClient = makeMockClient({
     run: async () =>
       makeTurn({
@@ -1810,10 +2205,91 @@ test("review: bwrap citation in command_execution.aggregated_output → adapter 
   });
   const result = await adapter.review(PACKET, CRITIC, {
     blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
   });
-  expect_eq(result.status, "error");
-  expect_eq(result.error?.code, SANDBOX_INIT_FAILURE_CODE);
-  expect_match(result.error?.message ?? "", /command_execution/);
+  expect_eq(
+    result.status,
+    "complete",
+    "MUST stay complete — the model handled the failure correctly and emitted a valid response (#289)",
+  );
+  expect_eq(
+    result.verdict,
+    "APPROVED",
+    "MUST preserve the model's APPROVED — no fabricated findings to filter, no verdict flip",
+  );
+  expect_eq(result.findings.length, 0);
+  // Telemetry: filter event STILL fires (with droppedFindingCount=0 and
+  // verdictFlippedToApproved=false) so operators can grep these runs and
+  // correlate the deferred shell inspection to the bwrap citation in the
+  // container, even when the model's response was unaffected.
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent, "filter event MUST fire even when no findings were dropped");
+  expect_eq(filterEvent?.droppedFindingCount, 0);
+  expect_eq(filterEvent?.verdictFlippedToApproved, false);
+});
+
+test("review: bwrap in command items but model returned real findings (no bwrap evidence) → adapter preserves verdict + findings (#148)", async () => {
+  // Mixed scenario: bwrap fired inside the sandbox so the model
+  // couldn't run its shell exploration, but the model derived genuine
+  // findings from the prompt-embedded diff. The adapter MUST preserve
+  // those findings and the CHANGES_REQUESTED verdict — only fabricated
+  // bwrap-citing findings get dropped.
+  const realFindingJson = JSON.stringify({
+    status: "complete",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: false,
+    summary: "One real finding from the inline diff.",
+    findings: [
+      {
+        severity: "high",
+        category: "contracts",
+        file: "src/handler.ts",
+        line: 42,
+        evidence: "The exported handler now returns a Promise that is not awaited by the caller in src/index.ts; the response shape regresses to the unwrapped form.",
+        impact: "Downstream consumers asserting the wrapped shape will see a runtime TypeError.",
+        requiredFix: "Re-wrap the resolved value before returning, or update the caller to await.",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: realFindingJson,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff'",
+            aggregated_output: BWRAP_NAMESPACE_FAILURE,
+            status: "failed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(
+    result.verdict,
+    "CHANGES_REQUESTED",
+    "MUST preserve the model's CHANGES_REQUESTED — there's a real (non-bwrap-citing) finding",
+  );
+  expect_eq(result.findings.length, 1, "the real finding MUST survive the filter");
+  expect_eq(result.findings[0]?.severity, "high");
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent);
+  expect_eq(filterEvent?.droppedFindingCount, 0);
+  expect_eq(filterEvent?.verdictFlippedToApproved, false);
 });
 
 test("review: SDK throws Error whose message cites bwrap → adapter classifies as permanent sandbox_init_failure (no retries)", async () => {

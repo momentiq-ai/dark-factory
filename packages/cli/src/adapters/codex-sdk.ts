@@ -585,6 +585,67 @@ const SANDBOX_INIT_FAILURE_PATTERNS: readonly RegExp[] = Object.freeze([
   /^landlock_create_ruleset:\s+Operation not permitted/im,
 ]) as readonly RegExp[];
 
+// Issue #148 — companion patterns for the SAME citations but matched as a
+// substring anywhere in a finding's `evidence` field, not anchored at column 0.
+// The model fabricates findings whose `evidence` string QUOTES the citation
+// mid-sentence (e.g., "the attempted read commands failed with `bwrap: No
+// permissions to create a new namespace`"). The line-anchored
+// SANDBOX_INIT_FAILURE_PATTERNS above intentionally do NOT match those quoted
+// occurrences (so they cannot misfire on a diff/source line that happens to
+// contain the citation). For the post-parse filter we want the opposite: a
+// substring match anywhere in the evidence string IS PART of the signal that
+// this finding was fabricated from a failed sandbox read. The trade-off is
+// safe because we only consult these patterns AGAINST the `evidence` field of
+// model-emitted findings — never against arbitrary diff/source content.
+const FABRICATED_EVIDENCE_PATTERNS: readonly RegExp[] = Object.freeze([
+  /bwrap:\s+No permissions to create a new namespace/i,
+  /bwrap:\s+Setting up seccomp failed/i,
+  /bwrap:\s+setting up uid map:\s+Permission denied/i,
+  /landlock_create_ruleset:\s+Operation not permitted/i,
+]) as readonly RegExp[];
+
+// Issue #148 — second discriminator on `requiredFix`. The #109 fabrication
+// pattern has a tell: the model recommends running the review in a different
+// environment ("rerun in an environment with a working sandbox", "run this
+// review on a host where bwrap is available") because it can't read the diff
+// from inside the broken container. A LEGITIMATE finding that happens to
+// quote bwrap as part of evidence (e.g. reviewing a PR that itself adds the
+// pattern list, like THIS very PR) has `requiredFix` recommending an actual
+// CODE change — not an environment switch.
+//
+// Both gates (evidence-substring AND requiredFix-substring) must hit before a
+// finding is classified as fabricated. This addresses the cursor BLOCKER
+// (codex-sdk.ts:1205 review on `df/codex-sdk-narrow-bwrap-discard`) — a real
+// CHANGES_REQUESTED finding whose evidence quotes the canonical citation
+// passes through unchanged because its `requiredFix` proposes a code action,
+// not an environment switch.
+//
+// PR #149 round-2 cursor BLOCKER (codex-sdk.ts:624 in the prior commit):
+// the previous broader `(working|different|another|new|a)\s+(sandbox|
+// environment|container|host|kernel)` pattern misclassified benign
+// code-review fixes like "Add a sandbox mock for the filter" or "Configure
+// a different container image in docker-compose.yml". Replaced with a
+// strictly narrower set: each pattern requires either an explicit "rerun"
+// directive, a sandbox-tech token paired with a host/posture qualifier
+// (working/functional/enabled bwrap/user-namespaces/landlock), or an
+// explicit IAM/capability grant. Pattern review under a corpus of benign
+// recommendations + the canonical #109 fabricated requiredFix shows:
+//   - "rerun in an environment with a working sandbox" → matches #1 + #2
+//   - "Add a sandbox mock for the filter"            → no match
+//   - "Configure a different container image"        → no match
+//   - "Add tests in a new environment module"        → no match
+//   - "Re-wrap the resolved value, or update the caller to await" → no match
+const SANDBOX_FIX_PATTERNS: readonly RegExp[] = Object.freeze([
+  /\bre-?run\s+(this|the)?\s*(review|critic|gate|job|run)?\s*in\s+(a|an|the)?\s*(working|different|broken|alternate|alternative)?\s*(sandbox|environment|container|host|machine|kernel)/i,
+  /\b(working|functional|enabled|properly[-\s]configured)\s+(sandbox|bwrap|user[\s_-]?namespaces?|landlock)\b/i,
+  /\bsysctl\s+kernel\./i,
+  /\benable\s+(unprivileged\s+)?user[\s_-]?namespaces?\b/i,
+  /\bgrant\s+(SYS_ADMIN|CAP_[A-Z_]+)\b/i,
+  /\brun\s+on\s+(a\s+host|a\s+machine|GitHub-?hosted|hardware|bare-?metal)\b/i,
+  /\b(where|with)\s+bwrap\b/i,
+  /\benvironment\s+(where|with)\s+(bwrap|landlock|sys_admin|cap_[a-z_]+|user[\s_-]?namespaces?)\b/i,
+]) as readonly RegExp[];
+
 /**
  * Issue #109 — scan a string for known environmental sandbox-init
  * failure signatures. Returns the FIRST matching substring (trimmed to
@@ -659,6 +720,45 @@ export function detectSandboxInitFailureInItems(items: readonly unknown[]): stri
     if (match !== null) return match;
   }
   return null;
+}
+
+/**
+ * Issue #148 — true if a finding is the #109 fabrication pattern: model cites
+ * the sandbox-init failure as evidence AND recommends running the review in a
+ * different environment (because it couldn't read the diff). Both gates must
+ * hit for the post-parse filter to drop the finding.
+ *
+ * Gate 1 (`evidence`): substring-matches a {@link FABRICATED_EVIDENCE_PATTERNS}
+ * entry. Distinct from the line-anchored
+ * {@link SANDBOX_INIT_FAILURE_PATTERNS} that scan stderr — here the citation
+ * appears mid-sentence inside the model's emitted `evidence`. Safe to
+ * substring-match because the only input is the model's `evidence` string,
+ * never arbitrary diff/source content.
+ *
+ * Gate 2 (`requiredFix`): substring-matches a {@link SANDBOX_FIX_PATTERNS}
+ * entry. This is the discriminator that lets the filter co-exist with
+ * legitimate findings whose `evidence` happens to quote the canonical bwrap
+ * citation — a legitimate finding recommends a CODE change in `requiredFix`
+ * (e.g. "verify intent of the regex literal", "fix the anchor"), not an
+ * environment switch ("rerun in a working sandbox", "run on a host with
+ * SYS_ADMIN"). The #109 fabricated finding has both gates set; a real
+ * finding that quotes the citation as context has only gate 1.
+ *
+ * Empty/missing `evidence` or `requiredFix` → returns false (not enough
+ * signal to classify as fabricated). Pure function — exported for direct
+ * unit testing.
+ */
+export function isFabricatedSandboxFinding(finding: {
+  evidence?: string;
+  requiredFix?: string;
+}): boolean {
+  const evidence = finding.evidence;
+  const requiredFix = finding.requiredFix;
+  if (typeof evidence !== "string" || evidence.length === 0) return false;
+  if (typeof requiredFix !== "string" || requiredFix.length === 0) return false;
+  const evidenceCitesBwrap = FABRICATED_EVIDENCE_PATTERNS.some((p) => p.test(evidence));
+  if (!evidenceCitesBwrap) return false;
+  return SANDBOX_FIX_PATTERNS.some((p) => p.test(requiredFix));
 }
 
 /**
@@ -1065,77 +1165,44 @@ export class CodexSdkAdapter implements CriticAdapter {
       };
     }
 
-    // Issue #109 — scan the executed-command items for known environmental
-    // sandbox-init failure signatures (bwrap user namespace, landlock
-    // ruleset, etc.) BEFORE the parse path admits the model's fabricated
-    // CHANGES_REQUESTED verdict.
+    // Issue #148 (supersedes PR #112's hard-discard for #109):
     //
-    // Failure mode: when the codex CLI's bwrap sandbox cannot allocate a
-    // Linux user namespace (e.g., GKE Autopilot without SYS_ADMIN), every
-    // `command_execution` item the model issues to read the diff arrives
-    // with `status: "failed"` and the bwrap error citation in its
-    // `aggregated_output` (the spawned shell never exec'd because bwrap
-    // init died). The model, unable to actually read the diff, fabricates
-    // a `[blocker] contracts` CHANGES_REQUESTED finding citing the bwrap
-    // error as evidence. Other critics in the same quorum APPROVED, but
-    // veto-quorum semantics fail-closed on the fabricated verdict.
+    // PR #112 added a hard-discard at this point: if any command_execution
+    // item carried a bwrap citation, the entire run was classified as
+    // `sandbox_init_failure` and the model's response (verdict + findings +
+    // qualityGatesMissing) was thrown away. That over-corrected for #109:
     //
-    // PR #112 false-positive guard (codex + cursor blockers, rounds 1-3):
-    // detection is gated on `status === "failed"` items only AND the
-    // signature regexes are line-anchored (column 0). Both gates are
-    // load-bearing because the Codex CLI's `handle_exec_command_end`
-    // maps non-zero `exit_code` to `status: "failed"` — so a legitimate
-    // `git diff --exit-code` that finds a diff arrives as `failed` with
-    // diff content (including possible `+`/`-` lines carrying the bwrap
-    // literal verbatim) in `aggregated_output`. The line anchor ensures
-    // only stderr-shaped lines (citation at column 0) classify, not
-    // diff-prefixed source content. finalResponse is also NOT scanned —
-    // a real CHANGES_REQUESTED whose evidence quotes the canonical
-    // citation must pass through. Startup failures that prevent any
-    // command_execution from emitting are caught by the SDK-thrown-error
-    // path above (see the catch block's `detectSandboxInitFailure(e.message)`
-    // scan).
+    //   - #109's specific symptom was the model fabricating a `[blocker]
+    //     contracts` finding whose `evidence` quoted the bwrap citation,
+    //     causing veto-quorum to fail the gate on a non-issue.
+    //   - The hard-discard suppressed those fabricated blockers but also
+    //     discarded valid completions. With model versions that handle the
+    //     failure correctly (e.g., GPT-5.5 — emit APPROVED with no
+    //     findings + note the missing inspection gate in qualityGatesMissing),
+    //     codex stopped contributing to quorum AT ALL on GKE Autopilot —
+    //     silent vendor degradation, consumer dark-factory-platform#289.
     //
-    // Under `min-complete-quorum` with `required: false` on this critic,
-    // `status: error` is non-blocking; a `status: complete` +
-    // CHANGES_REQUESTED that doesn't reflect a real code issue blocks the
-    // merge queue. Degrade to error so the quorum aggregator can route
-    // around the failure (per docs/CONSUMER-ADOPTION.md's missing-key
-    // degrade-and-pass posture, extended to environmental failures).
+    // The narrowed treatment (this block): if bwrap appears in any
+    // command_execution item, filter the parsed result POST-validation,
+    // dropping ONLY findings whose `evidence` field cites bwrap. Trust the
+    // remainder of the model's response (verdict + non-fabricated findings).
+    // If the verdict was CHANGES_REQUESTED on the strength of fabricated
+    // findings alone, flip to APPROVED — the model's review of the
+    // prompt-embedded diff stands; the lost shell-inspection of `qualityGatesMissing`
+    // is captured by the model's own validation block (overwritten downstream
+    // with packet evidence anyway).
+    //
+    // Net effect vs PR #112:
+    //   - #109 fabricated-blocker still doesn't veto (the fabricated finding
+    //     is filtered; verdict flips to APPROVED).
+    //   - GPT-5.5-style correct-handling no longer discarded (#289 resolved
+    //     — codex contributes APPROVED with no findings).
+    //   - Mixed case (real findings + bwrap-citing fake) preserved: real
+    //     findings kept, fake filtered, verdict preserved.
+    //
+    // The filter is applied to the parsed `CriticResult` below, AFTER
+    // schema validation has succeeded, so we can rely on the finding shape.
     const sandboxCitation = detectSandboxInitFailureInItems(turn.items);
-    if (sandboxCitation !== null) {
-      options.emit?.({
-        ts: new Date().toISOString(),
-        event: "critic_run_error",
-        commit: packet.commit.sha,
-        criticId: critic.id,
-        adapter: this.id,
-        model: critic.model.id,
-        durationMs: Date.now() - startMs,
-        error: `sandbox-init failure cited in command_execution: ${sandboxCitation}`,
-        status: "run_failure_permanent",
-        retryCount: attemptIdx,
-        errorCode: SANDBOX_INIT_FAILURE_CODE,
-        ...(thread.id !== null ? { runId: thread.id } : {}),
-      });
-      return {
-        kind: "permanent_failure",
-        errorCode: SANDBOX_INIT_FAILURE_CODE,
-        statusMessage: null,
-        result: buildErrorResult({
-          critic,
-          message:
-            `codex sandbox-init failure (${SANDBOX_INIT_FAILURE_CODE}) cited in command_execution: ` +
-            `${sandboxCitation}. The CLI's underlying sandbox primitive could not initialize, ` +
-            `so the model could not read the diff. Any verdict in this run is fabricated from ` +
-            `the unread diff and is discarded; routing as status:error so quorum can degrade.`,
-          retryable: false,
-          code: SANDBOX_INIT_FAILURE_CODE,
-          retryCount: attemptIdx,
-          ...(thread.id !== null ? { runId: thread.id } : {}),
-        }),
-      };
-    }
 
     // Parse path. With `outputSchema` set, Codex enforces schema-validated
     // JSON at the model level; the `parseAssistantJson` fallback chain is
@@ -1189,6 +1256,51 @@ export class CodexSdkAdapter implements CriticAdapter {
         ...(thread.id !== null ? { runId: thread.id } : {}),
       });
       result = parseCriticResult(enriched, options.blockingSeverities);
+
+      // Issue #148 — narrowing filter (replaces PR #112's hard-discard).
+      // Applied AFTER schema validation so the finding shape is trustworthy.
+      // See the long-form rationale comment above the `detectSandboxInitFailureInItems`
+      // call earlier in this method.
+      if (sandboxCitation !== null) {
+        const beforeCount = result.findings.length;
+        const realFindings = result.findings.filter((f) => !isFabricatedSandboxFinding(f));
+        const droppedCount = beforeCount - realFindings.length;
+        const originalVerdict = result.verdict;
+        const verdictFlippedToApproved =
+          originalVerdict === "CHANGES_REQUESTED" && realFindings.length === 0;
+        // Build the new result with conditional verdict to satisfy
+        // `exactOptionalPropertyTypes`: an explicit `verdict: undefined`
+        // is not assignable to the optional property; we must omit when
+        // there is nothing to set.
+        //
+        // Cursor PR #149 round-1 BLOCKER: also clear `requiresHumanJudgment`
+        // when flipping verdict to APPROVED. The downstream gate treats
+        // `requiresHumanJudgment: true` as a veto regardless of `verdict`, so
+        // a model output of `verdict: CHANGES_REQUESTED, requiresHumanJudgment:
+        // true` with only sandbox-citation findings would still block even
+        // after the filter dropped the findings and flipped the verdict.
+        // Clearing this when flipping keeps the run non-blocking as intended.
+        result = verdictFlippedToApproved
+          ? { ...result, findings: realFindings, verdict: "APPROVED" as const, requiresHumanJudgment: false }
+          : originalVerdict !== undefined
+            ? { ...result, findings: realFindings, verdict: originalVerdict }
+            : { ...result, findings: realFindings };
+        options.emit?.({
+          ts: new Date().toISOString(),
+          event: "critic_run_sandbox_filtered",
+          commit: packet.commit.sha,
+          criticId: critic.id,
+          adapter: this.id,
+          model: critic.model.id,
+          durationMs: Date.now() - startMs,
+          errorCode: SANDBOX_INIT_FAILURE_CODE,
+          droppedFindingCount: droppedCount,
+          sandboxCitation,
+          verdictFlippedToApproved,
+          retryCount: attemptIdx,
+          ...(thread.id !== null ? { runId: thread.id } : {}),
+        });
+      }
     } catch (err) {
       const e = err as Error;
       const diagPath = writeRedactedDiagnostic({
