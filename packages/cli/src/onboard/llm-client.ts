@@ -28,9 +28,39 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 
+// Conversational-turn shape we accept from callers. Mirrors the Anthropic
+// Messages API's `MessagesParam` (role + content), but typed locally so the
+// LLM-client surface is not coupled to a specific SDK version. The content
+// array carries the rich block types we need for tool-use replay:
+// - `text`: ordinary user / assistant prose
+// - `tool_use`: an assistant turn that calls a tool (we replay these when
+//   feeding back a malformed-plan failure so the next assistant turn can
+//   *correct* the prior tool call instead of starting over)
+// - `tool_result`: the user-side reply to a `tool_use` block, carrying the
+//   error feedback (`is_error: true`) so the model is told *which* fields
+//   were wrong, against *its own* prior output — patch-mode, not blind retry.
+export type LlmContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | {
+      type: "tool_result";
+      tool_use_id: string;
+      is_error?: boolean;
+      content: string | Array<{ type: "text"; text: string }>;
+    };
+
+export interface LlmMessage {
+  role: "user" | "assistant";
+  content: string | LlmContentBlock[];
+}
+
 export interface LlmInputs {
   systemPrompt: string;
-  userMessage: string;
+  /** Conversational turn list. The first turn is conventionally the user
+   *  prompt; for corrective retries, callers append an `assistant` turn that
+   *  replays the prior malformed `tool_use` block + a `user` turn whose
+   *  content is a `tool_result` carrying the error feedback. */
+  messages: LlmMessage[];
   toolName: string;
   toolInputSchema: object;
   apiKey?: string;
@@ -127,7 +157,7 @@ export async function callScaffoldLlm(
       },
     ],
     tool_choice: { type: "tool", name: inputs.toolName } as const,
-    messages: [{ role: "user" as const, content: inputs.userMessage }],
+    messages: inputs.messages,
   };
 
   let attempts = 0;
