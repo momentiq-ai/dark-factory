@@ -89,7 +89,13 @@ export async function callScaffoldLlm(
 
   const request = {
     model: inputs.modelId,
-    max_tokens: inputs.maxTokens ?? 8192,
+    // 8192 was the original default; sage-blueprint at 701 template files
+    // produced a ScaffoldPlan that truncated mid-tool-use (stop_reason:
+    // max_tokens), so the `files` array was incomplete and Zod validation
+    // failed on `files: Required`. Sonnet 4.6 supports up to 64k output
+    // tokens; 32k is the sweet spot for one full ScaffoldPlan with headroom
+    // without paying for capacity we never use.
+    max_tokens: inputs.maxTokens ?? 32768,
     system: inputs.systemPrompt,
     tools: [
       {
@@ -110,6 +116,15 @@ export async function callScaffoldLlm(
     attempts++;
     try {
       const r = await client.messages.create(request);
+      // Diagnostic line — stop_reason + token counts + content shape are the
+      // discriminating signals when downstream Zod validation fails on the
+      // returned plan (truncation vs. malformed output vs. wrong block type).
+      // Cheap to emit, expensive to debug without — kept permanent.
+      console.error(
+        `[llm-diag] attempt=${attempts} stop_reason=${r.stop_reason} ` +
+          `input_tokens=${r.usage.input_tokens} output_tokens=${r.usage.output_tokens} ` +
+          `content_types=${JSON.stringify(r.content.map((b) => (b as { type: string }).type))}`,
+      );
       const toolBlock = r.content.find(
         (b): b is { type: "tool_use"; name: string; input: unknown } =>
           (b as { type: string }).type === "tool_use" &&

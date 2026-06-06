@@ -50,7 +50,11 @@ export async function generatePlan(
     template.files,
     { profile: opts.profile },
   );
-  const inputSchema = zodToJsonSchema(ScaffoldPlanSchema, "ScaffoldPlan") as object;
+  // Anthropic's tool-use `input_schema` requires `type: "object"` at the top
+  // level. zodToJsonSchema(s, NAME) emits `{$ref, definitions: {NAME: ...}}`
+  // — no top-level type, so the API rejects it with `tools.0.custom.input_schema.type:
+  // Field required`. Omit the name to get the schema inlined at top level.
+  const inputSchema = zodToJsonSchema(ScaffoldPlanSchema) as object;
   const callLlm = opts.callLlm ?? ((i) => callScaffoldLlm(i));
 
   // exactOptionalPropertyTypes forbids assigning `undefined` to an optional

@@ -99,7 +99,10 @@ export interface CmdOnboardPlanResult {
 }
 
 const DEFAULT_TEMPLATE = "gh:momentiq-ai/sage-blueprint@latest";
-const DEFAULT_MODEL = "claude-3-7-sonnet-latest";
+// claude-3-7-sonnet-latest reached EOL 2026-02-19; the API now returns a
+// deprecation warning on every call. Sonnet 4.6 is the current default tier
+// for tool-use + JSON-emission workloads.
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 
 const HELP = [
   "df onboard — Cycle 15: deterministic analyzer (Phase A) + LLM-tailored scaffolding (Phase B) + deterministic seeders (Phase C).",
