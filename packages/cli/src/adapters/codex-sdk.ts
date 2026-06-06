@@ -593,8 +593,8 @@ const SANDBOX_INIT_FAILURE_PATTERNS: readonly RegExp[] = Object.freeze([
 // SANDBOX_INIT_FAILURE_PATTERNS above intentionally do NOT match those quoted
 // occurrences (so they cannot misfire on a diff/source line that happens to
 // contain the citation). For the post-parse filter we want the opposite: a
-// substring match anywhere in the evidence string IS the load-bearing signal
-// that this finding was fabricated from a failed sandbox read. The trade-off is
+// substring match anywhere in the evidence string IS PART of the signal that
+// this finding was fabricated from a failed sandbox read. The trade-off is
 // safe because we only consult these patterns AGAINST the `evidence` field of
 // model-emitted findings — never against arbitrary diff/source content.
 const FABRICATED_EVIDENCE_PATTERNS: readonly RegExp[] = Object.freeze([
@@ -602,6 +602,30 @@ const FABRICATED_EVIDENCE_PATTERNS: readonly RegExp[] = Object.freeze([
   /bwrap:\s+Setting up seccomp failed/i,
   /bwrap:\s+setting up uid map:\s+Permission denied/i,
   /landlock_create_ruleset:\s+Operation not permitted/i,
+]) as readonly RegExp[];
+
+// Issue #148 — second discriminator on `requiredFix`. The #109 fabrication
+// pattern has a tell: the model recommends running the review in a different
+// environment ("rerun in an environment with a working sandbox", "run this
+// review on a host where bwrap is available") because it can't read the diff
+// from inside the broken container. A LEGITIMATE finding that happens to
+// quote bwrap as part of evidence (e.g. reviewing a PR that itself adds the
+// pattern list, like THIS very PR) has `requiredFix` recommending an actual
+// CODE change — not an environment switch.
+//
+// Both gates (evidence-substring AND requiredFix-substring) must hit before a
+// finding is classified as fabricated. This addresses the cursor BLOCKER
+// (codex-sdk.ts:1205 review on `df/codex-sdk-narrow-bwrap-discard`) — a real
+// CHANGES_REQUESTED finding whose evidence quotes the canonical citation
+// passes through unchanged because its `requiredFix` proposes a code action,
+// not an environment switch.
+const SANDBOX_FIX_PATTERNS: readonly RegExp[] = Object.freeze([
+  /\bre-?run\s+(this|the)?\s*(review|critic|gate|job|run)?\s*in\b/i,
+  /\b(working|different|another|new|a)\s+(sandbox|environment|container|host|kernel)\b/i,
+  /\bsysctl\s+kernel\./i,
+  /\benable\s+(unprivileged\s+)?user[\s_-]?namespaces?\b/i,
+  /\bgrant\s+(SYS_ADMIN|CAP_)/i,
+  /\brun\s+on\s+(a\s+host|a\s+machine|GitHub-?hosted|hardware|bare-?metal)\b/i,
 ]) as readonly RegExp[];
 
 /**
@@ -681,25 +705,42 @@ export function detectSandboxInitFailureInItems(items: readonly unknown[]): stri
 }
 
 /**
- * Issue #148 — true if the finding's `evidence` field substring-matches a
- * known sandbox-init failure citation. Used by the post-parse filter to
- * surgically drop fabricated findings (#109 symptom: model cites bwrap as
- * the sole "evidence" for a blocker) while preserving the rest of the
- * model's response (verdict + non-fabricated findings).
+ * Issue #148 — true if a finding is the #109 fabrication pattern: model cites
+ * the sandbox-init failure as evidence AND recommends running the review in a
+ * different environment (because it couldn't read the diff). Both gates must
+ * hit for the post-parse filter to drop the finding.
  *
- * Distinct from {@link detectSandboxInitFailureInItems} and
- * {@link detectSandboxInitFailure} which scan stderr-shaped lines anchored
- * at column 0. Here the citation appears MID-SENTENCE inside the finding's
- * evidence string, so we substring-match via {@link FABRICATED_EVIDENCE_PATTERNS}
- * (same citations, anchor-free). Safe because the only inputs are model-emitted
- * `evidence` strings on findings — never diff/source content.
+ * Gate 1 (`evidence`): substring-matches a {@link FABRICATED_EVIDENCE_PATTERNS}
+ * entry. Distinct from the line-anchored
+ * {@link SANDBOX_INIT_FAILURE_PATTERNS} that scan stderr — here the citation
+ * appears mid-sentence inside the model's emitted `evidence`. Safe to
+ * substring-match because the only input is the model's `evidence` string,
+ * never arbitrary diff/source content.
  *
- * Pure function — exported for direct unit testing.
+ * Gate 2 (`requiredFix`): substring-matches a {@link SANDBOX_FIX_PATTERNS}
+ * entry. This is the discriminator that lets the filter co-exist with
+ * legitimate findings whose `evidence` happens to quote the canonical bwrap
+ * citation — a legitimate finding recommends a CODE change in `requiredFix`
+ * (e.g. "verify intent of the regex literal", "fix the anchor"), not an
+ * environment switch ("rerun in a working sandbox", "run on a host with
+ * SYS_ADMIN"). The #109 fabricated finding has both gates set; a real
+ * finding that quotes the citation as context has only gate 1.
+ *
+ * Empty/missing `evidence` or `requiredFix` → returns false (not enough
+ * signal to classify as fabricated). Pure function — exported for direct
+ * unit testing.
  */
-export function isFabricatedSandboxFinding(finding: { evidence?: string }): boolean {
+export function isFabricatedSandboxFinding(finding: {
+  evidence?: string;
+  requiredFix?: string;
+}): boolean {
   const evidence = finding.evidence;
+  const requiredFix = finding.requiredFix;
   if (typeof evidence !== "string" || evidence.length === 0) return false;
-  return FABRICATED_EVIDENCE_PATTERNS.some((p) => p.test(evidence));
+  if (typeof requiredFix !== "string" || requiredFix.length === 0) return false;
+  const evidenceCitesBwrap = FABRICATED_EVIDENCE_PATTERNS.some((p) => p.test(evidence));
+  if (!evidenceCitesBwrap) return false;
+  return SANDBOX_FIX_PATTERNS.some((p) => p.test(requiredFix));
 }
 
 /**
@@ -1213,8 +1254,16 @@ export class CodexSdkAdapter implements CriticAdapter {
         // `exactOptionalPropertyTypes`: an explicit `verdict: undefined`
         // is not assignable to the optional property; we must omit when
         // there is nothing to set.
+        //
+        // Cursor PR #149 round-1 BLOCKER: also clear `requiresHumanJudgment`
+        // when flipping verdict to APPROVED. The downstream gate treats
+        // `requiresHumanJudgment: true` as a veto regardless of `verdict`, so
+        // a model output of `verdict: CHANGES_REQUESTED, requiresHumanJudgment:
+        // true` with only sandbox-citation findings would still block even
+        // after the filter dropped the findings and flipped the verdict.
+        // Clearing this when flipping keeps the run non-blocking as intended.
         result = verdictFlippedToApproved
-          ? { ...result, findings: realFindings, verdict: "APPROVED" as const }
+          ? { ...result, findings: realFindings, verdict: "APPROVED" as const, requiresHumanJudgment: false }
           : originalVerdict !== undefined
             ? { ...result, findings: realFindings, verdict: originalVerdict }
             : { ...result, findings: realFindings };

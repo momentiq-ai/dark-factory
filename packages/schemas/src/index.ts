@@ -1051,18 +1051,27 @@ export interface TelemetryEvent {
     // findings were demoted during a review run without re-walking
     // the artifact JSON.
     | "critic_disagreement"
-    // Issue #148 — emitted by the codex adapter when a known
-    // sandbox-init failure citation (bwrap user-namespace,
-    // landlock ruleset, etc.) appeared in a command_execution item
-    // AND the post-parse filter dropped one or more findings whose
-    // `evidence` cited the same failure (the #109 model-fabrication
-    // pattern). Payload (via the standard optional fields below):
+    // Issue #148 — emitted by the codex adapter once per run on which a
+    // known sandbox-init failure citation (bwrap user-namespace, landlock
+    // ruleset, etc.) appeared in a command_execution item AND the model's
+    // response was successfully parsed. ALWAYS emitted when these
+    // conditions hold — even when `droppedFindingCount: 0` and
+    // `verdictFlippedToApproved: false` (i.e., the citation appeared but
+    // the model's response was unaffected by it). The "always emit"
+    // semantic gives operators a single grep handle for "codex ran into
+    // bwrap" regardless of whether the filter had to act, so runbooks
+    // can correlate the deferred shell inspection to the container
+    // posture even on runs the model handled correctly.
+    //
+    // Payload (via the standard optional fields below):
     //   - errorCode = "sandbox_init_failure"
-    //   - droppedFindingCount = N (count of fabricated findings dropped)
+    //   - droppedFindingCount = N (count of fabricated findings dropped;
+    //     may be 0 when the model handled the failure correctly)
     //   - sandboxCitation = the literal stderr line
     //   - verdictFlippedToApproved = true iff the model's verdict was
     //     CHANGES_REQUESTED on the strength of dropped findings alone
-    //     (so the adapter flipped to APPROVED post-filter)
+    //     (so the adapter flipped to APPROVED post-filter); false when
+    //     the verdict was preserved (including the no-drops case).
     // Supersedes PR #112's whole-run discard for the same symptom —
     // see the long-form comment in `codex-sdk.ts` § attemptReview.
     | "critic_run_sandbox_filtered";
