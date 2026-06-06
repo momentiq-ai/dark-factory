@@ -1,20 +1,30 @@
-// Lockfile analyzer — cycle 15 Phase A.
+// Lockfile analyzer — cycle 15 Phase A (multi-root aggregation per #137).
 //
-// Reads ONE lockfile per repo (precedence: package-lock.json > yarn.lock >
-// poetry.lock > go.sum) and populates two RepoAnalysis fields:
+// Walks the repo (bounded depth + skip set) for every known lockfile, parses
+// each, and aggregates contributions into the two RepoAnalysis fields:
 //
-//   1. `dependencies[]` — top 20 DIRECT deps with PINNED versions
-//      (schema cap = 20). The deterministic name+version table Phase B's
-//      LLM cites verbatim in ADR seeds (cycle 15 D2 lines 132–134).
+//   1. `dependencies[]` — top 20 DIRECT deps with PINNED versions across ALL
+//      detected lockfiles (schema cap = 20). The deterministic name+version
+//      table Phase B's LLM cites verbatim in ADR seeds (cycle 15 D2 lines
+//      132–134). Each entry's `manifestPath` is the source lockfile relative
+//      to the repo root (e.g. `package-lock.json`, `web/package-lock.json`).
 //
 //   2. `decisions[]` — heuristic markers (test-framework / deploy-target /
-//      stack / auth-model) derived from dep names. Schema cap = 10 globally.
+//      stack / auth-model) derived from dep names, deduped on the
+//      `(title, surface)` tuple across all lockfiles; `evidence[]` is the
+//      sorted union of source lockfile paths. Schema cap = 10 globally.
 //
 // `package.json` alone (no lockfile) returns null: only a real lockfile has
 // PINNED versions — package.json deps are ranges. Stack DETECTION is the
 // manifest analyzer's job (Task 3); pinned versions are this analyzer's.
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+//
+// Multi-root rationale (#137): monorepos like sage3c put the real frontend
+// signals in `web/package-lock.json` and backend signals in
+// `backend/poetry.lock`; choosing ONE root lockfile would emit zero
+// decisions and break ADR seeding downstream.
+import type { Dirent } from "node:fs";
+import { readFile, readdir } from "node:fs/promises";
+import { join, relative, sep } from "node:path";
 import TOML from "@iarna/toml";
 // @yarnpkg/lockfile is CJS; ESM only sees the default export.
 // Pull `parse` off the default to keep ESM consumers + Node ESM-loader happy.
@@ -25,6 +35,31 @@ import type { Dependency, Decision } from "../schema.js";
 
 const MAX_DEPS = 20;
 const MAX_DECISIONS = 10;
+// Walk depth: 0 = root, 1 = direct child (e.g. `web/`), 2 = grandchild
+// (e.g. `tools/df-flow-assessor/`), 3 = great-grandchild. Covers every
+// sage3c lockfile (deepest is depth-2). Mirrors tree.ts's depth budget.
+const MAX_LOCKFILE_DEPTH = 3;
+
+// Skip the same set tree.ts skips — kept local on purpose so this analyzer's
+// diff doesn't collide with any sibling refactor of tree.ts. Hidden entries
+// (starting with `.`) are also skipped to keep .git/.github/.venv etc. out
+// of the walk.
+const SKIP_DIR_NAMES = new Set<string>([
+  "node_modules",
+  "dist",
+  "build",
+  "target",
+  ".next",
+  ".venv",
+  "__pycache__",
+  ".gradle",
+]);
+
+function shouldSkipDir(name: string): boolean {
+  if (name.startsWith(".")) return true;
+  if (SKIP_DIR_NAMES.has(name)) return true;
+  return false;
+}
 
 // Decision-surface heuristics. Each entry matches a single dep name (exact
 // match, post-lowercase) and emits ONE decision with evidence: [lockfilePath].
@@ -86,19 +121,71 @@ async function readIfExists(path: string): Promise<string | null> {
   }
 }
 
-async function chooseLockfile(
+const LOCKFILE_SET: ReadonlySet<string> = new Set(LOCKFILE_PRECEDENCE);
+
+interface DiscoveredLockfile {
+  name: LockfileName;
+  // Forward-slash relative path from rootDir; never starts with "./". For a
+  // root-level lockfile this is just the bare filename (preserves the
+  // existing `manifestPath: "package-lock.json"` contract).
+  relPath: string;
+  absDir: string;
+  contents: string;
+}
+
+// Walk the repo (bounded by MAX_LOCKFILE_DEPTH + SKIP_DIR_NAMES) for every
+// known lockfile filename. Results are sorted by relPath for deterministic
+// output across readdir order.
+async function discoverLockfiles(
   rootDir: string,
-): Promise<{ name: LockfileName; contents: string } | null> {
-  for (const name of LOCKFILE_PRECEDENCE) {
-    const contents = await readIfExists(join(rootDir, name));
-    if (contents !== null) return { name, contents };
+): Promise<DiscoveredLockfile[]> {
+  const found: DiscoveredLockfile[] = [];
+
+  async function walk(absDir: string, depth: number): Promise<void> {
+    if (depth > MAX_LOCKFILE_DEPTH) return;
+    let entries: Dirent[];
+    try {
+      entries = await readdir(absDir, { withFileTypes: true });
+    } catch {
+      // Permission denied / transient — treat as empty so one unreadable
+      // subtree can't bomb the whole analyzer.
+      return;
+    }
+    // Read files in this dir before descending so each level's lockfile
+    // joins `found` before its descendants'.
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      if (!LOCKFILE_SET.has(entry.name)) continue;
+      const absPath = join(absDir, entry.name);
+      const contents = await readIfExists(absPath);
+      if (contents === null) continue;
+      const rel = relative(rootDir, absPath).split(sep).join("/");
+      found.push({
+        name: entry.name as LockfileName,
+        relPath: rel,
+        absDir,
+        contents,
+      });
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (shouldSkipDir(entry.name)) continue;
+      await walk(join(absDir, entry.name), depth + 1);
+    }
   }
-  return null;
+
+  await walk(rootDir, 0);
+  found.sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
+  return found;
 }
 
 // package-lock.json — handles both lockfileVersion 1 (root-level dependencies
 // with the version values being the pins) and 2/3 (packages[""].dependencies
 // for direct-dep names; packages["node_modules/<name>"].version for the pin).
+//
+// Returns EVERY direct dep (no internal cap). The aggregate cap is enforced
+// in `detect()` so the decision-marker scan can find matches anywhere in the
+// lockfile, not just within the first 20 alphabetical entries.
 function parsePackageLock(contents: string, lockfilePath: string): Dependency[] {
   let parsed: unknown;
   try {
@@ -134,7 +221,6 @@ function parsePackageLock(contents: string, lockfilePath: string): Dependency[] 
           : requestedRange;
       out.push({ name, version: pinnedVersion, manifestPath: lockfilePath });
       seen.add(name);
-      if (out.length >= MAX_DEPS) return out;
     }
   }
 
@@ -152,22 +238,22 @@ function parsePackageLock(contents: string, lockfilePath: string): Dependency[] 
       if (typeof version !== "string") continue;
       out.push({ name, version, manifestPath: lockfilePath });
       seen.add(name);
-      if (out.length >= MAX_DEPS) return out;
     }
   }
 
   return out;
 }
 
-// yarn.lock — cross-reference top-level package.json keys with parsed lockfile
-// entries; lockfile keys take the form "<name>@<range>", so we look up each
-// direct dep by its requested range.
+// yarn.lock — cross-reference the SIBLING package.json's deps (NOT the repo
+// root's — yarn workspaces put a lockfile next to a per-package manifest)
+// with parsed lockfile entries; lockfile keys take the form "<name>@<range>",
+// so we look up each direct dep by its requested range.
 async function parseYarn(
   contents: string,
   lockfilePath: string,
-  rootDir: string,
+  lockfileDir: string,
 ): Promise<Dependency[]> {
-  const pkgJsonRaw = await readIfExists(join(rootDir, "package.json"));
+  const pkgJsonRaw = await readIfExists(join(lockfileDir, "package.json"));
   if (pkgJsonRaw === null) return [];
   let pkg: unknown;
   try {
@@ -186,6 +272,7 @@ async function parseYarn(
   if (parsed.type === "conflict") return [];
   const entries = parsed.object;
 
+  // Returns every direct dep (no internal cap — aggregate cap is in detect()).
   const out: Dependency[] = [];
   for (const [name, range] of Object.entries(directDeps)) {
     const key = `${name}@${range}`;
@@ -193,13 +280,13 @@ async function parseYarn(
     const version =
       entry && typeof entry.version === "string" ? entry.version : range;
     out.push({ name, version, manifestPath: lockfilePath });
-    if (out.length >= MAX_DEPS) return out;
   }
   return out;
 }
 
 // poetry.lock — iterate [[package]] blocks. Older formats use category="main";
-// newer formats omit category — accept either.
+// newer formats omit category — accept either. Returns every package (no
+// internal cap — aggregate cap is in detect()).
 function parsePoetry(contents: string, lockfilePath: string): Dependency[] {
   let parsed: unknown;
   try {
@@ -221,14 +308,14 @@ function parsePoetry(contents: string, lockfilePath: string): Dependency[] {
     const version = entry.version;
     if (typeof name !== "string" || typeof version !== "string") continue;
     out.push({ name, version, manifestPath: lockfilePath });
-    if (out.length >= MAX_DEPS) return out;
   }
   return out;
 }
 
 // go.sum — `<module> <version>/go.mod <hash>` lines. The /go.mod-suffix is
 // the canonical pin (the bare `<module> <version>` lines hash the module zip;
-// many lines per dep exist — first-match-per-module wins).
+// many lines per dep exist — first-match-per-module wins). Returns every
+// module (no internal cap — aggregate cap is in detect()).
 function parseGoSum(contents: string, lockfilePath: string): Dependency[] {
   const out: Dependency[] = [];
   const seen = new Set<string>();
@@ -244,56 +331,87 @@ function parseGoSum(contents: string, lockfilePath: string): Dependency[] {
     if (seen.has(name)) continue;
     seen.add(name);
     out.push({ name, version, manifestPath: lockfilePath });
-    if (out.length >= MAX_DEPS) return out;
   }
   return out;
 }
 
-function deriveDecisions(
-  dependencies: Dependency[],
-  lockfilePath: string,
-): Decision[] {
-  const out: Decision[] = [];
-  for (const dep of dependencies) {
-    const lower = dep.name.toLowerCase();
-    for (const marker of DECISION_MARKERS) {
-      if (lower === marker.match) {
-        out.push({
-          title: marker.title,
-          surface: marker.surface,
-          evidence: [lockfilePath],
-        });
-        if (out.length >= MAX_DECISIONS) return out;
-        break;
-      }
-    }
+async function parseOne(lf: DiscoveredLockfile): Promise<Dependency[]> {
+  switch (lf.name) {
+    case "package-lock.json":
+      return parsePackageLock(lf.contents, lf.relPath);
+    case "yarn.lock":
+      return parseYarn(lf.contents, lf.relPath, lf.absDir);
+    case "poetry.lock":
+      return parsePoetry(lf.contents, lf.relPath);
+    case "go.sum":
+      return parseGoSum(lf.contents, lf.relPath);
   }
-  return out;
 }
 
 export const lockfileAnalyzer: Analyzer = {
   name: "lockfile",
   async detect(rootDir) {
-    const chosen = await chooseLockfile(rootDir);
-    if (chosen === null) return null;
+    const discovered = await discoverLockfiles(rootDir);
+    if (discovered.length === 0) return null;
 
-    let dependencies: Dependency[];
-    switch (chosen.name) {
-      case "package-lock.json":
-        dependencies = parsePackageLock(chosen.contents, chosen.name);
-        break;
-      case "yarn.lock":
-        dependencies = await parseYarn(chosen.contents, chosen.name, rootDir);
-        break;
-      case "poetry.lock":
-        dependencies = parsePoetry(chosen.contents, chosen.name);
-        break;
-      case "go.sum":
-        dependencies = parseGoSum(chosen.contents, chosen.name);
-        break;
+    // Aggregate dependencies + decisions across every lockfile, capped at the
+    // schema maxima. Dependencies dedupe on `name` (the FIRST lockfile in
+    // sort order wins — root before subdirs). Decisions dedupe on the
+    // `(title, surface)` tuple with evidence accumulated as the sorted union
+    // of source lockfiles.
+    const dependencies: Dependency[] = [];
+    const seenDeps = new Set<string>();
+    const decisionMap = new Map<
+      string,
+      { title: string; surface: Decision["surface"]; evidence: Set<string> }
+    >();
+
+    for (const lf of discovered) {
+      const deps = await parseOne(lf);
+
+      // Take this lockfile's contribution to the bounded dependency table.
+      // The cap is checked BEFORE the push so `dependencies.length` is
+      // strictly ≤ MAX_DEPS (the schema's hard contract — exceeding it
+      // throws inside `RepoAnalysisSchema.parse()`).
+      for (const dep of deps) {
+        if (dependencies.length >= MAX_DEPS) break;
+        if (seenDeps.has(dep.name)) continue;
+        seenDeps.add(dep.name);
+        dependencies.push(dep);
+      }
+
+      // Decision-marker scan walks EVERY parsed dep for this lockfile,
+      // independent of whether the dep made it into the bounded table.
+      // Without this independence, a long alphabetical lockfile (e.g.
+      // sage3c's backend/poetry.lock) would fill the 20-slot dependency
+      // budget before reaching `fastapi`/`pytest`, suppressing the
+      // marker scan even though the names are right there in the file.
+      for (const dep of deps) {
+        const lower = dep.name.toLowerCase();
+        for (const marker of DECISION_MARKERS) {
+          if (lower !== marker.match) continue;
+          const key = `${marker.surface}::${marker.title}`;
+          const existing = decisionMap.get(key);
+          if (existing) {
+            existing.evidence.add(lf.relPath);
+          } else if (decisionMap.size < MAX_DECISIONS) {
+            decisionMap.set(key, {
+              title: marker.title,
+              surface: marker.surface,
+              evidence: new Set([lf.relPath]),
+            });
+          }
+          break;
+        }
+      }
     }
 
-    const decisions = deriveDecisions(dependencies, chosen.name);
+    const decisions: Decision[] = Array.from(decisionMap.values()).map((d) => ({
+      title: d.title,
+      surface: d.surface,
+      evidence: Array.from(d.evidence).sort(),
+    }));
+
     return { dependencies, decisions };
   },
 };

@@ -163,6 +163,11 @@ export const RepoAnalysisSchema = z
       prWorkflow: z.boolean(),
       cliPin: z.string().nullable(),
     }),
+    // Heuristic decision-surface markers (test-framework / deploy-target /
+    // stack / auth-model) aggregated across ALL lockfiles in the repo, not
+    // just the root one (see analyzers/lockfile.ts and #137 for the monorepo
+    // motivation). Deduped on the `(title, surface)` tuple; each entry's
+    // `evidence[]` is the sorted union of source lockfile paths.
     decisions: z.array(DecisionSchema).max(10),
     analyzerErrors: z.array(AnalyzerErrorSchema).default([]),
   })
