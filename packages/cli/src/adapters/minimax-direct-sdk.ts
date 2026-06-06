@@ -673,20 +673,37 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
         });
         return checks;
       }
-      // The openai SDK's `client.models.list()` returns a `PagePromise`
-      // that is BOTH thenable AND `AsyncIterable<Item>` (verified
-      // against openai@^6 `node_modules/openai/core/pagination.d.ts`).
-      // Per the SDK's own doc comment on `PagePromise`: "Allow
-      // auto-paginating iteration on an unawaited list call." Directly
-      // iterating the returned value (without awaiting) is the
-      // documented-correct path AND naturally accommodates test mocks
-      // that return a plain `AsyncIterable` directly. Awaiting first
-      // gives back a single `Page` (which IS async-iterable, but only
-      // iterates one page's worth of items — a silent pagination cut
-      // codex flagged on the original commit).
-      const listed = list.call(client.models) as AsyncIterable<{ id?: string }>;
+      // Three shapes the doctor must handle:
+      //   1. openai SDK production: `PagePromise` — thenable AND
+      //      `AsyncIterable<Item>` (verified against openai@^6
+      //      `node_modules/openai/core/pagination.d.ts`). Per the SDK's
+      //      own doc comment on `PagePromise`: "Allow auto-paginating
+      //      iteration on an unawaited list call." Direct-iterate.
+      //   2. Plain AsyncIterable test mock — `list: () => ({
+      //      async *[Symbol.asyncIterator]() {...} })`. Direct-iterate.
+      //   3. Promise<AsyncIterable> test mock — `list: async () =>
+      //      ({...})` — the result is a Promise wrapping an
+      //      AsyncIterable, NOT itself async-iterable. Must await first.
+      //
+      // Discriminator: if the returned value implements
+      // `Symbol.asyncIterator`, it's case (1) or (2) — direct-iterate.
+      // Else if it's thenable, it's case (3) — await to unwrap.
+      // Awaiting a `PagePromise` works too but it discards
+      // auto-pagination (drops to a single Page's worth of items —
+      // codex's original finding on commit c24256f), so the order of
+      // the checks matters: AsyncIterable FIRST, thenable SECOND.
+      const listed = list.call(client.models) as unknown;
+      const hasAsyncIterator = (v: unknown): v is AsyncIterable<{ id?: string }> =>
+        v !== null && typeof v === "object" && Symbol.asyncIterator in (v as object);
+      const isThenable = (v: unknown): v is Promise<unknown> =>
+        v !== null && typeof v === "object" && typeof (v as { then?: unknown }).then === "function";
+      const iterable: AsyncIterable<{ id?: string }> = hasAsyncIterator(listed)
+        ? listed
+        : isThenable(listed)
+          ? ((await listed) as AsyncIterable<{ id?: string }>)
+          : (listed as AsyncIterable<{ id?: string }>);
       const ids: string[] = [];
-      for await (const m of listed) {
+      for await (const m of iterable) {
         if (typeof m.id === "string") ids.push(m.id);
       }
       const matched = ids.some((n) => n === critic.model.id);
