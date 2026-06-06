@@ -4,7 +4,8 @@
 // Resolves a templateRef (gh:<owner>/<repo>@<ref> | file://<abs>@<ref>) to a
 // content-addressed cache directory, then walks the directory and returns
 // the file set (subject to the Phase B filter rules: no .git/node_modules,
-// ≤ 64 KB per file, no binary, ≤ 200 entries total).
+// ≤ 64 KB per file, no binary, ≤ MAX_TEMPLATE_FILES entries total — see
+// the constant definition below for the current value).
 //
 // Cache key is the resolved sha — so `latest` and the sha it resolves to
 // share one entry, no churn on re-runs.
@@ -34,17 +35,13 @@ export type { ParsedTemplateRef, GhTemplateRef, FileTemplateRef };
 
 const ex = promisify(execFile);
 
-// Cap chosen for headroom above the current sage-blueprint walk (701
-// post-filter files at 2.9 MB total content, measured 2026-06-06). The
-// 200-cap from Phase B / B-D4 was set when the template was much smaller
-// and started blocking the sage3c-reproduction harness (cycle 15 metric 1)
-// after Cycle 12.3 handoff wiring + BP-N additions landed — see issue #140.
-// We raise instead of filtering because the file inventory is intentional
-// template content (154 .jinja Copier files, 217 .py backend, 78 .ts +
-// 77 .tsx frontend, 55 yaml + 35 md): no extension-whitelist or SKIP_DIRS
-// expansion brings the count below 200 without dropping legitimate
-// structural files the LLM needs. The 64 KB per-file ceiling + binary
-// skip remain the real backstops; this cap is the count tripwire.
+// Raise-don't-filter: sage-blueprint's file inventory is intentional template
+// content (Copier `.jinja` outputs, backend + frontend source, configs), so
+// extension-whitelisting or expanding SKIP_DIRS would drop structural files
+// the LLM needs to see. The 64 KB per-file ceiling + binary-skip are the
+// real backstops; this cap is the count tripwire. See #140 for the original
+// 200→ raise rationale. (A total-bytes cap for the assembled prompt is a
+// follow-up — tracked separately so it can land with end-to-end metering.)
 export const MAX_TEMPLATE_FILES = 1000;
 export const MAX_TEMPLATE_FILE_SIZE = 65_536;
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build"]);
