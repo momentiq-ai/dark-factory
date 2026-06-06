@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.4](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.2.3...dark-factory-cli-v2.2.4) (2026-06-06)
+
+
+### Bug Fixes
+
+* **onboard:** multi-turn corrective replay for Phase B (closes [#158](https://github.com/momentiq-ai/dark-factory/issues/158)) ([#160](https://github.com/momentiq-ai/dark-factory/issues/160)) ([d3cb91c](https://github.com/momentiq-ai/dark-factory/commit/d3cb91cd2d32ce20477153a2c8c0a3eb933d6eb4))
+
 ## [2.2.3](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.2.2...dark-factory-cli-v2.2.3) (2026-06-06)
 
 
