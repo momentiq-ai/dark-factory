@@ -54,13 +54,23 @@ export interface CopierCopyOptions {
 }
 
 /**
- * Run `copier copy` against the bundled template. Streams stdout/stderr
- * to the parent so the customer sees Copier's normal progress output.
- * Returns the exit code; non-zero means Copier reported a failure and
- * the caller should surface a clear message.
+ * Build the argv that will be handed to the `copier copy` subprocess.
+ *
+ * `--trust` is unconditional and load-bearing: the bundled
+ * sage-blueprint template uses Copier `_tasks` (e.g. `npm install`,
+ * lockfile generation, formatter passes), and Copier 9+ refuses to
+ * execute templates with `_tasks` unless `--trust` is explicitly
+ * passed. The sage-cli wrapper IS the trust boundary for the bundled
+ * template — by the time we're invoking copier, the bundle has
+ * already been resolved via the build-time `bundle-template.mjs`
+ * pipeline (LOCAL_PATH or a pinned ref from the trusted source repo),
+ * so re-asking the customer to opt in to "trust" of our own template
+ * adds no security value and breaks every spawn.
+ *
+ * See https://github.com/momentiq-ai/dark-factory/issues/153.
  */
-export function runCopierCopy(opts: CopierCopyOptions): Promise<number> {
-  const args = ["copy", opts.templatePath, opts.destination];
+export function buildCopyArgs(opts: CopierCopyOptions): string[] {
+  const args = ["copy", opts.templatePath, opts.destination, "--trust"];
   if (opts.acceptDefaults) args.push("--defaults");
   if (opts.vcsRef) {
     args.push("--vcs-ref", opts.vcsRef);
@@ -68,7 +78,17 @@ export function runCopierCopy(opts: CopierCopyOptions): Promise<number> {
   for (const [key, value] of Object.entries(opts.data)) {
     args.push("--data", `${key}=${String(value)}`);
   }
-  return runCopier(args);
+  return args;
+}
+
+/**
+ * Run `copier copy` against the bundled template. Streams stdout/stderr
+ * to the parent so the customer sees Copier's normal progress output.
+ * Returns the exit code; non-zero means Copier reported a failure and
+ * the caller should surface a clear message.
+ */
+export function runCopierCopy(opts: CopierCopyOptions): Promise<number> {
+  return runCopier(buildCopyArgs(opts));
 }
 
 export interface CopierUpdateOptions {
@@ -79,14 +99,26 @@ export interface CopierUpdateOptions {
 }
 
 /**
+ * Build the argv that will be handed to the `copier update` subprocess.
+ *
+ * `--trust` is unconditional for the same reason as `buildCopyArgs`:
+ * the bundled template uses `_tasks`. `copier update` re-runs those
+ * tasks against an existing scaffolded product, so it inherits the
+ * same trust requirement. See `buildCopyArgs` for the full rationale.
+ */
+export function buildUpdateArgs(opts: CopierUpdateOptions): string[] {
+  const args = ["update", "--trust"];
+  if (opts.dryRun) args.push("--pretend");
+  return args;
+}
+
+/**
  * Run `copier update` in an existing scaffolded product directory.
  * Copier reads `.copier-answers.yml` to find the template; we pass the
  * destination as the working dir.
  */
 export function runCopierUpdate(opts: CopierUpdateOptions): Promise<number> {
-  const args = ["update"];
-  if (opts.dryRun) args.push("--pretend");
-  return runCopier(args, opts.destination);
+  return runCopier(buildUpdateArgs(opts), opts.destination);
 }
 
 function runCopier(args: string[], cwd?: string): Promise<number> {
