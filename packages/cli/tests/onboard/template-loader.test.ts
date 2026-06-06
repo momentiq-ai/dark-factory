@@ -6,7 +6,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadTemplate } from "../../src/onboard/template-loader.js";
+import {
+  loadTemplate,
+  MAX_TEMPLATE_FILES,
+} from "../../src/onboard/template-loader.js";
 
 let srcRoot: string;
 let cacheRoot: string;
@@ -79,14 +82,35 @@ describe("loadTemplate (file://)", () => {
     expect(paths).not.toContain("img.png");
   });
 
-  it("rejects when the total entry count would exceed 200", async () => {
-    for (let i = 0; i < 201; i++) {
+  it("rejects when the total entry count would exceed MAX_TEMPLATE_FILES", async () => {
+    // Write MAX+1 files so the cap is breached. The test scales with the
+    // exported constant rather than a hardcoded literal so the cap can be
+    // raised without test churn (issue #140 — the cap moved from 200 to
+    // 1000 after sage-blueprint grew past the original ceiling).
+    for (let i = 0; i < MAX_TEMPLATE_FILES + 1; i++) {
       await writeFile(join(srcRoot, `f-${i}.md`), "x");
     }
     await expect(loadTemplate(
       `file://${srcRoot}@0000000000000000000000000000000000000000`,
       { cacheRoot },
-    )).rejects.toThrow(/200/);
+    )).rejects.toThrow(new RegExp(String(MAX_TEMPLATE_FILES)));
+  });
+
+  it("accepts a sage-blueprint-sized walk (~700 files) under the current cap", async () => {
+    // Regression guard for issue #140: sage-blueprint walks to ~700 post-
+    // filter files; the original 200-cap blocked the cycle 15 sage3c-
+    // reproduction harness before the LLM call. This case ensures the
+    // current cap accommodates that walk with headroom.
+    const SAGE_BLUEPRINT_WALK_SIZE = 750;
+    expect(MAX_TEMPLATE_FILES).toBeGreaterThanOrEqual(SAGE_BLUEPRINT_WALK_SIZE);
+    for (let i = 0; i < SAGE_BLUEPRINT_WALK_SIZE; i++) {
+      await writeFile(join(srcRoot, `f-${i}.md`), "x");
+    }
+    const t = await loadTemplate(
+      `file://${srcRoot}@0000000000000000000000000000000000000000`,
+      { cacheRoot },
+    );
+    expect(t.files.length).toBe(SAGE_BLUEPRINT_WALK_SIZE);
   });
 
   it("hits the cache on second load (same sha)", async () => {

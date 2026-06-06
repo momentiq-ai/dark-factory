@@ -34,7 +34,18 @@ export type { ParsedTemplateRef, GhTemplateRef, FileTemplateRef };
 
 const ex = promisify(execFile);
 
-export const MAX_TEMPLATE_FILES = 200;
+// Cap chosen for headroom above the current sage-blueprint walk (701
+// post-filter files at 2.9 MB total content, measured 2026-06-06). The
+// 200-cap from Phase B / B-D4 was set when the template was much smaller
+// and started blocking the sage3c-reproduction harness (cycle 15 metric 1)
+// after Cycle 12.3 handoff wiring + BP-N additions landed — see issue #140.
+// We raise instead of filtering because the file inventory is intentional
+// template content (154 .jinja Copier files, 217 .py backend, 78 .ts +
+// 77 .tsx frontend, 55 yaml + 35 md): no extension-whitelist or SKIP_DIRS
+// expansion brings the count below 200 without dropping legitimate
+// structural files the LLM needs. The 64 KB per-file ceiling + binary
+// skip remain the real backstops; this cap is the count tripwire.
+export const MAX_TEMPLATE_FILES = 1000;
 export const MAX_TEMPLATE_FILE_SIZE = 65_536;
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build"]);
 
@@ -140,7 +151,8 @@ async function walkTemplate(rootDir: string): Promise<TemplateFile[]> {
       if (out.length > MAX_TEMPLATE_FILES) {
         throw new Error(
           `df onboard: template file count exceeds ${MAX_TEMPLATE_FILES}. ` +
-            "Reduce the template surface or raise MAX_TEMPLATE_FILES (cycle 15 Phase B / B-D4).",
+            "Reduce the template surface or raise MAX_TEMPLATE_FILES " +
+            "(see #140 for the rationale behind the current ceiling).",
         );
       }
     }
