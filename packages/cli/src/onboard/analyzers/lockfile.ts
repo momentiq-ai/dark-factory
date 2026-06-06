@@ -175,7 +175,7 @@ async function discoverLockfiles(
   }
 
   await walk(rootDir, 0);
-  found.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  found.sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
   return found;
 }
 
@@ -390,7 +390,7 @@ export const lockfileAnalyzer: Analyzer = {
         const lower = dep.name.toLowerCase();
         for (const marker of DECISION_MARKERS) {
           if (lower !== marker.match) continue;
-          const key = `${marker.surface} ${marker.title}`;
+          const key = `${marker.surface}::${marker.title}`;
           const existing = decisionMap.get(key);
           if (existing) {
             existing.evidence.add(lf.relPath);
