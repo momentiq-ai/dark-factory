@@ -14,6 +14,17 @@
 // block's `input` as the candidate JSON. The SDK validates the JSON
 // shape at the API boundary; downstream Zod validation re-checks the
 // semantics (discriminated-union, byte budgets).
+//
+// Why streaming (client.messages.stream) instead of client.messages.create:
+// the inlined sage-blueprint template pushes Phase B's request to ~960k
+// input tokens + 32k output, which routinely exceeds Anthropic's 10-minute
+// hard guard on non-streaming requests ("Streaming is required for
+// operations that may take longer than 10 minutes"). The SDK refused the
+// request pre-flight before any retry logic could fire — see #147 for the
+// full empirical trace. The stream() helper auto-assembles tool_use input
+// from input_json_delta events into the final Message; finalMessage() then
+// returns the same { content, usage, stop_reason, model } shape we already
+// read from create(), so the rest of the call site is unchanged.
 
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -35,19 +46,28 @@ export interface LlmResult {
   attempts: number;
 }
 
+export interface LlmStreamResult {
+  id: string;
+  model: string;
+  content: Array<
+    | { type: "tool_use"; name: string; input: unknown }
+    | { type: "text"; text: string }
+    | { type: string }
+  >;
+  usage: { input_tokens: number; output_tokens: number };
+  stop_reason: string;
+}
+
+export interface LlmStreamHandle {
+  finalMessage(): Promise<LlmStreamResult>;
+}
+
 export interface LlmClientLike {
   messages: {
-    create(params: unknown): Promise<{
-      id: string;
-      model: string;
-      content: Array<
-        | { type: "tool_use"; name: string; input: unknown }
-        | { type: "text"; text: string }
-        | { type: string }
-      >;
-      usage: { input_tokens: number; output_tokens: number };
-      stop_reason: string;
-    }>;
+    // Mirrors the SDK's client.messages.stream(...) — returns a helper
+    // synchronously; finalMessage() resolves to the assembled Message after
+    // all delta events have been consumed.
+    stream(params: unknown): LlmStreamHandle;
   };
 }
 
@@ -115,7 +135,15 @@ export async function callScaffoldLlm(
   for (let attempt = 0; attempt < 2; attempt++) {
     attempts++;
     try {
-      const r = await client.messages.create(request);
+      // Both the stream() call and finalMessage() awaiting must live inside
+      // the try block — with streaming, the SDK's API errors (401/429/5xx,
+      // network failures) now surface as rejections on finalMessage() rather
+      // than on the synchronous stream() call. The SDK's APIError subclasses
+      // still carry .status, so isTransient() classification continues to
+      // work; tests must mock by throwing from finalMessage() with .status
+      // set to keep that contract verified.
+      const stream = client.messages.stream(request);
+      const r = await stream.finalMessage();
       // Opt-in diagnostic — stop_reason + token counts + content shape are the
       // discriminating signals when downstream Zod validation fails on the
       // returned plan (truncation vs. malformed output vs. wrong block type).
