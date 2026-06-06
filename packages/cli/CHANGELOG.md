@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.2.3](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.2.2...dark-factory-cli-v2.2.3) (2026-06-06)
+
+
+### Bug Fixes
+
+* **onboard:** switch Phase B to messages.stream (closes [#147](https://github.com/momentiq-ai/dark-factory/issues/147)) ([73f23de](https://github.com/momentiq-ai/dark-factory/commit/73f23de2389f7ebf174aecb1cd579720668c9d53))
+* **onboard:** switch Phase B to messages.stream (closes [#147](https://github.com/momentiq-ai/dark-factory/issues/147)) ([5da0836](https://github.com/momentiq-ai/dark-factory/commit/5da083646f47d180d7a3c79dd24d6aa7d3e3dfea))
+
 ## [2.2.2](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.2.1...dark-factory-cli-v2.2.2) (2026-06-06)
 
 
