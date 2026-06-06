@@ -14,6 +14,15 @@ prose text outside of the tool call. The tool's `input_schema` is strict; fields
 outside the schema are rejected, and the action discriminator forces an unambiguous
 choice per file.
 
+**Shape reminders (empirical failure modes #158):**
+
+- `files` is a JSON **array** of objects. Never a string, never a stringified
+  array. Each item is a real object.
+- Every file item REQUIRES `rationale` (a non-empty string ≤ 800 chars).
+  `emit` and `merge` items additionally require `tailored_content`; `skip`
+  items must NOT include `tailored_content`.
+- `summary` is ≤ 800 characters. If you need to say more, trim — don't exceed.
+
 For every file in the input template, choose exactly ONE action:
 
 | Action | Use when | Required fields |

@@ -48,7 +48,7 @@ function fakeFactory(stub: {
 
 const INPUTS: LlmInputs = {
   systemPrompt: "you are an onboarding assistant",
-  userMessage: "analyze + tailor",
+  messages: [{ role: "user", content: "analyze + tailor" }],
   toolName: "emit_scaffold_plan",
   toolInputSchema: { type: "object", properties: { schemaVersion: { type: "number" } } } as never,
   apiKey: "sk-ant-test",
