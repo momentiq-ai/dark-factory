@@ -75,6 +75,40 @@ describe("RepoAnalysisSchema", () => {
     expect(() => RepoAnalysisSchema.parse(tooMany)).toThrow();
   });
 
+  it("accepts ci.workflows at exactly 50 entries (cycle 15 Phase C cap = 50)", () => {
+    const exactly50 = {
+      ...minimal,
+      ci: {
+        deployStory: null,
+        workflows: Array.from({ length: 50 }, (_, i) => ({
+          name: `workflow-${i}`,
+          path: `.github/workflows/wf-${i}.yml`,
+          triggers: ["push"],
+          jobs: ["build"],
+          matrixDimensions: [],
+        })),
+      },
+    };
+    expect(() => RepoAnalysisSchema.parse(exactly50)).not.toThrow();
+  });
+
+  it("rejects ci.workflows at 51 entries (cycle 15 Phase C cap = 50)", () => {
+    const tooMany = {
+      ...minimal,
+      ci: {
+        deployStory: null,
+        workflows: Array.from({ length: 51 }, (_, i) => ({
+          name: `workflow-${i}`,
+          path: `.github/workflows/wf-${i}.yml`,
+          triggers: ["push"],
+          jobs: ["build"],
+          matrixDimensions: [],
+        })),
+      },
+    };
+    expect(() => RepoAnalysisSchema.parse(tooMany)).toThrow();
+  });
+
   it("caps docs.claudeMd.headings at 50 entries", () => {
     const tooMany = {
       ...minimal,

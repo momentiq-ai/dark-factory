@@ -44,6 +44,7 @@ import type { AdapterRegistry } from "./adapters/critic.js";
 import type { LoadedConfig } from "./policy/config.js";
 import type { BootstrapResult } from "./doppler-bootstrap.js";
 import { gitCommonDir, gitDir } from "./git.js";
+import { checkAgentContextSet } from "./onboard/validate.js";
 import {
   applyProfileAuth,
   resolveProfileWithConfig,
@@ -208,6 +209,28 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorCheck[]> 
   // envs via Doppler / env vars.
   const cloudEnv = detectCloudEnv();
   checks.push(cloudEnvCheck(cloudEnv));
+
+  // 7b. Agent-context-set validation (cycle 15 Phase C). The required-files
+  //     walk (cycle 15 D3 floor: CLAUDE.md, AGENTS.md, .claude/settings.json,
+  //     docs/PRINCIPLES.md, docs/roadmap/cycles/cycle1-*.md,
+  //     .agent-review/config.json) runs UNCONDITIONALLY — if any of those is
+  //     missing, doctor fails loudly. The `context.guidanceFiles` field gates
+  //     ONLY the additional per-path walk (which is opt-in; the required-files
+  //     set is not opt-in). Per Decision #7 round-1 revision.
+  //
+  //     Note: the `context.guidanceFiles` field may not yet exist on the
+  //     AgentReviewConfig Zod schema in @momentiq/dark-factory-schemas — the
+  //     schemas-package PR is a follow-up. Until then, we read the field via a
+  //     runtime cast so this doctor patch lands first (additive-field pattern
+  //     precedent: cycle 5 / cycle 13 cloud-env detection).
+  const guidanceFiles = (
+    loaded.config as { context?: { guidanceFiles?: readonly string[] } }
+  ).context?.guidanceFiles;
+  const agentContextChecks = await checkAgentContextSet({
+    repoRoot: root,
+    guidanceFiles,
+  });
+  checks.push(...agentContextChecks);
 
   // 8. per-adapter doctor() — this is where subscription-auth verification
   // actually lives. Each adapter's doctor() checks ITS own credentials

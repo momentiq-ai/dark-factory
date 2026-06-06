@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "profiles": {
+    "cloud": {
+      "criticIds": [
+        "cursor-local-chief-engineer",
+        "codex-local-chief-engineer",
+        "gemini-local-chief-engineer",
+        "grok-local-chief-engineer"
+      ],
+      "quorum": 3,
+      "modelParamOverrides": {
+        "codex-local-chief-engineer": {
+          "reasoning_effort": "medium"
+        }
+      },
+      "auth": {
+        "codex-local-chief-engineer": "api"
+      }
+    }
+  }
+}

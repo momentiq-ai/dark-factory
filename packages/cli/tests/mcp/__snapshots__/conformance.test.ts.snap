@@ -1138,6 +1138,64 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
     {
       "annotations": {
         "openWorldHint": true,
+      },
+      "description": "Run \`df onboard\` on a target repo. Modes: analysis-only (Phase A — emit RepoAnalysis only), dry-run (Phase B+C — emit merged ScaffoldPlan without writing), apply (Phase B+C — write files to working tree), pr (Phase B+C — branch + commit + open a PR via gh). 'apply' and 'pr' mutate the working tree; their per-call response carries \`annotations.destructiveHint: true\`.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "description": "Operation mode. 'analysis-only' is read-only; 'dry-run' computes a plan but writes nothing; 'apply' writes files in place; 'pr' writes to a fresh branch and opens a PR.",
+            "enum": [
+              "analysis-only",
+              "dry-run",
+              "apply",
+              "pr",
+            ],
+            "type": "string",
+          },
+          "target": {
+            "description": "Absolute path to the target repo's working tree.",
+            "type": "string",
+          },
+        },
+        "required": [
+          "target",
+          "mode",
+        ],
+        "type": "object",
+      },
+      "name": "df_onboard",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "analysis": {
+            "description": "Present when mode='analysis-only' — the RepoAnalysis JSON.",
+          },
+          "applied": {
+            "type": "boolean",
+          },
+          "branchName": {
+            "type": [
+              "string",
+              "null",
+            ],
+          },
+          "dryRun": {
+            "type": "boolean",
+          },
+          "plan": {
+            "description": "Present when mode != 'analysis-only' — the merged ScaffoldPlan.",
+          },
+        },
+        "type": "object",
+      },
+      "title": "Dark Factory onboard",
+    },
+    {
+      "annotations": {
+        "openWorldHint": true,
         "readOnlyHint": true,
       },
       "description": "Read-only catch-up on a handoff issue: derives live state + each linked work item's status + prints the rehydration note. No ownership change. No-arg resolves via 2-tier (open+@me first, then closed+@me within 7d). Works on open AND closed issues (closed = forensic catch-up).",

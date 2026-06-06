@@ -3,9 +3,9 @@
 Audience: maintainers of a repo that wants to consume `@momentiq/dark-factory-cli` + the reusable GitHub Actions workflows published from `momentiq-ai/dark-factory`. After adoption your repo gets:
 
 - **Local subscription-backed critic** on every commit (`.husky/post-commit`) and a pre-push gate (`.husky/pre-push`) — uses your existing Cursor / Codex / Claude / Grok logins (flat-rate) instead of per-token API keys.
-- **A PR-gate critic** that runs the same multi-vendor adversarial-critic fleet against every PR HEAD — either the **W3 hosted App** (`dark-factory/critic`, recommended) or the **W1 CI** workflow. Pick one, not both — see §0.
+- **A PR-gate critic** that runs the same multi-vendor adversarial-critic fleet against every PR HEAD — either the **W3 hosted App** (`dark-factory/critic`, recommended) or the **W1 CI** workflow. Pick one, not both — see §2.
 - **Cycle-doc validation** so PRs cite a `Cycle:` or `Issue:` trailer and the validator enforces Spec-Driven Traceability.
-- **Binding enforcement** — a branch ruleset that makes your chosen PR-gate critic a *required* status check (`dark-factory/critic` for the hosted App, or `agent-critic / agent-critic` for CI), so red verdicts actually block merges (not just post advisory comments). This is the difference between *installing* Dark Factory and *enforcing* it (§8).
+- **Binding enforcement** — a branch ruleset that makes your chosen PR-gate critic a *required* status check (`dark-factory/critic` for the hosted App, or `agent-critic / agent-critic` for CI), so red verdicts actually block merges (not just post advisory comments). This is the difference between *installing* Dark Factory and *enforcing* it (§10).
 - **Optional branch-protection drift detector** if your repo has a ruleset.
 
 This document is the canonical adoption guide. Concrete worked examples:
@@ -14,28 +14,110 @@ This document is the canonical adoption guide. Concrete worked examples:
 - **taxpilot2a F.5a follow-up** ([PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46)) — documents the prerequisite `actions/permissions/access` flip on `momentiq-ai/dark-factory` so cross-repo `uses:` works.
 - **lyra F.5b** (planned) — second external consumer (under `alien8d/`, fully outside momentiq-ai org).
 
-## 0. Choose your PR-gate critic: W3 hosted (recommended) or W1 CI — never both
+## 1. Onboard agent context (NEW — Cycle 15)
+
+**Skip this section** if your repo was scaffolded from `sage-blueprint` (Cycle 2
+Phase 1 — the agent-context set is baked into the template). Otherwise, run
+`df onboard` against your repo BEFORE wiring the critic gate. Rationale: the
+critic is one half of the loop; the "code creator" half (Claude Code, Cursor,
+Codex, Gemini) needs `CLAUDE.md` + `AGENTS.md` + `docs/` to produce
+architecturally coherent code in the first place. A repo onboarded to the
+critic without an agent-context set produces worse AI output than one with both.
+
+The `df onboard` subcommand analyses the repo's filesystem / manifests / CI / git
+history (deterministic, no LLM) and proposes a tailored scaffold (Phase B's LLM
+tailoring) plus deterministic seeders for ADRs, the cycle-1 bootstrap doc, and
+runbooks (Phase C). See [`docs/roadmap/cycles/cycle15-df-onboard-agent.md`](
+https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle15-df-onboard-agent.md)
+in `dark-factory-platform` for the design.
+
+### 1.1 Run `df onboard --dry-run` first
+
+```bash
+# In your repo root, with @momentiq/dark-factory-cli already installed
+# (see §4 below for the install step):
+./node_modules/.bin/df onboard --dry-run --analysis-depth full
+```
+
+The dry-run prints the proposed scaffold as a diff. Review it: are the surfaced
+decisions correct? Does the proposed `CLAUDE.md` mention your actual services
+and stack? Are the ADRs citing real evidence files?
+
+### 1.2 Apply the scaffold via PR
+
+When the dry-run looks right, open a PR with the scaffold:
+
+```bash
+./node_modules/.bin/df onboard --pr --analysis-depth full
+```
+
+This creates a branch `df/onboard-<sha8>`, commits the scaffold, and opens a PR
+via your `gh` auth. Review and merge as usual; the agent-context set lands on
+your default branch.
+
+### 1.3 Worked example (`cognaa-protoapp`)
+
+For a real worked example, see the first invocation of `df onboard` against
+`cognaa-protoapp` ([`cognaa-protoapp#1`](https://github.com/momentiq-ai/cognaa-protoapp/issues/1) —
+landed during Cycle 15 closure). The PR shows: the surfaced `RepoAnalysis`, the
+Phase B-tailored `CLAUDE.md`, the seeded ADRs (test framework, deploy target,
+frontend stack), the seeded cycle-1 bootstrap doc, and the seeded deploy runbook.
+
+### 1.4 Verify with `df doctor`
+
+After the PR lands, verify the agent-context set is wired:
+
+```bash
+./node_modules/.bin/df doctor
+# Should show 6+ green `agent_context.*` checks (CLAUDE.md, AGENTS.md,
+# .claude/settings.json, docs/PRINCIPLES.md, the cycle1-*.md bootstrap, and
+# .agent-review/config.json).
+```
+
+The `agent_context.*` check group fails loudly if any required file goes
+missing — e.g. a future PR deletes `docs/PRINCIPLES.md` and forgets to put it
+back. The required-files walk (CLAUDE.md, AGENTS.md, .claude/settings.json,
+docs/PRINCIPLES.md, the cycle-1 bootstrap, .agent-review/config.json) runs
+**unconditionally** — your repo doesn't need any extra config to opt in. If
+you ALSO populate a `context.guidanceFiles` block in `.agent-review/config.json`
+(`df onboard` writes a stub for you), each path in that array gets an
+additional per-path check — that's the way to opt repository-specific
+guidance docs (e.g. `docs/architecture/critic-fleet.md`) into the same
+fail-loudly contract as the cycle 15 D3 required set.
+
+### 1.5 Skip with care
+
+If you're a single-package script repo with no services and no CI, you can skip
+the full agent-context set. In that case, write a thin `CLAUDE.md` and
+`AGENTS.md` by hand — they're cheaper than a full `df onboard` run and the
+critic doesn't need the deeper context for trivial repos. But: when in doubt,
+run `df onboard`. The cost is one PR review; the benefit is consistent agent
+behavior on every PR going forward.
+
+---
+
+## 2. Choose your PR-gate critic: W3 hosted (recommended) or W1 CI — never both
 
 Dark Factory runs the **same** multi-vendor adversarial critic fleet against your PRs. You pick **one** substrate as your authoritative PR gate:
 
-- **W3 hosted critic (recommended).** Enroll your repo in the hosted Dark Factory GitHub App. The hosted runtime runs the fleet on Momentiq's compute and posts the **`dark-factory/critic`** check. No CI workflow to maintain, no per-token vendor keys in your repo, and — because it runs server-side with managed keys — it can gate **fork PRs**, which a secret-dependent CI check cannot (§8.4). Enrollment is an org-admin action (App settings → Repository access).
-- **W1 CI agent-critic (legacy / self-host).** The `dark-factory-pr.yml` reusable workflows (§6) run the same fleet on GitHub Actions using per-token API keys. Use this only if you are **not** on the hosted App (e.g. air-gapped, or self-hosting the OSS CLI end to end).
+- **W3 hosted critic (recommended).** Enroll your repo in the hosted Dark Factory GitHub App. The hosted runtime runs the fleet on Momentiq's compute and posts the **`dark-factory/critic`** check. No CI workflow to maintain, no per-token vendor keys in your repo, and — because it runs server-side with managed keys — it can gate **fork PRs**, which a secret-dependent CI check cannot (§10.4). Enrollment is an org-admin action (App settings → Repository access).
+- **W1 CI agent-critic (legacy / self-host).** The `dark-factory-pr.yml` reusable workflows (§8) run the same fleet on GitHub Actions using per-token API keys. Use this only if you are **not** on the hosted App (e.g. air-gapped, or self-hosting the OSS CLI end to end).
 
 > **Do not run both on the same repo.** They are the *same review* on different compute — running both doubles cost, shows two checks for one logical gate, and can produce **conflicting verdicts** (two independent LLM runs disagreeing on one diff). Choose one.
 
-**The local pre-push critic (§3) is kept either way.** It runs at a *different stage* — on your machine, before the PR exists, on flat-rate subscriptions — so it is not a duplicate of either PR-gate critic. It is the fast inner loop that catches blockers before they reach a PR.
+**The local pre-push critic (§5) is kept either way.** It runs at a *different stage* — on your machine, before the PR exists, on flat-rate subscriptions — so it is not a duplicate of either PR-gate critic. It is the fast inner loop that catches blockers before they reach a PR.
 
 ### If you choose W3 hosted (recommended)
 
 | Section | Do it? |
 |---|---|
-| §1–§5 (prerequisites, CLI install, local hooks, `.agent-review/config.json`, cycle docs) | **Yes** — the local layer + traceability are kept. |
-| §6 (`dark-factory-pr.yml` CI critic) | **Skip** as a permanent gate. Optionally wire it *transiently* to confirm the hosted critic's verdicts are sound on your repo, then delete it. |
-| §8 (enforcement) | **Yes**, but require the **`dark-factory/critic`** context instead of `agent-critic / agent-critic`. |
+| §3–§7 (prerequisites, CLI install, local hooks, `.agent-review/config.json`, cycle docs) | **Yes** — the local layer + traceability are kept. |
+| §8 (`dark-factory-pr.yml` CI critic) | **Skip** as a permanent gate. Optionally wire it *transiently* to confirm the hosted critic's verdicts are sound on your repo, then delete it. |
+| §10 (enforcement) | **Yes**, but require the **`dark-factory/critic`** context instead of `agent-critic / agent-critic`. |
 
 **Already stood up the W1 CI critic and moving to hosted?** Cut over without an enforcement gap: enroll in W3 → confirm `dark-factory/critic` is green on a real PR → flip your ruleset's required context `agent-critic / agent-critic` → `dark-factory/critic` → delete `dark-factory-pr.yml` and the CI-critic API-key secrets. Keep the local hooks. Never leave the repo ungated between steps.
 
-## 1. Prerequisites
+## 3. Prerequisites
 
 | Item | Where | Notes |
 |---|---|---|
@@ -44,7 +126,7 @@ Dark Factory runs the **same** multi-vendor adversarial critic fleet against you
 | Node.js >= 20 | `node --version` | The CLI's `engines.node` is `>=20`. |
 | `momentiq-ai/dark-factory` Actions access set to `organization` | `gh api -X PUT repos/momentiq-ai/dark-factory/actions/permissions/access -f access_level=organization` (org admin only) | Without this, your `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@<sha>` calls fail at startup with "workflow file issue". See [taxpilot2a PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) — this trap was discovered the hard way. |
 
-## 2. Install the CLI
+## 4. Install the CLI
 
 Until the 331.3 OSS-flip, the CLI is published to the private `@momentiq` npm scope. Pin to an exact alpha version — floating ranges are not supported (per [`CLAUDE.md` § Consumer-vs-author posture](../CLAUDE.md)).
 
@@ -82,7 +164,7 @@ NPM_TOKEN="<your-token>" npm install
 
 The lockfile (`package-lock.json`) must be committed so CI installs the same version (see `CLAUDE.md` § Reusable workflow conventions — "two paths converge on the same version pin").
 
-## 3. Husky hooks — local critic with subscription auth (the load-bearing piece)
+## 5. Husky hooks — local critic with subscription auth (the load-bearing piece)
 
 The local critic uses your existing **Cursor / Codex / Claude / Grok SUBSCRIPTIONS** (flat monthly fee, ~$20-200/seat depending on vendor) rather than per-token API keys. This is cost-load-bearing: per-commit critic invocations against pay-per-token APIs cost $1000s/week on busy repos; subscription auth is flat-rate.
 
@@ -200,7 +282,7 @@ chmod +x .husky/post-commit .husky/pre-push
 
 If a developer doesn't have subscriptions configured for any vendor, the local critic degrades to "0 critics ran" and pre-push gate fails closed with a missing-review error. Solve by configuring at least one subscription login, or by running `AGENT_REVIEW_SKIP=1 git commit` for trivial commits (logged to `_runs.ndjson` for audit).
 
-## 3.5 Docker build evidence — `scripts/check-dockerfile.sh` + `_dockerbuild-evidence.json` (optional)
+## 5.5 Docker build evidence — `scripts/check-dockerfile.sh` + `_dockerbuild-evidence.json` (optional)
 
 Critic adapter sandboxes (local + W3 hosted) cannot reach a Docker daemon socket, so the critic literally cannot run `docker build` to validate a Dockerfile-touching PR. Without the shim, the critic emits a canonical `requiresHumanJudgment: true` finding on every Dockerfile-touching commit. Wire the shim if your repo has Dockerfiles and you want CI-clean signal on `docker build` outcomes. Tracked at `dark-factory-platform#141`.
 
@@ -244,7 +326,7 @@ Critic adapter sandboxes (local + W3 hosted) cannot reach a Docker daemon socket
 
 The shim itself is consumer-side — the dark-factory CLI only consumes the evidence. The DFP-side shim spec (and a reference implementation) lives at `dark-factory-platform#141`.
 
-## 4. `.agent-review/config.json` — scope to your repo's source layout
+## 6. `.agent-review/config.json` — scope to your repo's source layout
 
 Copy the [dark-factory canonical config](../.agent-review/config.json) into your repo and adjust three things:
 
@@ -256,7 +338,7 @@ Copy the [dark-factory canonical config](../.agent-review/config.json) into your
 
 Also drop a critic-prompt fragment at `.agent-review/prompts/local-critic.md` with your repo-specific quality bar. See [dark-factory's own](../.agent-review/prompts/local-critic.md) as a starting template.
 
-### 4.1 Deterministic schema-lint critic (`static-schema-lint`)
+### 6.1 Deterministic schema-lint critic (`static-schema-lint`)
 
 In addition to the LLM critics, the local fleet ships a **deterministic** critic that runs JSON-Schema validation on schema-annotated code blocks inside changed `*.md` files. It has **no API key, no subscription, no network call** — pure `ajv`-backed validation. Runtime: <100ms per PR.
 
@@ -336,7 +418,7 @@ Block-comment-friendly fences use `/* schema: <name> */`. Built-in schema names:
 
 **What it does NOT do.** It does not auto-detect schemas from file paths (the opt-in annotation is required — false positives erode trust faster than false negatives). It does not call any LLM. It does not validate the full markdown body — only annotated code blocks.
 
-### 4.2 `aggregation.unilateralVetoRules` — self-consistency demotion (schemas 0.5.0 / CLI 1.2.0)
+### 6.2 `aggregation.unilateralVetoRules` — self-consistency demotion (schemas 0.5.0 / CLI 1.2.0)
 
 > **Optional, additive in `@momentiq/dark-factory-schemas@0.5.0` + `@momentiq/dark-factory-cli@1.2.0`.** Pre-existing configs without this block parse identically and the runtime stays byte-identical to pre-#112 behavior. Bump both pins together — the CLI dependency on schemas is exact, and the two MUST move in lockstep.
 
@@ -408,7 +490,7 @@ The `self_inconsistent` flag is stamped by the in-aggregator self-consistency pr
 
 **Recommendation:** bump both `@momentiq/dark-factory-schemas` and `@momentiq/dark-factory-cli` together when adopting `unilateralVetoRules`. The CLI pin is what carries the runtime behavior; the schemas pin only guarantees the on-disk artifact shape can be re-parsed losslessly by downstream consumers.
 
-## 5. `docs/roadmap/cycles/` — Spec-Driven Traceability (MANDATORY)
+## 7. `docs/roadmap/cycles/` — Spec-Driven Traceability (MANDATORY)
 
 Per the AI-Native Manifesto §10 (`sage3c:docs/engineering/ai-native-manifesto.md`), Dark Factory consumer repos MUST carry a `docs/roadmap/cycles/` directory containing cycle docs. The `cycle-doc-validation` reusable workflow (extracted from `sage3c/scripts/ci/validate_cycle_doc.py`) enforces:
 
@@ -438,9 +520,9 @@ tags:
 
 Subsequent PRs in your repo cite `Cycle: 1` or, for tactical follow-ups after closure, `Issue: #<N>`. See [sage3c's cycle directory](https://github.com/momentiq-ai/sage3c/tree/main/docs/roadmap/cycles) for the corpus this validator was designed against.
 
-## 6. `.github/workflows/dark-factory-pr.yml` — invoke the reusable workflows
+## 8. `.github/workflows/dark-factory-pr.yml` — invoke the reusable workflows
 
-> **Legacy / transitional for W3-enrolled repos.** If you adopt the **W3 hosted App** (§0, recommended) you do **not** need this CI workflow as a permanent gate — `dark-factory/critic` is your authoritative gate. Wire `dark-factory-pr.yml` only if you self-host the critic (not on the hosted App), or *transiently* to validate the hosted critic before deleting it. Running both the CI critic and the hosted critic on one repo is a duplicate gate (see §0).
+> **Legacy / transitional for W3-enrolled repos.** If you adopt the **W3 hosted App** (§2, recommended) you do **not** need this CI workflow as a permanent gate — `dark-factory/critic` is your authoritative gate. Wire `dark-factory-pr.yml` only if you self-host the critic (not on the hosted App), or *transiently* to validate the hosted critic before deleting it. Running both the CI critic and the hosted critic on one repo is a duplicate gate (see §2).
 
 Pin each reusable workflow to an exact **commit SHA** (NOT a `@v0` tag — per `CLAUDE.md` § Reusable workflow conventions, only `@vX.Y.Z` semver tags and commit SHAs are supported; floating `@v0`/`@v0.1` tags don't exist).
 
@@ -504,11 +586,11 @@ jobs:
       # CI_BOT_PRIVATE_KEY: ${{ secrets.CI_BOT_PRIVATE_KEY }}
 ```
 
-**Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. Every dark-factory reusable workflow deliberately omits a job-level `name:` override so the callee segment defaults to the job id, giving consumers a uniform `<id> / <id>` contract: `agent-critic:` → **`agent-critic / agent-critic`**, `cycle-doc-validation:` → **`cycle-doc-validation / cycle-doc-validation`**, and `pr-status-check:` → **`pr-status-check / pr-status-check`** (issue #27 — a prior `name: "PR Status Check"` override broke the contract and permanently blocked merges). This is the EXACT string your ruleset must require in §8 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §8 below to make the check binding.
+**Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. Every dark-factory reusable workflow deliberately omits a job-level `name:` override so the callee segment defaults to the job id, giving consumers a uniform `<id> / <id>` contract: `agent-critic:` → **`agent-critic / agent-critic`**, `cycle-doc-validation:` → **`cycle-doc-validation / cycle-doc-validation`**, and `pr-status-check:` → **`pr-status-check / pr-status-check`** (issue #27 — a prior `name: "PR Status Check"` override broke the contract and permanently blocked merges). This is the EXACT string your ruleset must require in §10 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §10 below to make the check binding.
 
 See [taxpilot2a's dark-factory-pr.yml](https://github.com/momentiq-ai/taxpilot2a/blob/main/.github/workflows/dark-factory-pr.yml) for a working production example pinned to a real commit SHA.
 
-## 7. Provision secrets on your repo's GH Actions
+## 9. Provision secrets on your repo's GH Actions
 
 | Secret | When | Why |
 |---|---|---|
@@ -527,17 +609,17 @@ gh secret set CURSOR_API_KEY --repo <your-org>/<your-repo>
 # ... etc
 ```
 
-## 8. Make Dark Factory binding (required for enforcement)
+## 10. Make Dark Factory binding (required for enforcement)
 
 **This is the step that turns Dark Factory from advisory to enforcing. Skipping it is the single most common adoption failure.**
 
-Everything up to here makes the gates *run* and *post verdicts*. None of it makes them *block a merge*. The local Husky `pre-push` hook (§3) gates `git push` on your own machine — but it does nothing for merges that go through the GitHub UI, the merge queue, an auto-merge, a PR opened from another machine, or anything that bypasses the local hook. **CI enforcement is what gates the merge queue.** Without a ruleset that requires the `agent-critic` status check, a PR with red critic findings merges anyway — exactly what happened to `taxpilot2a` PR #48 (merged ~4 minutes before `agent-critic` finished, with the critic's findings landing on `main` unguarded; tracked at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213)).
+Everything up to here makes the gates *run* and *post verdicts*. None of it makes them *block a merge*. The local Husky `pre-push` hook (§5) gates `git push` on your own machine — but it does nothing for merges that go through the GitHub UI, the merge queue, an auto-merge, a PR opened from another machine, or anything that bypasses the local hook. **CI enforcement is what gates the merge queue.** Without a ruleset that requires the `agent-critic` status check, a PR with red critic findings merges anyway — exactly what happened to `taxpilot2a` PR #48 (merged ~4 minutes before `agent-critic` finished, with the critic's findings landing on `main` unguarded; tracked at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213)).
 
 > **Rulesets are NOT optional for enforcement.** Earlier sections describe `branch-protection-audit` as an *optional* drift detector — that audit is genuinely optional. **Requiring the `agent-critic` check is not.** If you want Dark Factory to actually block anything, you must require it. "Installed Dark Factory" and "enforcing Dark Factory" are two different states; this section closes the gap between them.
 
-### 8.1 Apply the enforcement ruleset
+### 10.1 Apply the enforcement ruleset
 
-> **W3 hosted repos:** require the **`dark-factory/critic`** context (posted by the hosted App) instead of `agent-critic / agent-critic`. The JSON below shows the W1/CI contexts — swap `agent-critic / agent-critic` for `dark-factory/critic` if your authoritative gate is the hosted App (§0). Everything else in this section applies unchanged.
+> **W3 hosted repos:** require the **`dark-factory/critic`** context (posted by the hosted App) instead of `agent-critic / agent-critic`. The JSON below shows the W1/CI contexts — swap `agent-critic / agent-critic` for `dark-factory/critic` if your authoritative gate is the hosted App (§2). Everything else in this section applies unchanged.
 
 Create a branch ruleset on your repo that requires (a) the `agent-critic` status check to be green and (b) all bot review threads to be resolved before merge. The payload below is repo-agnostic — you target your repo in the `gh api` path, not in the JSON. Save it as `main-enforcement.json`:
 
@@ -597,9 +679,9 @@ Verify it took:
 gh api repos/<your-org>/<your-repo>/rulesets --jq '.[] | {id, name, enforcement}'
 ```
 
-### 8.2 The required context string MUST match your caller job-id
+### 10.2 The required context string MUST match your caller job-id
 
-The single detail that breaks this step: **the required context must be the EXACT string your CI emits.** Per §6 (Caller job-id naming), a reusable workflow invoked via `uses:` emits the context `<caller-job-id> / <callee-job-name>`. With the caller job declared `agent-critic:` (as in §6), the context is **`agent-critic / agent-critic`** — that is what the JSON above requires. If you renamed your caller job, or wired the workflow differently, run this against a recent PR of yours and require **whatever string actually appears**:
+The single detail that breaks this step: **the required context must be the EXACT string your CI emits.** Per §8 (Caller job-id naming), a reusable workflow invoked via `uses:` emits the context `<caller-job-id> / <callee-job-name>`. With the caller job declared `agent-critic:` (as in §8), the context is **`agent-critic / agent-critic`** — that is what the JSON above requires. If you renamed your caller job, or wired the workflow differently, run this against a recent PR of yours and require **whatever string actually appears**:
 
 ```bash
 # Inspect the real context strings your CI produced on a recent PR:
@@ -613,24 +695,24 @@ Requiring a context that never reports leaves every PR **blocked forever** waiti
 
 `integration_id: 15368` pins each context to the GitHub Actions app (a global constant across GitHub), so a status of the same name posted by a different app cannot satisfy the requirement. It is optional but recommended; drop it only if you require the same context name from a non-Actions integration.
 
-### 8.3 Which checks to require (and which not to)
+### 10.3 Which checks to require (and which not to)
 
 | Context | Require by default? | Why |
 |---|---|---|
-| `dark-factory/critic` | **YES — for W3 hosted repos** | The hosted App's critic check, and the authoritative gate for repos enrolled in the W3 App. Require this *instead of* `agent-critic / agent-critic` (§0). |
+| `dark-factory/critic` | **YES — for W3 hosted repos** | The hosted App's critic check, and the authoritative gate for repos enrolled in the W3 App. Require this *instead of* `agent-critic / agent-critic` (§2). |
 | `agent-critic / agent-critic` | **YES — for W1/self-host repos only** | The CI critic. Require it only if you are *not* on the W3 hosted App. Without a required PR-gate critic, verdicts are advisory and merges aren't blocked. Do **not** require both this and `dark-factory/critic`. |
-| `cycle-doc-validation / cycle-doc-validation` | **YES** | Spec-Driven Traceability is mandatory for consumers (§5). The validator reliably reports on every consumer PR. |
-| `branch-protection-audit / branch-protection-audit` | No | Usually wired with `gate-enabled: 'false'` (§6) → it's a documented no-op pass. Requiring a no-op check adds no safety. Require it only once you flip `gate-enabled: 'true'` and provision its App token. |
+| `cycle-doc-validation / cycle-doc-validation` | **YES** | Spec-Driven Traceability is mandatory for consumers (§7). The validator reliably reports on every consumer PR. |
+| `branch-protection-audit / branch-protection-audit` | No | Usually wired with `gate-enabled: 'false'` (§8) → it's a documented no-op pass. Requiring a no-op check adds no safety. Require it only once you flip `gate-enabled: 'true'` and provision its App token. |
 | `schema-check / *` | No | The dark-factory `schema-check` workflow validates `@momentiq/dark-factory-schemas` specifically; for your own OpenAPI / JSON Schema drift you typically wire your own `schema-check`. Don't require dark-factory's unless your CI actually runs it and it reports. |
 | `pr-status-check / pr-status-check` | Optional | A no-op sentinel aggregator (always exits 0). Requiring it only proves the Dark Factory PR workflow ran; it carries no quality signal. Add it if you want a liveness assertion. |
 
 The minimum binding configuration is just **`agent-critic / agent-critic`**. The JSON above also requires `cycle-doc-validation / cycle-doc-validation` because traceability is mandatory for consumers; drop that line if your repo genuinely doesn't run the cycle-doc validator yet.
 
-### 8.4 Caveat — fork PRs cannot satisfy a secret-dependent required check
+### 10.4 Caveat — fork PRs cannot satisfy a secret-dependent required check
 
 Once `agent-critic` is required, **external fork PRs become unmergeable through the normal flow**: fork PRs run without access to your repository secrets (`MOMENTIQ_NPM_READ_TOKEN`, `CURSOR_API_KEY`, …), so the `agent-critic` job cannot install the CLI or reach the critic vendors, and the required check never goes green. This is by design (GitHub withholds secrets from fork-triggered runs to prevent secret exfiltration) and is the same class of problem tracked at [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15). Until the 331.3 fork-handling design ships, maintainers must **internalize external contributions** — re-create the fork's branch inside the upstream repo (where secrets are available) and merge that — rather than merging the fork PR directly. If your repo takes no external fork contributions, this caveat does not affect you.
 
-## 9. Validation
+## 11. Validation
 
 **a. Local — `df doctor`:**
 
@@ -644,12 +726,12 @@ This verifies:
 - `core.hooksPath` points at `.husky`.
 - Artifact dir is writable.
 - Doppler bootstrap (if configured).
-- Cloud-env detection (see §9.a.i below) — informational; never fails a gate.
-- Per-adapter `doctor()` — subscription auth lives here. On a workstation (no cloud-env marker set) each vendor's subscription login is probed and a failed probe is a red row. Inside a cloud env where any of the four markers from §9.a.i is truthy, per-critic subscription probes are **skipped** (OAuth is structurally unavailable) and replaced with a single `<criticId>.subscription_auth_unavailable_cloud_env` INFO row whose `remediation` is the canonical bypass string from §13. API-key critics (`auth: "api"`, or no pin) still run their probe in cloud envs — API keys ARE expected to live there via Doppler / env vars.
+- Cloud-env detection (see §11.a.i below) — informational; never fails a gate.
+- Per-adapter `doctor()` — subscription auth lives here. On a workstation (no cloud-env marker set) each vendor's subscription login is probed and a failed probe is a red row. Inside a cloud env where any of the four markers from §11.a.i is truthy, per-critic subscription probes are **skipped** (OAuth is structurally unavailable) and replaced with a single `<criticId>.subscription_auth_unavailable_cloud_env` INFO row whose `remediation` is the canonical bypass string from §15. API-key critics (`auth: "api"`, or no pin) still run their probe in cloud envs — API keys ARE expected to live there via Doppler / env vars.
 
 Fix every red row before opening your first PR.
 
-### 9.a.i `df doctor --json` — machine-readable contract for consumer hooks
+### 11.a.i `df doctor --json` — machine-readable contract for consumer hooks
 
 Consumer-side pre-push hooks (`.husky/pre-push`) call `df doctor --json` to fail-fast on `auth_pending` before invoking the gate engine. The shape is pinned by `DoctorReportV1` in [`packages/schemas/src/index.ts`](https://github.com/momentiq-ai/dark-factory/blob/main/packages/schemas/src/index.ts):
 
@@ -694,7 +776,7 @@ Field-by-field contract:
 
 **Truthy-token rule:** detection fires only on the canonical tokens `"true"` / `"1"` / `"yes"` (case-insensitive after `trim()`). Presence-only side-effect vars (e.g. `CODESPACE_NAME`) are intentionally ignored — the detector is structural, not heuristic, so consumer hooks cannot be tricked by an environment that merely *looks like* a cloud env.
 
-**Pre-push branch order — `cloudEnv` BEFORE `triage`.** Consumer hooks MUST read `cloudEnv.detected` first so the cloud-env bypass remediation is one branch upstream of the auth-pending branch. Cloud-env detection narrows the bypass to *subscription-auth-unavailable* rows only — `ok: false` for any other reason (config_missing, unwritable artifact dir, failed Doppler bootstrap, API-key critic auth failure) still fails the push, so the exit-code contract from §9.a holds in cloud envs too:
+**Pre-push branch order — `cloudEnv` BEFORE `triage`.** Consumer hooks MUST read `cloudEnv.detected` first so the cloud-env bypass remediation is one branch upstream of the auth-pending branch. Cloud-env detection narrows the bypass to *subscription-auth-unavailable* rows only — `ok: false` for any other reason (config_missing, unwritable artifact dir, failed Doppler bootstrap, API-key critic auth failure) still fails the push, so the exit-code contract from §11.a holds in cloud envs too:
 
 ```bash
 report=$(./node_modules/.bin/df doctor --json) || true
@@ -706,10 +788,10 @@ if printf '%s' "$report" | jq -e '.cloudEnv.detected' >/dev/null; then
   # `ok=true` is the only safe bypass signal. API-key critics, config
   # checks, hook wiring, and artifact-dir writability still run and
   # MUST aggregate to `ok=true` for the push to proceed; any other
-  # failure flows to the §13 explicit-bypass path below.
+  # failure flows to the §15 explicit-bypass path below.
   markers=$(printf '%s' "$report" | jq -r '.cloudEnv.markers | join(", ")')
   if [ "$ok" = "true" ]; then
-    printf 'df doctor: cloud env detected (%s) — subscription probes skipped; see §13 for the AGENT_REVIEW_BYPASS pattern if needed.\n' "$markers"
+    printf 'df doctor: cloud env detected (%s) — subscription probes skipped; see §15 for the AGENT_REVIEW_BYPASS pattern if needed.\n' "$markers"
     exit 0
   fi
   printf 'df doctor: cloud env detected (%s) but required checks failed (state=%s).\n' "$markers" "$state" >&2
@@ -733,11 +815,11 @@ Exit-code semantics are unchanged from the human path: `0` if every required che
 - `agent-critic / agent-critic` → PASS or advisory findings (degrade-and-pass under min-complete-quorum).
 - `branch-protection-audit / branch-protection-audit` → PASS with `gate-enabled: 'false'`.
 
-After §8, the `agent-critic / agent-critic` and `cycle-doc-validation / cycle-doc-validation` contexts are *required* — the merge queue will not admit a PR until they report green and every bot review thread is resolved. Confirm enforcement is live by checking that the PR's merge box shows these as **Required** checks.
+After §10, the `agent-critic / agent-critic` and `cycle-doc-validation / cycle-doc-validation` contexts are *required* — the merge queue will not admit a PR until they report green and every bot review thread is resolved. Confirm enforcement is live by checking that the PR's merge box shows these as **Required** checks.
 
 First-time critic runs are advisory (the policy is `aggregation.blockOnReviewError: false` per the canonical config). Treat the first 1-2 PRs as calibration: tighten `.agent-review/prompts/local-critic.md` and the config until critic findings are signal, not noise. A consequence: while the critic is still in calibration it degrades-and-passes, so the required check stays green even with advisory findings — enforcement bites once the critic emits actual `state=BLOCKING` verdicts.
 
-## 9.5 Inspect critic artifacts from the shell — `df show` / `df status`
+## 11.5 Inspect critic artifacts from the shell — `df show` / `df status`
 
 After `df review` writes a per-commit artifact to `.git/agent-reviews/<sha>.json`, two CLI subcommands inspect it without `jq`-pipelines or hand-rolled JSON parsing. Both are thin CLI mirrors of the `df_show_run` / `df_findings` MCP tools and share the same backend, so an operator's shell-side view and an agent's MCP-side view are guaranteed to match.
 
@@ -771,14 +853,14 @@ The `--json` outputs are **byte-equivalent** with their MCP-tool counterparts' `
 
 `df show --help` and `df status --help` list flags and exit codes inline.
 
-## 10. Update cadence
+## 12. Update cadence
 
 - Pin to a specific alpha/beta version (`0.1.0-alpha.N`) — never floating ranges.
 - Bump CLI deliberately when dark-factory releases a new version. Check the [changelog](https://github.com/momentiq-ai/dark-factory/blob/main/CHANGELOG.md) (when it lands in Phase F+) or the [release tags](https://github.com/momentiq-ai/dark-factory/tags).
 - When bumping, update both `package.json` (`devDependencies."@momentiq/dark-factory-cli"`) AND `.github/workflows/dark-factory-pr.yml` (`with: cli-version:`). The `df doctor` subcommand surfaces drift between them.
 - Reusable workflow SHA bumps are decoupled: you can bump the CLI without bumping the workflow SHA and vice versa. Test in a draft PR before landing in main.
 
-## 11. Wire the MCP server into your agent
+## 13. Wire the MCP server into your agent
 
 `@momentiq/dark-factory-cli@0.2.0-alpha.0+` ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini) can connect over stdio and get a structured tool + resource + prompt catalog instead of shelling out to `df` and parsing stdout. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
 
@@ -787,17 +869,17 @@ The `--json` outputs are **byte-equivalent** with their MCP-tool counterparts' `
 19 tools (read-only + write), 9 URI-addressable resources, and 7 prompts. Highlights:
 
 - `df_doctor` — env verification (Node, hooks, vendor auth, Doppler) as structured `{ ok, checks }`
-- `df_findings(commit)` — narrowed per-critic findings for a SHA (CLI mirror: `df status --json`, see §9.5)
-- `df_show_run(commit)` — full ReviewArtifact JSON for a SHA (CLI mirror: `df show --json`, see §9.5)
+- `df_findings(commit)` — narrowed per-critic findings for a SHA (CLI mirror: `df status --json`, see §11.5)
+- `df_show_run(commit)` — full ReviewArtifact JSON for a SHA (CLI mirror: `df show --json`, see §11.5)
 - `df_cycle_list` / `df_cycle_read(cycle_id)` — your repo's cycle docs as structured `{ frontmatter, sections }`
 - `df_adr_list` / `df_adr_read(adr_id)` — ADRs under `docs/ADR/`
 - `df_critics_config` — parsed `.agent-review/config.json` (narrowed view)
 - `df_stats({since?, until?})` — audit-trail summary (NDJSON-backed)
-- `df_gate_push({stdin_protocol, full_range?})` — pre-push gate. Default (Cycle 13 / dark-factory-platform#149): evaluates ONLY HEAD; intermediate commits are receipts. Set `full_range: true` to opt into the pre-Cycle-13 per-commit semantic (mirrors the CLI `--full-range` flag / `DF_GATE_FULL_RANGE=1` env). Soundness caveat applies on both sides — see §3 for the cumulative-state note.
+- `df_gate_push({stdin_protocol, full_range?})` — pre-push gate. Default (Cycle 13 / dark-factory-platform#149): evaluates ONLY HEAD; intermediate commits are receipts. Set `full_range: true` to opt into the pre-Cycle-13 per-commit semantic (mirrors the CLI `--full-range` flag / `DF_GATE_FULL_RANGE=1` env). Soundness caveat applies on both sides — see §5 for the cumulative-state note.
 - `df_review` (async) / `df_review_status(job_id)` — kick off + poll a critic run
 - `df_bypass({reason, sha, issue_url?})` — record an audit-logged emergency bypass; elicits a missing `issue_url` from the user when the client supports MCP elicitation
 - `df_cycle_doc_generate` / `df_adr_generate` — server asks the **client's** LLM (via MCP sampling) to populate a skeleton, validates, writes the file
-- `df_handoff` / `df_handoffs` / `df_accept` / `df_rehydrate` — the agent handoff protocol (see [§12](#12-session-continuity--the-agent-handoff-protocol))
+- `df_handoff` / `df_handoffs` / `df_accept` / `df_rehydrate` — the agent handoff protocol (see [§14](#14-session-continuity--the-agent-handoff-protocol))
 
 Resources at `df://repo/cycles`, `df://repo/cycle/{id}`, `df://repo/adrs`, `df://repo/adr/{id}`, `df://repo/findings/{sha}`, `df://repo/runs/recent[?limit]`, `df://repo/config/critics`, `df://repo/audit-log[?since]`, `df://repo/principles`.
 
@@ -875,7 +957,7 @@ The agent should connect, list tools, call `df_doctor`, and render the structure
 - **No `resources/subscribe` in this release.** Subscriptions land in cycle 5 Phase 2 (the remote HTTP MCP gateway at `mcp.dark-factory.momentiq.ai`). Phase 1 stdio clients poll if they need freshness.
 - **The protocol version pinned for this release is `2025-06-18`.** Newer clients negotiate to whichever supported version they prefer; older clients negotiate down. The SDK manages this — you do nothing.
 
-## 11.5 `darkfactory.yaml` + bundled-skill install (DFP #192)
+## 13.5 `darkfactory.yaml` + bundled-skill install (DFP #192)
 
 `@momentiq/dark-factory-cli` (alpha tag past `1.2.0`) bundles agent **skills** templated against a consumer's repo shape and installs them on demand. The doctrine carried by `chief-engineer-review` (PR-gate AI architectural critic) and `chief-engineer-blitz` (orchestrated multi-PR delivery) is sourced inside this repo, rendered with the consumer's repo-shaped overrides, and written to `.claude/skills/<name>/` so Claude Code (and any other skill-aware agent) picks them up natively.
 
@@ -956,7 +1038,7 @@ sed -i 's/Your Repo/Production Repo/' darkfactory.yaml
 ./node_modules/.bin/df skills install --all     # action=updated
 ```
 
-## 12. Session continuity — the agent handoff protocol (Cycle 12 Issue-anchor)
+## 14. Session continuity — the agent handoff protocol (Cycle 12 Issue-anchor)
 
 `@momentiq/dark-factory-cli` (alpha tag past `0.6.0-alpha.9`) ships four verbs that carry an
 agent's *working context* across a session boundary (reboot, local-model
@@ -989,7 +1071,7 @@ Issue-anchor redesign):
   bounded to the Issue lifecycle (open → unassigned/assigned → closed by
   `/accept`). Push your branch yourself when you're ready.
 
-Available identically as CLI subcommands and MCP tools (the [§11](#11-wire-the-mcp-server-into-your-agent)
+Available identically as CLI subcommands and MCP tools (the [§13](#13-wire-the-mcp-server-into-your-agent)
 server exposes the same logic), plus MCP prompts that carry the judgment:
 
 | Verb | CLI | MCP tool | When |
@@ -1109,14 +1191,14 @@ any description of the existing security context.
 
 The verbs need `gh` (authenticated) on PATH — the same dependency the cycle-doc
 and branch-protection subcommands already use. No extra config. As MCP tools
-they are exposed automatically by the [§11](#11-wire-the-mcp-server-into-your-agent)
+they are exposed automatically by the [§13](#13-wire-the-mcp-server-into-your-agent)
 server, so an MCP-wired agent discovers `df_handoff` / `df_accept` /
 `df_rehydrate` / `df_handoffs` (Issue-anchored; PR-arg removed)
 without any prompting. The MCP tools return both `structuredContent` (typed
 shape for clients that consume it) and `content[0].text` (bash-compatible
 rendered text for clients that don't).
 
-## 13. Cloud environments — running Claude Code from a sandbox or Codespace
+## 15. Cloud environments — running Claude Code from a sandbox or Codespace
 
 The Dark Factory pre-push gate's local critic profile uses **subscription-backed** auth (Cursor + Codex via Keychain-backed OAuth) — by design, no API keys live on the workstation. That works on a laptop with a browser. It does **not** work in a cloud sandbox (`claude.ai/code`, GitHub Codespaces, browser-driven environments) where OAuth has nowhere to redirect.
 
@@ -1133,11 +1215,11 @@ Both skip the local subscription critics (cloud OAuth can't reach a browser). Pu
 AGENT_REVIEW_BYPASS="cloud env — local quorum unavailable; W3 critic is the gate" git push
 ```
 
-The bypass is **loud + audited** — `.git/agent-reviews/_runs.ndjson` records the reason verbatim and `make df-stats` surfaces it. The merge gate is the **hosted W3 critic** (`dark-factory/critic`), enforced by your repo's branch ruleset (§8). Cloud-env pushes are a *cooperation pattern* with the hosted gate, not a defeat of it.
+The bypass is **loud + audited** — `.git/agent-reviews/_runs.ndjson` records the reason verbatim and `make df-stats` surfaces it. The merge gate is the **hosted W3 critic** (`dark-factory/critic`), enforced by your repo's branch ruleset (§10). Cloud-env pushes are a *cooperation pattern* with the hosted gate, not a defeat of it.
 
-Pre-push hooks branch on this structurally via the `cloudEnv.detected` field of `df doctor --json` (see §9.a.i for the field contract + the canonical hook branch). The cloud-env branch comes BEFORE the `triage.state === "auth_pending"` branch — inside a cloud env, missing subscription auth is *expected* (probes are skipped), not a hook failure.
+Pre-push hooks branch on this structurally via the `cloudEnv.detected` field of `df doctor --json` (see §11.a.i for the field contract + the canonical hook branch). The cloud-env branch comes BEFORE the `triage.state === "auth_pending"` branch — inside a cloud env, missing subscription auth is *expected* (probes are skipped), not a hook failure.
 
-### 13.1 Sage-blueprint consumers (recommended path)
+### 15.1 Sage-blueprint consumers (recommended path)
 
 Repos scaffolded from [`momentiq-ai/sage-blueprint`](https://github.com/momentiq-ai/sage-blueprint) with `enable_agent_review=true` get the cloud-env scaffold automatically, gated on the same `enable_agent_review` flag as the rest of the consumer shape. Five files land in `template/{{ '{{' }} product_slug {{ '}}' }}/`:
 
@@ -1147,11 +1229,11 @@ Repos scaffolded from [`momentiq-ai/sage-blueprint`](https://github.com/momentiq
 
 Tracked at [`momentiq-ai/sage-blueprint#169`](https://github.com/momentiq-ai/sage-blueprint/pull/169).
 
-### 13.2 Non-blueprint consumers (retrofit path)
+### 15.2 Non-blueprint consumers (retrofit path)
 
 For repos that didn't scaffold from sage-blueprint, the same 5 files can be copy-pasted from the sage-blueprint template at `template/{{ '{{' }} product_slug {{ '}}' }}/`, with the four template variables substituted by hand (`product_slug` → your repo name, `doppler_project`/`doppler_config` → your Doppler scope, `github_org` → the GH org). The runbook also references the originating cycle for design rationale.
 
-### 13.3 Design rationale + as-shipped evidence
+### 15.3 Design rationale + as-shipped evidence
 
 The originating cycle is [`momentiq-ai/dark-factory-platform` → Cycle 13](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle13-claude-code-cloud-envs.md). It documents:
 
@@ -1159,13 +1241,13 @@ The originating cycle is [`momentiq-ai/dark-factory-platform` → Cycle 13](http
 - **Exit-criteria evidence** — a real Codespaces session reaching the prompt with `make df-doctor` clean, then a canonical-bypass push captured in the audit log verbatim. The closeout PR comment thread on DFP #166 has the full post-create stdout + audit-log line as it landed.
 - **Gotchas + workarounds** — Codespaces secrets do NOT flow through `${localEnv:…}` (auto-inject by name into `containerEnv`); local VS Code Dev Containers has no user-level overlay merge mechanism, so per-user env injection is either a personal-branch overlay or manual per-session export + `bash .devcontainer/post-create.sh` re-run.
 
-### 13.4 What's NOT in scope
+### 15.4 What's NOT in scope
 
 - **Provisioning local subscription critics in any cloud surface.** Their OAuth requires a browser the sandbox cannot reach; Anthropic's docs explicitly disallow this on the web surface and the devcontainer docs explicitly discourage mounting Keychain state. The hosted W3 critic remains the merge gate via branch protection.
 - **A "cloud-env" bypass class.** Cloud pushes use the *existing* `AGENT_REVIEW_BYPASS` primitive with a canonical reason string — same audit posture as every other bypass. No new `CLOUD_ENV=1` short-circuit was introduced (or wanted).
 - **Multi-tenant fan-out / shared cloud-env config.** The scaffold is for one repo's onboarding. Org-wide cloud-env infrastructure is a separate concern.
 
-## 14. References
+## 16. References
 
 - **Onboarding-enforcement gap (this section's rationale):** [`momentiq-ai/dark-factory#17`](https://github.com/momentiq-ai/dark-factory/issues/17) — consumers adopting gates without enforcing them; evidence at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213).
 - **Fork-PR / secret-dependent required check:** [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15) — why fork PRs can't satisfy a required `agent-critic` until the 331.3 fork-handling design ships.
@@ -1176,4 +1258,4 @@ The originating cycle is [`momentiq-ai/dark-factory-platform` → Cycle 13](http
 - **A2 follow-up — CLI adapter dynamic loading:** the CLI dynamically imports vendor adapters inside `buildDefaultAdapterRegistry()` (`packages/cli/src/cli.ts` lines ~70-80) so the binary loads under `--ignore-scripts` for non-`df critic` subcommands. Don't trip over this when debugging install issues.
 - **Reusable workflow security model:** `CLAUDE.md` § Reusable workflow conventions explains the trusted-surface rebind (workflow-baked `EXPECTED_INTEGRITY` + `$RUNNER_TEMP/df-trusted-*` extraction) for paranoid consumers.
 - **Worked external example:** [taxpilot2a PR #45](https://github.com/momentiq-ai/taxpilot2a/pull/45) (F.5a integration) + [PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) (access-permission follow-up).
-- **Docker build evidence shim contract (§3.5):** [`dark-factory-platform#141`](https://github.com/momentiq-ai/dark-factory-platform/issues/141) — host-side `scripts/check-dockerfile.sh` shim spec; the upstream half (CLI evidence consumption + SHA binding + injection-resistant prompt section) shipped in `dark-factory#115`.
+- **Docker build evidence shim contract (§5.5):** [`dark-factory-platform#141`](https://github.com/momentiq-ai/dark-factory-platform/issues/141) — host-side `scripts/check-dockerfile.sh` shim spec; the upstream half (CLI evidence consumption + SHA binding + injection-resistant prompt section) shipped in `dark-factory#115`.

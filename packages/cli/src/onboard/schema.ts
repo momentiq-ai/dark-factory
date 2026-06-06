@@ -116,7 +116,13 @@ export const RepoAnalysisSchema = z
     services: z.array(ServiceSchema).max(30),
     dependencies: z.array(DependencySchema).max(20),
     ci: z.object({
-      workflows: z.array(WorkflowSchema).max(20),
+      // Bumped 20 → 50 in cycle 15 Phase C to admit sage3c (28 workflows)
+      // through the schema; the 16 KB byte-budget canary on
+      // `RepoAnalysis` JSON still gates the absolute output size. Workflow
+      // entries are small (name + path + jobs + triggers), so 50 fits well
+      // inside the budget; the previous 20-cap was an aggressive heuristic
+      // that the sage3c reproduction harness empirically outgrew.
+      workflows: z.array(WorkflowSchema).max(50),
       deployStory: DeployStorySchema.nullable(),
     }),
     tree: z.object({

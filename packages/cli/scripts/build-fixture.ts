@@ -203,12 +203,15 @@ async function copyDocsTree(
 
 // Copy every .github/workflows/*.yml|yaml — these MUST keep full content
 // because ciAnalyzer parses them via the YAML parser. Capped at MAX_WORKFLOWS
-// because the RepoAnalysis schema enforces `.max(20)` on `ci.workflows`; if a
-// real source repo has > 20 workflows (sage3c has 28), copying them all would
-// make analyze() throw on Zod validation. We pick the first 20 alphabetically
+// because the RepoAnalysis schema enforces `.max(50)` on `ci.workflows` (cycle
+// 15 Phase C bumped this from 20; sage3c has 28 — see schema.ts). The fixture
+// builder keeps the same cap so the resulting fixture tree's analyze() output
+// stays inside the schema bound. We pick the first MAX_WORKFLOWS alphabetically
 // for a deterministic-and-defensible slice; this is a fixture-builder
-// constraint, not an analyzer claim.
-const MAX_WORKFLOWS = 20;
+// constraint, not an analyzer claim. Existing golden fixtures were generated
+// at the old cap (20); regenerating with the new cap is a deliberate manual
+// step (`npx tsx scripts/build-fixture.ts --repo ... --dest ...`).
+const MAX_WORKFLOWS = 50;
 
 async function copyWorkflows(
   srcRoot: string,
