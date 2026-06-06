@@ -619,13 +619,31 @@ const FABRICATED_EVIDENCE_PATTERNS: readonly RegExp[] = Object.freeze([
 // CHANGES_REQUESTED finding whose evidence quotes the canonical citation
 // passes through unchanged because its `requiredFix` proposes a code action,
 // not an environment switch.
+//
+// PR #149 round-2 cursor BLOCKER (codex-sdk.ts:624 in the prior commit):
+// the previous broader `(working|different|another|new|a)\s+(sandbox|
+// environment|container|host|kernel)` pattern misclassified benign
+// code-review fixes like "Add a sandbox mock for the filter" or "Configure
+// a different container image in docker-compose.yml". Replaced with a
+// strictly narrower set: each pattern requires either an explicit "rerun"
+// directive, a sandbox-tech token paired with a host/posture qualifier
+// (working/functional/enabled bwrap/user-namespaces/landlock), or an
+// explicit IAM/capability grant. Pattern review under a corpus of benign
+// recommendations + the canonical #109 fabricated requiredFix shows:
+//   - "rerun in an environment with a working sandbox" → matches #1 + #2
+//   - "Add a sandbox mock for the filter"            → no match
+//   - "Configure a different container image"        → no match
+//   - "Add tests in a new environment module"        → no match
+//   - "Re-wrap the resolved value, or update the caller to await" → no match
 const SANDBOX_FIX_PATTERNS: readonly RegExp[] = Object.freeze([
-  /\bre-?run\s+(this|the)?\s*(review|critic|gate|job|run)?\s*in\b/i,
-  /\b(working|different|another|new|a)\s+(sandbox|environment|container|host|kernel)\b/i,
+  /\bre-?run\s+(this|the)?\s*(review|critic|gate|job|run)?\s*in\s+(a|an|the)?\s*(working|different|broken|alternate|alternative)?\s*(sandbox|environment|container|host|machine|kernel)/i,
+  /\b(working|functional|enabled|properly[-\s]configured)\s+(sandbox|bwrap|user[\s_-]?namespaces?|landlock)\b/i,
   /\bsysctl\s+kernel\./i,
   /\benable\s+(unprivileged\s+)?user[\s_-]?namespaces?\b/i,
-  /\bgrant\s+(SYS_ADMIN|CAP_)/i,
+  /\bgrant\s+(SYS_ADMIN|CAP_[A-Z_]+)\b/i,
   /\brun\s+on\s+(a\s+host|a\s+machine|GitHub-?hosted|hardware|bare-?metal)\b/i,
+  /\b(where|with)\s+bwrap\b/i,
+  /\benvironment\s+(where|with)\s+(bwrap|landlock|sys_admin|cap_[a-z_]+|user[\s_-]?namespaces?)\b/i,
 ]) as readonly RegExp[];
 
 /**

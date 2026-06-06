@@ -1791,6 +1791,34 @@ test("isFabricatedSandboxFinding: empty / missing requiredFix → false (not eno
   );
 });
 
+test("isFabricatedSandboxFinding: round-2 narrowing — benign code-review fixes paired with bwrap-citing evidence MUST NOT classify as fabricated", () => {
+  // PR #149 round-2 cursor BLOCKER (codex-sdk.ts:624): the previous
+  // `(working|different|another|new|a)\s+(sandbox|environment|container|host|kernel)`
+  // pattern was too broad — it matched benign code-review recommendations
+  // that mention these tokens. The round-2 narrowing pairs the tokens
+  // with explicit "rerun", "working/functional", or env-with-bwrap
+  // qualifiers. Verify the listed corner cases pass through (= not
+  // classified as fabricated) even when paired with bwrap-quoting
+  // evidence.
+  const evidenceWithBwrap = `the regex literal at line 582 mirrors the exact stderr line \`${BWRAP_NAMESPACE_FAILURE}\` — verify intent`;
+  const benignFixes = [
+    "Add regression coverage using a sandbox mock for the filter",
+    "Configure a different container image in docker-compose.yml",
+    "Add tests in a new environment module",
+    "Re-wrap the resolved value, or update the caller to await",
+    "Use a host-bound mount for the integration test fixtures",
+    "Move the regex to a new pattern array in src/patterns.ts",
+    "Run the existing tests with --watch to verify the assertion",
+  ];
+  for (const requiredFix of benignFixes) {
+    expect_eq(
+      isFabricatedSandboxFinding({ evidence: evidenceWithBwrap, requiredFix }),
+      false,
+      `benign code-review fix MUST NOT classify as fabricated: ${requiredFix}`,
+    );
+  }
+});
+
 test("isFabricatedSandboxFinding: each pattern in FABRICATED_EVIDENCE_PATTERNS hits when paired with a sandbox-rerun requiredFix", () => {
   const requiredFix = "rerun in a working sandbox";
   expect_eq(
@@ -1923,16 +1951,78 @@ test("review: model emits CHANGES_REQUESTED citing bwrap in finalResponse with F
   );
   expect_eq(filterEvent?.droppedFindingCount, 1);
   expect_eq(filterEvent?.verdictFlippedToApproved, true);
-  expect_eq(
-    result.requiresHumanJudgment,
-    false,
-    "PR #149 round-1 cursor BLOCKER: requiresHumanJudgment MUST be cleared when flipping verdict to APPROVED — otherwise the downstream gate vetoes the run regardless of verdict, defeating the whole filter",
-  );
   expect_match(
     filterEvent?.sandboxCitation ?? "",
     /bwrap: No permissions to create a new namespace/,
     "filter event MUST carry the literal stderr citation so operators can debug the container",
   );
+});
+
+test("review: model emits CHANGES_REQUESTED with requiresHumanJudgment:true and only fabricated findings → filter drops findings, flips verdict AND clears requiresHumanJudgment (PR #149 round-2 cursor BLOCKER 1860)", async () => {
+  // The downstream gate vetoes any run where `requiresHumanJudgment: true`
+  // regardless of verdict. The Copilot finding on round 1 surfaced the
+  // gap (verdict-flip branch didn't clear it); the round-1 fix cleared it
+  // on flip. But round-2 cursor flagged the test gap: the existing #148
+  // test had `requiresHumanJudgment: false` as input so the assertion
+  // would pass even without the clearing line. This test exercises the
+  // actual path — input `requiresHumanJudgment: true`, ALL findings
+  // fabricated → both verdict flips AND requiresHumanJudgment clears.
+  const fabricatedWithHumanJudgmentJson = JSON.stringify({
+    status: "complete",
+    verdict: "CHANGES_REQUESTED",
+    requiresHumanJudgment: true, // <-- load-bearing: gate vetoes on this regardless of verdict
+    summary: "Cannot verify the diff — escalating to human review.",
+    findings: [
+      {
+        severity: "blocker",
+        category: "contracts",
+        file: "README.md",
+        line: 138,
+        evidence:
+          `the attempted read commands failed with \`${BWRAP_NAMESPACE_FAILURE}\`; cannot verify`,
+        impact: "cannot verify the contracts surface",
+        requiredFix: "rerun in an environment with a working sandbox",
+      },
+    ],
+    validation: { qualityGateResults: [], qualityGatesMissing: [] },
+    confidence: "high",
+  });
+  const events: TelemetryEvent[] = [];
+  const mockClient = makeMockClient({
+    run: async () =>
+      makeTurn({
+        finalResponse: fabricatedWithHumanJudgmentJson,
+        items: [
+          {
+            id: "item_0",
+            type: "command_execution",
+            command: "/bin/zsh -lc 'git diff'",
+            aggregated_output: BWRAP_NAMESPACE_FAILURE,
+            status: "failed",
+          },
+        ],
+      }),
+  });
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () => mockClient,
+    sleep: async () => {},
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker", "high"],
+    emit: (e) => events.push(e),
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.verdict, "APPROVED", "verdict MUST flip — all findings were fabricated");
+  expect_eq(result.findings.length, 0);
+  expect_eq(
+    result.requiresHumanJudgment,
+    false,
+    "PR #149 round-2 cursor BLOCKER: requiresHumanJudgment MUST be cleared when verdict flips — the downstream gate vetoes the run regardless of verdict otherwise, defeating the whole filter. Without this assertion (true → false transition), the prior #148 test would pass even if the clearing code was deleted.",
+  );
+  const filterEvent = events.find((e) => e.event === "critic_run_sandbox_filtered");
+  expect_truthy(filterEvent);
+  expect_eq(filterEvent?.verdictFlippedToApproved, true);
 });
 
 test("review: 2 findings — one fabricated (bwrap evidence + sandbox-rerun requiredFix), one real (code evidence + code requiredFix) — adapter drops only the fabricated finding and preserves verdict (issue #148 mixed case)", async () => {
