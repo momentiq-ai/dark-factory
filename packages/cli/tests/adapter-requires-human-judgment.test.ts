@@ -8,17 +8,19 @@
 //   3. Reject non-boolean values at the schema boundary.
 //
 // Adapters under test:
-//   - codex-sdk    (SDK mock via `createCodex`)
-//   - gemini-sdk   (SDK mock via `createClient`)
-//   - grok-direct-sdk (SDK mock via `createClient`)
-//   - cursor-cli   (subprocess runner mock via `runCursorAgentCli`)
-//   - cursor-sdk   (no test seam for the SDK Agent class — covered via
-//                   the schema boundary the adapter routes through:
-//                   `parseCriticResult`. The adapter copies the finding
-//                   straight from the parsed model output, so parser
-//                   coverage IS the wire-through coverage for that path.
-//                   Schema-level round-trip is also asserted in
-//                   `packages/schemas/tests/review-finding-requires-human-judgment.test.ts`.)
+//   - codex-sdk         (SDK mock via `createCodex`)
+//   - gemini-sdk        (SDK mock via `createClient`)
+//   - grok-direct-sdk   (SDK mock via `createClient`)
+//   - minimax-direct-sdk (SDK mock via `createClient`; Cycle 20)
+//   - cursor-cli        (subprocess runner mock via `runCursorAgentCli`)
+//   - cursor-sdk        (no test seam for the SDK Agent class — covered
+//                        via the schema boundary the adapter routes
+//                        through: `parseCriticResult`. The adapter
+//                        copies the finding straight from the parsed
+//                        model output, so parser coverage IS the
+//                        wire-through coverage for that path. Schema-
+//                        level round-trip is also asserted in
+//                        `packages/schemas/tests/review-finding-requires-human-judgment.test.ts`.)
 //
 // All adapter tests use the existing fixture-shaped APPROVED_RESPONSE
 // pattern and extend it with a CHANGES_REQUESTED + findings payload so
@@ -50,6 +52,11 @@ import {
   type GrokClient,
   type GrokStreamEvent,
 } from "../src/adapters/grok-direct-sdk.js";
+import {
+  MinimaxDirectSdkAdapter,
+  type MinimaxClient,
+  type MinimaxStreamChunk,
+} from "../src/adapters/minimax-direct-sdk.js";
 import {
   CursorCliAdapter,
   type CursorCliRunOutcome,
@@ -292,6 +299,74 @@ test("grok-direct-sdk: omitted finding.requiresHumanJudgment does NOT default to
   };
   const adapter = new GrokDirectSdkAdapter({ apiKey: "k", createClient: () => mockClient });
   const result = await adapter.review(PACKET, GROK_CRITIC, { blockingSeverities: BLOCKING });
+  expect_eq(result.findings[0]?.requiresHumanJudgment, undefined);
+  expect_eq("requiresHumanJudgment" in result.findings[0]!, false);
+});
+
+// ---------------------------------------------------------------------------
+// minimax-direct-sdk (Cycle 20)
+
+const MINIMAX_CRITIC: CriticConfig = {
+  id: "minimax-local-chief",
+  name: "MiniMax Local Critic",
+  adapter: "minimax-direct-sdk",
+  required: false,
+  runtime: "local",
+  model: { id: "minimax-m3", params: [] },
+};
+
+function makeMinimaxStream(text: string): AsyncIterable<MinimaxStreamChunk> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield { choices: [{ delta: { content: text }, finish_reason: null, index: 0 }] };
+      yield { choices: [{ delta: {}, finish_reason: "stop", index: 0 }] };
+      yield { choices: [], usage: {} };
+    },
+  };
+}
+
+test("minimax-direct-sdk: finding.requiresHumanJudgment=true rides through to emitted CriticResult", async () => {
+  const text = modelResponseWithFindings({ finding1Flag: true, omitFinding2Flag: true });
+  const mockClient: MinimaxClient = {
+    chat: {
+      completions: {
+        create: async () => makeMinimaxStream(text),
+      },
+    },
+    models: {
+      list: async () => ({
+        async *[Symbol.asyncIterator]() {
+          // empty list
+        },
+      }),
+    },
+  };
+  const adapter = new MinimaxDirectSdkAdapter({ apiKey: "k", createClient: () => mockClient });
+  const result = await adapter.review(PACKET, MINIMAX_CRITIC, { blockingSeverities: BLOCKING });
+  expect_eq(result.status, "complete");
+  expect_eq(result.findings[0]?.requiresHumanJudgment, true);
+  expect_eq(result.findings[1]?.requiresHumanJudgment, undefined);
+  expect_eq("requiresHumanJudgment" in result.findings[1]!, false);
+});
+
+test("minimax-direct-sdk: omitted finding.requiresHumanJudgment does NOT default to false", async () => {
+  const text = modelResponseWithFindings({ omitFinding2Flag: true });
+  const mockClient: MinimaxClient = {
+    chat: {
+      completions: {
+        create: async () => makeMinimaxStream(text),
+      },
+    },
+    models: {
+      list: async () => ({
+        async *[Symbol.asyncIterator]() {
+          // empty list
+        },
+      }),
+    },
+  };
+  const adapter = new MinimaxDirectSdkAdapter({ apiKey: "k", createClient: () => mockClient });
+  const result = await adapter.review(PACKET, MINIMAX_CRITIC, { blockingSeverities: BLOCKING });
   expect_eq(result.findings[0]?.requiresHumanJudgment, undefined);
   expect_eq("requiresHumanJudgment" in result.findings[0]!, false);
 });

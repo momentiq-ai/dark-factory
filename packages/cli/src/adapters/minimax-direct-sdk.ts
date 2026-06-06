@@ -673,17 +673,20 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
         });
         return checks;
       }
-      // The SDK exposes `models.list` as either a function returning an
-      // AsyncIterable directly OR a function returning a Promise of an
-      // AsyncIterable (Pager). Handle both shapes — same defensive
-      // handling as the Grok/Gemini adapter doctors.
-      const listed = list.call(client.models);
-      const iterable: AsyncIterable<{ id?: string }> =
-        listed && typeof (listed as Promise<unknown>).then === "function"
-          ? await (listed as Promise<AsyncIterable<{ id?: string }>>)
-          : (listed as AsyncIterable<{ id?: string }>);
+      // The openai SDK's `client.models.list()` returns a `PagePromise`
+      // that is BOTH thenable AND `AsyncIterable<Item>` (verified
+      // against openai@^6 `node_modules/openai/core/pagination.d.ts`).
+      // Per the SDK's own doc comment on `PagePromise`: "Allow
+      // auto-paginating iteration on an unawaited list call." Directly
+      // iterating the returned value (without awaiting) is the
+      // documented-correct path AND naturally accommodates test mocks
+      // that return a plain `AsyncIterable` directly. Awaiting first
+      // gives back a single `Page` (which IS async-iterable, but only
+      // iterates one page's worth of items — a silent pagination cut
+      // codex flagged on the original commit).
+      const listed = list.call(client.models) as AsyncIterable<{ id?: string }>;
       const ids: string[] = [];
-      for await (const m of iterable) {
+      for await (const m of listed) {
         if (typeof m.id === "string") ids.push(m.id);
       }
       const matched = ids.some((n) => n === critic.model.id);

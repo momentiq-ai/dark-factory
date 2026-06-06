@@ -203,6 +203,7 @@ const DF_AGENT_REVIEW_CONFIG_SCHEMA = {
               "codex-sdk",
               "gemini-sdk",
               "grok-direct-sdk",
+              "minimax-direct-sdk",
               "static-schema-lint",
             ],
           },

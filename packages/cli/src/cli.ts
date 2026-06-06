@@ -510,6 +510,9 @@ const ADAPTER_LOADERS: ReadonlyArray<{
   { id: "codex-sdk", modulePath: "./adapters/codex-sdk.js", className: "CodexSdkAdapter" },
   { id: "gemini-sdk", modulePath: "./adapters/gemini-sdk.js", className: "GeminiSdkAdapter" },
   { id: "grok-direct-sdk", modulePath: "./adapters/grok-direct-sdk.js", className: "GrokDirectSdkAdapter" },
+  // Cycle 20 — MiniMax M3 via Together AI's OpenAI-compatible Chat
+  // Completions endpoint.
+  { id: "minimax-direct-sdk", modulePath: "./adapters/minimax-direct-sdk.js", className: "MinimaxDirectSdkAdapter" },
   // Consumer dark-factory-platform#107 — deterministic schema-lint adapter.
   // No vendor SDK, no env vars, no network; pure ajv-backed validation of
   // schema-annotated code blocks in changed markdown / config files.
