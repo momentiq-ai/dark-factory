@@ -39,6 +39,17 @@ const WorkflowSchema = z.object({
   triggers: z.array(z.string()),
   jobs: z.array(z.string()),
   matrixDimensions: z.array(z.string()),
+  // First non-trivial single-line `run:` command in the workflow (>10 chars,
+  // not a YAML block scalar marker like `|`/`>`). null when the workflow
+  // has only multi-line `run: |` blocks or `uses:`-only steps. Consumed by
+  // the runbook seeder's donor fallback (issue #138): on repos whose
+  // deploy-named workflows have no single-line `run:`, the seeder appends
+  // the first non-deploy-named workflow with a `firstRunCommand` so Phase C
+  // metric 4 ("runbook contains verbatim CI run: line") stays satisfiable.
+  // The validator's metric-4 candidate-line regex matches the same shape;
+  // capturing via parsed-YAML would silently lose the single-vs-multiline
+  // distinction (raw-text extraction is intentional — see ci.ts).
+  firstRunCommand: z.string().nullable(),
 });
 
 const DeployStorySchema = z.object({

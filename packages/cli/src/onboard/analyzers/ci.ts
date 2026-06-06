@@ -55,6 +55,12 @@ export const ciAnalyzer: Analyzer = {
         triggers,
         jobs,
         matrixDimensions,
+        // First TRUE single-line `run:` command in this workflow's raw YAML.
+        // Multi-line `run: |` blocks return null (the validator's metric-4
+        // regex matches the single-line form, so embedding a multi-line
+        // block's inner line in a runbook would not be a candidate).
+        // Consumed by the runbook seeder's donor fallback (issue #138).
+        firstRunCommand: extractFirstSingleLineRunFromText(raw),
       });
       if (!deployStory) {
         deployStory = findDeployCommand(p, `.github/workflows/${name}`);
@@ -109,6 +115,30 @@ function findDeployCommand(
         }
       }
     }
+  }
+  return null;
+}
+
+// Extracts the first TRUE single-line `run:` command from raw YAML text
+// (`run: <cmd>`), not the first line of a multi-line `run: |` block. The
+// raw-text path is intentional: this value is consumed by the runbook
+// seeder, and the metric 4 validator's candidate-line extractor uses the
+// same `^\s*-?\s*run:\s*(.+)$` shape — extracting via the YAML AST would
+// silently lose the single-vs-multiline distinction (after parsing, both
+// forms yield the same `run` string).
+//
+// Returns null when every `run:` is a block scalar (`run: |`, `run: >`,
+// `run: |-`, etc.) or the workflow has no `run:` steps at all.
+function extractFirstSingleLineRunFromText(rawYaml: string): string | null {
+  for (const line of rawYaml.split(/\r?\n/)) {
+    const m =
+      /^\s*-\s*run:\s+(\S.*)$/.exec(line) ?? /^\s*run:\s+(\S.*)$/.exec(line);
+    if (!m) continue;
+    const cmd = m[1]?.trim();
+    if (!cmd) continue;
+    if (cmd === "|" || cmd === "|-" || cmd === ">" || cmd === ">-") continue;
+    if (cmd.length <= 10) continue;
+    return cmd;
   }
   return null;
 }

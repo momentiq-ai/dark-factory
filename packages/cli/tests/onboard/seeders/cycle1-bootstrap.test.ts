@@ -17,7 +17,7 @@ const BASE: RepoAnalysis = {
   ],
   dependencies: [],
   ci: {
-    workflows: [{ name: "Deploy", path: ".github/workflows/deploy.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [] }],
+    workflows: [{ name: "Deploy", path: ".github/workflows/deploy.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [], firstRunCommand: null }],
     deployStory: {
       workflowPath: ".github/workflows/deploy.yml",
       command: "kubectl apply -f k8s/",

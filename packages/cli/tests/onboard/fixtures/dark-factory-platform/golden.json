@@ -54,7 +54,8 @@
         "jobs": [
           "bastion-bootstrap-test"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "make bastion-bootstrap-test"
       },
       {
         "name": "Build and Publish Images",
@@ -67,7 +68,8 @@
           "detect-changes",
           "build"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "echo \"short=${GITHUB_SHA::12}\" >> \"$GITHUB_OUTPUT\""
       },
       {
         "name": "check-dockerfile",
@@ -79,7 +81,8 @@
         "jobs": [
           "check-dockerfile-test"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "make check-dockerfile-test"
       },
       {
         "name": "cloud-bootstrap-and-dockerfile",
@@ -92,7 +95,8 @@
           "cloud-bootstrap-test",
           "dockerfile-build"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "make cloud-bootstrap-test"
       },
       {
         "name": "df-pin",
@@ -104,7 +108,8 @@
         "jobs": [
           "df-pin"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "make install"
       },
       {
         "name": "helm-render-test",
@@ -115,7 +120,8 @@
         "jobs": [
           "helm-render-test"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "make helm-render-test"
       }
     ],
     "deployStory": {

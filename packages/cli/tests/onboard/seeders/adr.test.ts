@@ -24,6 +24,7 @@ const BASE_ANALYSIS: RepoAnalysis = {
     workflows: [{
       name: "Release", path: ".github/workflows/release.yml",
       triggers: ["push"], jobs: ["deploy"], matrixDimensions: [],
+      firstRunCommand: null,
     }],
     deployStory: {
       workflowPath: ".github/workflows/release.yml",
