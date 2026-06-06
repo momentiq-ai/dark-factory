@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.2.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.1.0...dark-factory-cli-v2.2.0) (2026-06-06)
+
+
+### Features
+
+* **doctor:** checkAgentContextSet() — agent-context-set validation — cycle 15 Phase C ([7b68611](https://github.com/momentiq-ai/dark-factory/commit/7b68611900bb093719847410d97c8c6fb522bd1a))
+* **mcp:** df_onboard tool (cycle 15 Phase C exit criterion) ([5d79edd](https://github.com/momentiq-ai/dark-factory/commit/5d79eddb73c92eea7fe9201c7f9c3d4db8d4b098))
+* **onboard:** ADR seeder + Seeder interface stub — cycle 15 Phase C ([fcfd049](https://github.com/momentiq-ai/dark-factory/commit/fcfd0490ca99bfad3f3cce9bc8bef2d5c65adce1))
+* **onboard:** applyPlan dispatcher (dry-run + apply, partial-failure semantics) — cycle 15 Phase B ([4b1e341](https://github.com/momentiq-ai/dark-factory/commit/4b1e341b3684cdfc0174ae76f4e0fa969a5af816))
+* **onboard:** CLAUDE.md/AGENTS.md merge handler — cycle 15 Phase B ([4b83166](https://github.com/momentiq-ai/dark-factory/commit/4b83166095ace9e8e6e3268ac11addb82dd4322f))
+* **onboard:** CLI flag wire-up for Phase B + autoProfile module — cycle 15 Phase B ([a606ad1](https://github.com/momentiq-ai/dark-factory/commit/a606ad1075e98d5b49a76304e4cbdf424a595a8e))
+* **onboard:** cycle-1 bootstrap doc seeder — cycle 15 Phase C ([5fed010](https://github.com/momentiq-ai/dark-factory/commit/5fed010cf735b3ceb7ddb65f5e2ad6290086ec73))
+* **onboard:** dry-run renderer (colorized unified diff) — cycle 15 Phase B ([d36e64a](https://github.com/momentiq-ai/dark-factory/commit/d36e64a52fd9f82132e246f0e5a60a4f5fd44f38))
+* **onboard:** emit writer — cycle 15 Phase B ([7029ab3](https://github.com/momentiq-ai/dark-factory/commit/7029ab3fcb37d9a53282decff7f2366176044292))
+* **onboard:** generatePlan() — Stage B LLM+Zod orchestrator — cycle 15 Phase B ([a46e802](https://github.com/momentiq-ai/dark-factory/commit/a46e802879f72536df0cdf89b3d2ab76ca73f53f))
+* **onboard:** LLM client wrapper (Anthropic tool-use, one-retry) — cycle 15 Phase B ([ae80e26](https://github.com/momentiq-ai/dark-factory/commit/ae80e2664e74f16ac0967b690d44b5cc48d7b29b))
+* **onboard:** merge Phase B + Phase C into one ScaffoldPlan in cmdOnboard — cycle 15 Phase C ([83950af](https://github.com/momentiq-ai/dark-factory/commit/83950af5f28471cc28a050277ae03abe7c2ad5a4))
+* **onboard:** Phase B scaffold generation (--dry-run/--apply/--pr) — cycle 15 Phase B (consumer momentiq-ai/dark-factory-platform[#21](https://github.com/momentiq-ai/dark-factory/issues/21)) ([d5e47c3](https://github.com/momentiq-ai/dark-factory/commit/d5e47c33cd42b1355bcde91ca1d0e0875a24195d))
+* **onboard:** Phase C docs-as-code seeders + sage3c reproduction harness + MCP surface — cycle 15 Phase C (consumer momentiq-ai/dark-factory-platform[#21](https://github.com/momentiq-ai/dark-factory/issues/21)) ([82fa5ea](https://github.com/momentiq-ai/dark-factory/commit/82fa5eacc6c93d85aa59a05614dc864b70c8f4a8))
+* **onboard:** pr-writer (gh-auth + branch + apply + commit + pr create) — cycle 15 Phase B ([92dce84](https://github.com/momentiq-ai/dark-factory/commit/92dce84ee1ad7a56c8d764e005b12351578f0fb7))
+* **onboard:** runbook seeder — cycle 15 Phase C ([f0f3b6d](https://github.com/momentiq-ai/dark-factory/commit/f0f3b6de3b70a21dd948aa5d769042e65ae09a0f))
+* **onboard:** ScaffoldPlan Zod schema + parseTemplateRef foundation + tests — cycle 15 Phase B ([995dd6a](https://github.com/momentiq-ai/dark-factory/commit/995dd6ae58bef2804976109a15f323afd2a98b68))
+* **onboard:** seeder orchestrator + ALL_SEEDERS export — cycle 15 Phase C ([786cd8c](https://github.com/momentiq-ai/dark-factory/commit/786cd8cb1eda39e4e91bbd082bc7190f6c22820f))
+* **onboard:** skip writer — cycle 15 Phase B ([f3743dd](https://github.com/momentiq-ai/dark-factory/commit/f3743ddd755ee3ff5da942795e1fe2ad14aeed81))
+* **onboard:** Stage B scaffold prompt asset + renderer — cycle 15 Phase B ([b4c5895](https://github.com/momentiq-ai/dark-factory/commit/b4c5895356b8870af55e0af6aab602c6ab332a50))
+* **onboard:** template-loader (gh:+file://, sha-keyed cache, walk filter) — cycle 15 Phase B ([d013e2a](https://github.com/momentiq-ai/dark-factory/commit/d013e2a20dead50781b4748c07e7cc4c92c0aa56))
+
 ## [2.1.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.0.0...dark-factory-cli-v2.1.0) (2026-06-04)
 
 
