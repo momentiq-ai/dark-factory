@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.6.0...dark-factory-schemas-v0.6.1) (2026-06-06)
+
+
+### Bug Fixes
+
+* **adapters/codex-sdk:** narrow [#109](https://github.com/momentiq-ai/dark-factory/issues/109) bwrap detection — filter findings, don't discard the run (closes [#148](https://github.com/momentiq-ai/dark-factory/issues/148)) ([#149](https://github.com/momentiq-ai/dark-factory/issues/149)) ([b04468a](https://github.com/momentiq-ai/dark-factory/commit/b04468a8fe5e8393714c53794c204c609a9d50cb))
+
 ## [0.6.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.5.0...dark-factory-schemas-v0.6.0) (2026-06-03)
 
 
