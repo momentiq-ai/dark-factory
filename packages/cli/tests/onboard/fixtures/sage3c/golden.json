@@ -67,7 +67,8 @@
         ],
         "matrixDimensions": [
           "finding"
-        ]
+        ],
+        "firstRunCommand": "poetry install --no-root --no-interaction"
       },
       {
         "name": "Backend Lint & Type Check",
@@ -78,7 +79,8 @@
         "jobs": [
           "lint-and-type-check"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "poetry install --no-interaction --no-root"
       },
       {
         "name": "Backend Tests",
@@ -92,7 +94,8 @@
         ],
         "matrixDimensions": [
           "test-category"
-        ]
+        ],
+        "firstRunCommand": "poetry install --no-interaction --no-root"
       },
       {
         "name": "Bot Review Settle",
@@ -104,7 +107,8 @@
         "jobs": [
           "settle"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Branch Protection Audit",
@@ -118,7 +122,8 @@
         "jobs": [
           "audit"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "pip install 'pyyaml==6.0.1'"
       },
       {
         "name": "Build and Publish Images",
@@ -131,7 +136,8 @@
           "detect-changes",
           "build"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Build postgres-pgvector image",
@@ -144,7 +150,8 @@
         "jobs": [
           "build"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Chromatic",
@@ -156,7 +163,8 @@
         "jobs": [
           "chromatic"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "npm run build-storybook"
       },
       {
         "name": "Claude PR Assistant",
@@ -169,7 +177,8 @@
         "jobs": [
           "claude-code-action"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Cycle Board Automation",
@@ -181,7 +190,8 @@
         "jobs": [
           "update-board"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Cycle Doc Validation",
@@ -193,7 +203,8 @@
         "jobs": [
           "validate-cycle-doc"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "python3 scripts/ci/validate_cycle_doc.py"
       },
       {
         "name": "Cycle Tracker Sync",
@@ -206,7 +217,8 @@
         "jobs": [
           "sync"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "pip install --no-cache-dir 'PyYAML>=6,<7'"
       },
       {
         "name": "Feedback Investigator",
@@ -219,7 +231,8 @@
           "investigate-bugs",
           "evaluate-features"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Frontend Lint & Type Check",
@@ -230,7 +243,8 @@
         "jobs": [
           "lint-and-type-check"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Frontend E2E Tests",
@@ -245,7 +259,8 @@
         "matrixDimensions": [
           "browser",
           "shard"
-        ]
+        ],
+        "firstRunCommand": "npx playwright install --with-deps ${{ matrix.browser }}"
       },
       {
         "name": "Frontend Unit Tests",
@@ -256,7 +271,8 @@
         "jobs": [
           "unit-tests"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "npm run test:unit:coverage"
       },
       {
         "name": "Issue Spec Gate",
@@ -268,7 +284,8 @@
         "jobs": [
           "issue-spec-gate"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Issue Triage",
@@ -280,7 +297,8 @@
         "jobs": [
           "triage"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Parent Chat Eval Nightly",
@@ -292,7 +310,8 @@
         "jobs": [
           "golden-set-judge"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "poetry install --no-interaction --no-root --with dev"
       },
       {
         "name": "Plan PR Review Gate",
@@ -305,10 +324,15 @@
         "jobs": [
           "classify-and-gate"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       }
     ],
-    "deployStory": null
+    "deployStory": {
+      "workflowPath": ".github/workflows/build-images.yml",
+      "command": "if [[ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]]; then",
+      "target": "other"
+    }
   },
   "tree": {
     "topLevelDirs": [

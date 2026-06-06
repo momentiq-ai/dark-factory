@@ -28,7 +28,8 @@
         "jobs": [
           "lint-and-type-check"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "poetry install --no-interaction --no-root"
       },
       {
         "name": "Backend Tests",
@@ -42,7 +43,8 @@
         ],
         "matrixDimensions": [
           "test-category"
-        ]
+        ],
+        "firstRunCommand": "poetry install --no-interaction --no-root"
       },
       {
         "name": "Bot Review Settle",
@@ -54,7 +56,8 @@
         "jobs": [
           "settle"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Build and Publish Images",
@@ -67,7 +70,8 @@
           "detect-changes",
           "build"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Claude PR Assistant",
@@ -80,7 +84,8 @@
         "jobs": [
           "claude-code-action"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Contract Tests",
@@ -95,7 +100,8 @@
           "provider-verification",
           "contract-test-summary"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "poetry install --with dev"
       },
       {
         "name": "Cycle Board Automation",
@@ -107,7 +113,8 @@
         "jobs": [
           "update-board"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Dark Factory PR Gates",
@@ -122,7 +129,8 @@
           "cycle-doc-validation",
           "branch-protection-audit"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Frontend Lint & Type Check",
@@ -133,7 +141,8 @@
         "jobs": [
           "lint-and-type-check"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Frontend E2E Tests",
@@ -148,7 +157,8 @@
         "matrixDimensions": [
           "browser",
           "shard"
-        ]
+        ],
+        "firstRunCommand": "npx playwright install --with-deps ${{ matrix.browser }}"
       },
       {
         "name": "Frontend Unit Tests",
@@ -159,7 +169,8 @@
         "jobs": [
           "unit-tests"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "npm run test:unit:coverage"
       },
       {
         "name": "Plan PR Review Gate",
@@ -172,7 +183,8 @@
         "jobs": [
           "classify-and-gate"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "PR CI",
@@ -196,7 +208,8 @@
           "docs-lint",
           "pr-status"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Promote to Production",
@@ -207,7 +220,8 @@
         "jobs": [
           "promote"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       },
       {
         "name": "Quality Gate",
@@ -218,7 +232,8 @@
         "jobs": [
           "quality-gate"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "python3 scripts/static-import-check.py backend"
       },
       {
         "name": "Run Evaluations",
@@ -231,7 +246,8 @@
         "jobs": [
           "run-evaluations"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": "poetry check --lock"
       },
       {
         "name": "Verify Rulesets",
@@ -245,10 +261,15 @@
         "jobs": [
           "verify"
         ],
-        "matrixDimensions": []
+        "matrixDimensions": [],
+        "firstRunCommand": null
       }
     ],
-    "deployStory": null
+    "deployStory": {
+      "workflowPath": ".github/workflows/build-images.yml",
+      "command": "if [[ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]]; then",
+      "target": "other"
+    }
   },
   "tree": {
     "topLevelDirs": [

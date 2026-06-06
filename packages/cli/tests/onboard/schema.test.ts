@@ -86,6 +86,7 @@ describe("RepoAnalysisSchema", () => {
           triggers: ["push"],
           jobs: ["build"],
           matrixDimensions: [],
+          firstRunCommand: null,
         })),
       },
     };
@@ -103,6 +104,7 @@ describe("RepoAnalysisSchema", () => {
           triggers: ["push"],
           jobs: ["build"],
           matrixDimensions: [],
+          firstRunCommand: null,
         })),
       },
     };

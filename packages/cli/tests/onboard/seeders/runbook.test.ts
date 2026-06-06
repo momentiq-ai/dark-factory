@@ -24,7 +24,7 @@ describe("runbookSeeder", () => {
     const a: RepoAnalysis = {
       ...BASE,
       ci: {
-        workflows: [{ name: "CI", path: ".github/workflows/ci.yml", triggers: ["push"], jobs: ["test"], matrixDimensions: [] }],
+        workflows: [{ name: "CI", path: ".github/workflows/ci.yml", triggers: ["push"], jobs: ["test"], matrixDimensions: [], firstRunCommand: null }],
         deployStory: null,
       },
     };
@@ -36,7 +36,7 @@ describe("runbookSeeder", () => {
     const a: RepoAnalysis = {
       ...BASE,
       ci: {
-        workflows: [{ name: "Release", path: ".github/workflows/release.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [] }],
+        workflows: [{ name: "Release", path: ".github/workflows/release.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [], firstRunCommand: null }],
         deployStory: { workflowPath: ".github/workflows/release.yml", command: "helm upgrade myapp ./chart", target: "helm" },
       },
     };
@@ -50,7 +50,7 @@ describe("runbookSeeder", () => {
     const a: RepoAnalysis = {
       ...BASE,
       ci: {
-        workflows: [{ name: "Deploy", path: ".github/workflows/deploy.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [] }],
+        workflows: [{ name: "Deploy", path: ".github/workflows/deploy.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [], firstRunCommand: null }],
         deployStory: { workflowPath: ".github/workflows/deploy.yml", command: "kubectl apply -f k8s/", target: "kubernetes" },
       },
     };
@@ -63,8 +63,8 @@ describe("runbookSeeder", () => {
       ...BASE,
       ci: {
         workflows: [
-          { name: "Release", path: ".github/workflows/release.yml", triggers: ["push"], jobs: ["release"], matrixDimensions: [] },
-          { name: "Publish to npm", path: ".github/workflows/publish.yml", triggers: ["push"], jobs: ["publish"], matrixDimensions: [] },
+          { name: "Release", path: ".github/workflows/release.yml", triggers: ["push"], jobs: ["release"], matrixDimensions: [], firstRunCommand: null },
+          { name: "Publish to npm", path: ".github/workflows/publish.yml", triggers: ["push"], jobs: ["publish"], matrixDimensions: [], firstRunCommand: null },
         ],
         deployStory: null,
       },
@@ -84,6 +84,7 @@ describe("runbookSeeder", () => {
         workflows: Array.from({ length: 8 }, (_, i) => ({
           name: `Deploy ${i}`, path: `.github/workflows/deploy-${i}.yml`,
           triggers: ["push"], jobs: ["deploy"], matrixDimensions: [],
+          firstRunCommand: null,
         })),
         deployStory: null,
       },
@@ -96,7 +97,7 @@ describe("runbookSeeder", () => {
     const a: RepoAnalysis = {
       ...BASE,
       ci: {
-        workflows: [{ name: "Release", path: ".github/workflows/release.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [] }],
+        workflows: [{ name: "Release", path: ".github/workflows/release.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [], firstRunCommand: null }],
         deployStory: { workflowPath: ".github/workflows/release.yml", command: "helm upgrade myapp ./chart", target: "helm" },
       },
     };
@@ -108,7 +109,7 @@ describe("runbookSeeder", () => {
     const a: RepoAnalysis = {
       ...BASE,
       ci: {
-        workflows: [{ name: "Release", path: ".github/workflows/release.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [] }],
+        workflows: [{ name: "Release", path: ".github/workflows/release.yml", triggers: ["push"], jobs: ["deploy"], matrixDimensions: [], firstRunCommand: null }],
         deployStory: { workflowPath: ".github/workflows/release.yml", command: "helm upgrade myapp ./chart", target: "helm" },
       },
     };
@@ -120,12 +121,117 @@ describe("runbookSeeder", () => {
     const a: RepoAnalysis = {
       ...BASE,
       ci: {
-        workflows: [{ name: "Promote to prod", path: ".github/workflows/promote.yml", triggers: ["workflow_dispatch"], jobs: ["promote"], matrixDimensions: [] }],
+        workflows: [{ name: "Promote to prod", path: ".github/workflows/promote.yml", triggers: ["workflow_dispatch"], jobs: ["promote"], matrixDimensions: [], firstRunCommand: null }],
         deployStory: null,
       },
     };
     const files = await runbookSeeder.seed({ analysis: a, existingAdrs: [], now: new Date("2026-06-03") });
     expect(files).toHaveLength(1);
     expect(files[0]?.path).toBe("docs/runbooks/RUNBOOK-promote-to-prod.md");
+  });
+
+  // Fix #138 — composite-action / gitops deploy donor coverage.
+
+  it("falls back to a non-deploy-named workflow when deploy-named ones have no firstRunCommand", async () => {
+    const a: RepoAnalysis = {
+      ...BASE,
+      ci: {
+        workflows: [
+          // Deploy-named but no single-line `run:` (mirrors sage3c's
+          // promote-to-prod, where every step is a `run: |` block).
+          {
+            name: "Promote to Production", path: ".github/workflows/promote-to-prod.yml",
+            triggers: ["workflow_dispatch"], jobs: ["promote"], matrixDimensions: [],
+            firstRunCommand: null,
+          },
+          // Non-deploy-named but has a verbatim single-line run.
+          {
+            name: "Backend Tests", path: ".github/workflows/backend-tests.yml",
+            triggers: ["push"], jobs: ["test"], matrixDimensions: [],
+            firstRunCommand: "poetry install --no-interaction --no-root",
+          },
+        ],
+        deployStory: null,
+      },
+    };
+    const files = await runbookSeeder.seed({ analysis: a, existingAdrs: [], now: new Date("2026-06-03") });
+    expect(files).toHaveLength(2);
+    expect(files.map((f) => f.path)).toEqual(expect.arrayContaining([
+      "docs/runbooks/RUNBOOK-promote-to-production.md",
+      "docs/runbooks/RUNBOOK-backend-tests.md",
+    ]));
+    // The donor runbook embeds the verbatim run command (provenance-correct:
+    // the runbook for Backend Tests cites Backend Tests' own first run line).
+    const backend = files.find((f) => f.path.endsWith("backend-tests.md"));
+    expect(backend?.tailored_content).toContain("poetry install --no-interaction --no-root");
+  });
+
+  it("does NOT add a donor when at least one deploy-named workflow already has firstRunCommand", async () => {
+    const a: RepoAnalysis = {
+      ...BASE,
+      ci: {
+        workflows: [
+          {
+            name: "Release", path: ".github/workflows/release.yml",
+            triggers: ["push"], jobs: ["release"], matrixDimensions: [],
+            firstRunCommand: "npm run release",
+          },
+          {
+            name: "Backend Tests", path: ".github/workflows/backend-tests.yml",
+            triggers: ["push"], jobs: ["test"], matrixDimensions: [],
+            firstRunCommand: "poetry install --no-interaction --no-root",
+          },
+        ],
+        deployStory: null,
+      },
+    };
+    const files = await runbookSeeder.seed({ analysis: a, existingAdrs: [], now: new Date("2026-06-03") });
+    expect(files).toHaveLength(1);
+    expect(files[0]?.path).toBe("docs/runbooks/RUNBOOK-release.md");
+    expect(files[0]?.tailored_content).toContain("npm run release");
+  });
+
+  it("renders a composite-action deploy story with the composite-action target prose", async () => {
+    const a: RepoAnalysis = {
+      ...BASE,
+      ci: {
+        workflows: [{
+          name: "Release Please", path: ".github/workflows/release-please.yml",
+          triggers: ["push"], jobs: ["release-please"], matrixDimensions: [],
+          firstRunCommand: null,
+        }],
+        deployStory: {
+          workflowPath: ".github/workflows/release-please.yml",
+          command: "googleapis/release-please-action@v4",
+          target: "composite-action",
+        },
+      },
+    };
+    const files = await runbookSeeder.seed({ analysis: a, existingAdrs: [], now: new Date("2026-06-03") });
+    expect(files).toHaveLength(1);
+    expect(files[0]?.tailored_content).toContain("composite GitHub Action");
+    expect(files[0]?.tailored_content).toContain("googleapis/release-please-action@v4");
+  });
+
+  it("renders a gitops deploy story with the gitops target prose", async () => {
+    const a: RepoAnalysis = {
+      ...BASE,
+      ci: {
+        workflows: [{
+          name: "Promote to Production", path: ".github/workflows/promote-to-prod.yml",
+          triggers: ["workflow_dispatch"], jobs: ["promote"], matrixDimensions: [],
+          firstRunCommand: null,
+        }],
+        deployStory: {
+          workflowPath: ".github/workflows/promote-to-prod.yml",
+          command: "git push origin main",
+          target: "gitops",
+        },
+      },
+    };
+    const files = await runbookSeeder.seed({ analysis: a, existingAdrs: [], now: new Date("2026-06-03") });
+    expect(files).toHaveLength(1);
+    expect(files[0]?.tailored_content).toContain("gitops promotion");
+    expect(files[0]?.tailored_content).toContain("git push origin main");
   });
 });
