@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.2.1](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.2.0...dark-factory-cli-v2.2.1) (2026-06-06)
+
+
+### Bug Fixes
+
+* **onboard:** aggregate decisions from ALL lockfiles — closes [#137](https://github.com/momentiq-ai/dark-factory/issues/137) ([#142](https://github.com/momentiq-ai/dark-factory/issues/142)) ([ecc83a0](https://github.com/momentiq-ai/dark-factory/commit/ecc83a09454fb7c2092954b3c6d43fcbd461be4b))
+* **onboard:** seeder donor fallback flips metric 4 on sage3c — closes [#138](https://github.com/momentiq-ai/dark-factory/issues/138) ([#143](https://github.com/momentiq-ai/dark-factory/issues/143)) ([87dbbd1](https://github.com/momentiq-ai/dark-factory/commit/87dbbd1729d57ea325b0304d6185a0e1ef12655a))
+* **onboard:** template-loader cap no longer blocks sage-blueprint walk — closes [#140](https://github.com/momentiq-ai/dark-factory/issues/140) ([#141](https://github.com/momentiq-ai/dark-factory/issues/141)) ([b86e0d3](https://github.com/momentiq-ai/dark-factory/commit/b86e0d3fb78e41f02115abef3532d8e0a3d382b5))
+* **onboard:** unblock Phase B LLM call — schema + model + max_tokens + stop-reason diag ([#146](https://github.com/momentiq-ai/dark-factory/issues/146)) ([47ae384](https://github.com/momentiq-ai/dark-factory/commit/47ae3847a4e70dff1d335e538dba8cb3e34281a0))
+
 ## [2.2.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.1.0...dark-factory-cli-v2.2.0) (2026-06-06)
 
 
