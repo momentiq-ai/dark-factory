@@ -121,14 +121,13 @@ Dark Factory runs the **same** multi-vendor adversarial critic fleet against you
 
 | Item | Where | Notes |
 |---|---|---|
-| GitHub org membership for `momentiq-ai` | Org admin | Required to read the private `@momentiq/dark-factory-cli` npm package. External consumers must fork the repo and self-host the CLI until the 331.3 OSS-flip. |
-| npm read token for the `@momentiq` scope | npmjs.com → account → access tokens | Save as `MOMENTIQ_NPM_READ_TOKEN` in your repo's GH Actions secrets and as `$NPM_TOKEN` in your local shell rc (for `npm install`). |
+| npm read token for the `@momentiq` scope | npmjs.com → account → access tokens | Required by the reusable workflows in §8 — they hard-require `NPM_TOKEN` as a pre-install guard even though `@momentiq/dark-factory-cli` is now on the public npm registry. Save as `MOMENTIQ_NPM_READ_TOKEN` in your repo's GH Actions secrets. Not needed for a local `npm install`. |
 | Node.js >= 20 | `node --version` | The CLI's `engines.node` is `>=20`. |
 | `momentiq-ai/dark-factory` Actions access set to `organization` | `gh api -X PUT repos/momentiq-ai/dark-factory/actions/permissions/access -f access_level=organization` (org admin only) | Without this, your `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@<sha>` calls fail at startup with "workflow file issue". See [taxpilot2a PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) — this trap was discovered the hard way. |
 
 ## 4. Install the CLI
 
-Until the 331.3 OSS-flip, the CLI is published to the private `@momentiq` npm scope. Pin to an exact alpha version — floating ranges are not supported (per [`CLAUDE.md` § Consumer-vs-author posture](../CLAUDE.md)).
+The CLI is published to the public npm registry at [`@momentiq/dark-factory-cli`](https://www.npmjs.com/package/@momentiq/dark-factory-cli). Pin to an exact version — floating ranges are not supported (per [`CLAUDE.md` § Consumer-vs-author posture](../CLAUDE.md)).
 
 **a. Root `package.json`** — exact pin in `devDependencies`:
 
@@ -139,25 +138,24 @@ Until the 331.3 OSS-flip, the CLI is published to the private `@momentiq` npm sc
   "private": true,
   "description": "Root manifest hosting @momentiq/dark-factory-cli for the consumer install pattern.",
   "devDependencies": {
-    "@momentiq/dark-factory-cli": "0.1.0-alpha.6"
+    "@momentiq/dark-factory-cli": "2.2.4"
   },
   "engines": { "node": ">=20" }
 }
 ```
 
-Substitute `0.1.0-alpha.6` for the actual latest published alpha. Verify with `npm view @momentiq/dark-factory-cli versions --json` (requires `MOMENTIQ_NPM_READ_TOKEN` exported as `NPM_TOKEN`). If you already have a `package.json` (e.g. a workspaces monorepo), add the devDep to your root manifest — the CLI does not need to live inside any workspace.
+If a newer version has shipped since this guide was written, look up the exact value with `npm view @momentiq/dark-factory-cli version` (no auth required; the package is public) and pin to that value — never to the floating `latest` dist-tag. If you already have a `package.json` (e.g. a workspaces monorepo), add the devDep to your root manifest — the CLI does not need to live inside any workspace.
 
-**b. `.npmrc`** — interpolated token, never hardcoded:
+**b. `.npmrc`** — pin the `@momentiq` scope to the public npm registry (defensive; npm's default is the same):
 
 ```ini
 @momentiq:registry=https://registry.npmjs.org/
-//registry.npmjs.org/:_authToken=${NPM_TOKEN}
 ```
 
 **c. Install:**
 
 ```bash
-NPM_TOKEN="<your-token>" npm install
+npm install
 # Binary is now at ./node_modules/.bin/df
 ./node_modules/.bin/df --help
 ```
@@ -544,14 +542,14 @@ jobs:
   pr-status-check:
     uses: momentiq-ai/dark-factory/.github/workflows/pr-status-check.yml@<exact-commit-sha>
     with:
-      cli-version: '0.1.0-alpha.6'
+      cli-version: '2.2.4'
     secrets:
       MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
 
   agent-critic:
     uses: momentiq-ai/dark-factory/.github/workflows/agent-critic.yml@<exact-commit-sha>
     with:
-      cli-version: '0.1.0-alpha.6'
+      cli-version: '2.2.4'
       darkfactory_config_path: '.agent-review/config.json'
     secrets:
       MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
@@ -563,7 +561,7 @@ jobs:
   cycle-doc-validation:
     uses: momentiq-ai/dark-factory/.github/workflows/cycle-doc-validation.yml@<exact-commit-sha>
     with:
-      cli-version: '0.1.0-alpha.6'
+      cli-version: '2.2.4'
     secrets:
       MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
 
@@ -577,7 +575,7 @@ jobs:
   branch-protection-audit:
     uses: momentiq-ai/dark-factory/.github/workflows/branch-protection-audit.yml@<exact-commit-sha>
     with:
-      cli-version: '0.1.0-alpha.6'
+      cli-version: '2.2.4'
       gate-enabled: 'false'   # flip to 'true' once you adopt a ruleset
     secrets:
       MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
@@ -594,7 +592,7 @@ See [taxpilot2a's dark-factory-pr.yml](https://github.com/momentiq-ai/taxpilot2a
 
 | Secret | When | Why |
 |---|---|---|
-| `MOMENTIQ_NPM_READ_TOKEN` | Always | Consumer install path resolves `@momentiq/dark-factory-cli@<pinned>` from the private npm scope. |
+| `MOMENTIQ_NPM_READ_TOKEN` | Required by the reusable workflows in §8 | The §8 workflows hard-require this input as a pre-install guard even though `@momentiq/dark-factory-cli` is now on the public npm registry; the workflow plumbing has not yet been modernized to drop the guard. |
 | `CURSOR_API_KEY` | Optional but recommended | CI critic fallback when subscription auth isn't available in the runner (it isn't). |
 | `CODEX_API_KEY` | Optional but recommended | Same. |
 | `GEMINI_API_KEY` | Optional | Wires the Gemini critic in CI. Missing keys produce `status=error` for that critic; min-complete-quorum handles gracefully. |
@@ -710,7 +708,7 @@ The minimum binding configuration is just **`agent-critic / agent-critic`**. The
 
 ### 10.4 Caveat — fork PRs cannot satisfy a secret-dependent required check
 
-Once `agent-critic` is required, **external fork PRs become unmergeable through the normal flow**: fork PRs run without access to your repository secrets (`MOMENTIQ_NPM_READ_TOKEN`, `CURSOR_API_KEY`, …), so the `agent-critic` job cannot install the CLI or reach the critic vendors, and the required check never goes green. This is by design (GitHub withholds secrets from fork-triggered runs to prevent secret exfiltration) and is the same class of problem tracked at [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15). Until the 331.3 fork-handling design ships, maintainers must **internalize external contributions** — re-create the fork's branch inside the upstream repo (where secrets are available) and merge that — rather than merging the fork PR directly. If your repo takes no external fork contributions, this caveat does not affect you.
+Once `agent-critic` is required, **external fork PRs become unmergeable through the normal flow**: fork PRs run without access to your repository secrets (`CURSOR_API_KEY`, `CODEX_API_KEY`, `MOMENTIQ_NPM_READ_TOKEN`, …), so the `agent-critic` job cannot reach the critic vendors and the workflow's pre-install token guard refuses to proceed before getting to the critic step. The required check never goes green. This is by design (GitHub withholds secrets from fork-triggered runs to prevent secret exfiltration) and is the same class of problem tracked at [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15). Until that fork-handling design ships, maintainers must **internalize external contributions** — re-create the fork's branch inside the upstream repo (where secrets are available) and merge that — rather than merging the fork PR directly. If your repo takes no external fork contributions, this caveat does not affect you.
 
 ## 11. Validation
 
@@ -855,14 +853,14 @@ The `--json` outputs are **byte-equivalent** with their MCP-tool counterparts' `
 
 ## 12. Update cadence
 
-- Pin to a specific alpha/beta version (`0.1.0-alpha.N`) — never floating ranges.
-- Bump CLI deliberately when dark-factory releases a new version. Check the [changelog](https://github.com/momentiq-ai/dark-factory/blob/main/CHANGELOG.md) (when it lands in Phase F+) or the [release tags](https://github.com/momentiq-ai/dark-factory/tags).
+- Pin to a specific version (e.g. `2.2.4`) — never floating ranges. The current `latest` is on [npm](https://www.npmjs.com/package/@momentiq/dark-factory-cli); pick the version intentionally.
+- Bump CLI deliberately when dark-factory releases a new version. Check the [release tags](https://github.com/momentiq-ai/dark-factory/tags) or the `CHANGELOG.md` files under [`packages/cli/`](https://github.com/momentiq-ai/dark-factory/blob/main/packages/cli/CHANGELOG.md) and [`packages/sage-cli/`](https://github.com/momentiq-ai/dark-factory/blob/main/packages/sage-cli/CHANGELOG.md).
 - When bumping, update both `package.json` (`devDependencies."@momentiq/dark-factory-cli"`) AND `.github/workflows/dark-factory-pr.yml` (`with: cli-version:`). The `df doctor` subcommand surfaces drift between them.
 - Reusable workflow SHA bumps are decoupled: you can bump the CLI without bumping the workflow SHA and vice versa. Test in a draft PR before landing in main.
 
 ## 13. Wire the MCP server into your agent
 
-`@momentiq/dark-factory-cli@0.2.0-alpha.0+` ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini) can connect over stdio and get a structured tool + resource + prompt catalog instead of shelling out to `df` and parsing stdout. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
+`@momentiq/dark-factory-cli` ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini) can connect over stdio and get a structured tool + resource + prompt catalog instead of shelling out to `df` and parsing stdout. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
 
 ### What you get
 
@@ -959,7 +957,7 @@ The agent should connect, list tools, call `df_doctor`, and render the structure
 
 ## 13.5 `darkfactory.yaml` + bundled-skill install (DFP #192)
 
-`@momentiq/dark-factory-cli` (alpha tag past `1.2.0`) bundles agent **skills** templated against a consumer's repo shape and installs them on demand. The doctrine carried by `chief-engineer-review` (PR-gate AI architectural critic) and `chief-engineer-blitz` (orchestrated multi-PR delivery) is sourced inside this repo, rendered with the consumer's repo-shaped overrides, and written to `.claude/skills/<name>/` so Claude Code (and any other skill-aware agent) picks them up natively.
+`@momentiq/dark-factory-cli` bundles agent **skills** templated against a consumer's repo shape and installs them on demand. The doctrine carried by `chief-engineer-review` (PR-gate AI architectural critic) and `chief-engineer-blitz` (orchestrated multi-PR delivery) is sourced inside this repo, rendered with the consumer's repo-shaped overrides, and written to `.claude/skills/<name>/` so Claude Code (and any other skill-aware agent) picks them up natively.
 
 The consumer surface has three parts:
 
@@ -1040,7 +1038,7 @@ sed -i 's/Your Repo/Production Repo/' darkfactory.yaml
 
 ## 14. Session continuity — the agent handoff protocol (Cycle 12 Issue-anchor)
 
-`@momentiq/dark-factory-cli` (alpha tag past `0.6.0-alpha.9`) ships four verbs that carry an
+`@momentiq/dark-factory-cli` ships four verbs that carry an
 agent's *working context* across a session boundary (reboot, local-model
 upgrade, dev→dev, dev→cloud-agent). The **state** of a work-stream (branch, diff,
 CI, mergeability) is recoverable from `gh`/the linked PR(s); the **reasoning**
@@ -1060,9 +1058,8 @@ system, no extra service, no state file**:
 Issue-anchor redesign):
 
 - The arg shape changed: `[pr]` → `[issue]` across all four verbs. There is **no
-  compat shim** — pin past the first Cycle 12.2 alpha (computed by
-  release-please on merge — past `0.6.0-alpha.9`) and adopt the new arg
-  shape.
+  compat shim** — pin to the exact CLI version shown in §4 (currently `2.2.4`)
+  and adopt the new arg shape.
 - The slash-command `.md` heredoc surface (which existed in Cycle 8 to wrap the
   bash scripts under Claude Code's `$ARGUMENTS` substitution) is gone. The TS CLI
   takes real argv directly, structurally closing the heredoc-breakout
