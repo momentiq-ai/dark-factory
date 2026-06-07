@@ -121,7 +121,6 @@ Dark Factory runs the **same** multi-vendor adversarial critic fleet against you
 
 | Item | Where | Notes |
 |---|---|---|
-| npm read token for the `@momentiq` scope | npmjs.com → account → access tokens | Required by the reusable workflows in §8 — they hard-require `NPM_TOKEN` as a pre-install guard even though `@momentiq/dark-factory-cli` is now on the public npm registry. Save as `MOMENTIQ_NPM_READ_TOKEN` in your repo's GH Actions secrets. Not needed for a local `npm install`. |
 | Node.js >= 20 | `node --version` | The CLI's `engines.node` is `>=20`. |
 | `momentiq-ai/dark-factory` Actions access set to `organization` | `gh api -X PUT repos/momentiq-ai/dark-factory/actions/permissions/access -f access_level=organization` (org admin only) | Without this, your `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@<sha>` calls fail at startup with "workflow file issue". See [taxpilot2a PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) — this trap was discovered the hard way. |
 
@@ -543,8 +542,6 @@ jobs:
     uses: momentiq-ai/dark-factory/.github/workflows/pr-status-check.yml@<exact-commit-sha>
     with:
       cli-version: '2.2.4'
-    secrets:
-      MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
 
   agent-critic:
     uses: momentiq-ai/dark-factory/.github/workflows/agent-critic.yml@<exact-commit-sha>
@@ -552,7 +549,6 @@ jobs:
       cli-version: '2.2.4'
       darkfactory_config_path: '.agent-review/config.json'
     secrets:
-      MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
       CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -562,8 +558,6 @@ jobs:
     uses: momentiq-ai/dark-factory/.github/workflows/cycle-doc-validation.yml@<exact-commit-sha>
     with:
       cli-version: '2.2.4'
-    secrets:
-      MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
 
   # Optional: schema-check — only if your repo has OpenAPI / JSON Schema
   # surfaces you want drift-detected. The dark-factory schema-check is
@@ -577,11 +571,10 @@ jobs:
     with:
       cli-version: '2.2.4'
       gate-enabled: 'false'   # flip to 'true' once you adopt a ruleset
-    secrets:
-      MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
-      # When gate-enabled: 'true', also pass:
-      # CI_BOT_APP_ID: ${{ secrets.CI_BOT_APP_ID }}
-      # CI_BOT_PRIVATE_KEY: ${{ secrets.CI_BOT_PRIVATE_KEY }}
+    # When gate-enabled: 'true', pass:
+    # secrets:
+    #   CI_BOT_APP_ID: ${{ secrets.CI_BOT_APP_ID }}
+    #   CI_BOT_PRIVATE_KEY: ${{ secrets.CI_BOT_PRIVATE_KEY }}
 ```
 
 **Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. Every dark-factory reusable workflow deliberately omits a job-level `name:` override so the callee segment defaults to the job id, giving consumers a uniform `<id> / <id>` contract: `agent-critic:` → **`agent-critic / agent-critic`**, `cycle-doc-validation:` → **`cycle-doc-validation / cycle-doc-validation`**, and `pr-status-check:` → **`pr-status-check / pr-status-check`** (issue #27 — a prior `name: "PR Status Check"` override broke the contract and permanently blocked merges). This is the EXACT string your ruleset must require in §10 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §10 below to make the check binding.
@@ -592,7 +585,6 @@ See [taxpilot2a's dark-factory-pr.yml](https://github.com/momentiq-ai/taxpilot2a
 
 | Secret | When | Why |
 |---|---|---|
-| `MOMENTIQ_NPM_READ_TOKEN` | Required by the reusable workflows in §8 | The §8 workflows hard-require this input as a pre-install guard even though `@momentiq/dark-factory-cli` is now on the public npm registry; the workflow plumbing has not yet been modernized to drop the guard. |
 | `CURSOR_API_KEY` | Optional but recommended | CI critic fallback when subscription auth isn't available in the runner (it isn't). |
 | `CODEX_API_KEY` | Optional but recommended | Same. |
 | `GEMINI_API_KEY` | Optional | Wires the Gemini critic in CI. Missing keys produce `status=error` for that critic; min-complete-quorum handles gracefully. |
@@ -602,8 +594,8 @@ See [taxpilot2a's dark-factory-pr.yml](https://github.com/momentiq-ai/taxpilot2a
 Set with:
 
 ```bash
-gh secret set MOMENTIQ_NPM_READ_TOKEN --repo <your-org>/<your-repo>
 gh secret set CURSOR_API_KEY --repo <your-org>/<your-repo>
+gh secret set CODEX_API_KEY --repo <your-org>/<your-repo>
 # ... etc
 ```
 
@@ -708,7 +700,7 @@ The minimum binding configuration is just **`agent-critic / agent-critic`**. The
 
 ### 10.4 Caveat — fork PRs cannot satisfy a secret-dependent required check
 
-Once `agent-critic` is required, **external fork PRs become unmergeable through the normal flow**: fork PRs run without access to your repository secrets (`CURSOR_API_KEY`, `CODEX_API_KEY`, `MOMENTIQ_NPM_READ_TOKEN`, …), so the `agent-critic` job cannot reach the critic vendors and the workflow's pre-install token guard refuses to proceed before getting to the critic step. The required check never goes green. This is by design (GitHub withholds secrets from fork-triggered runs to prevent secret exfiltration) and is the same class of problem tracked at [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15). Until that fork-handling design ships, maintainers must **internalize external contributions** — re-create the fork's branch inside the upstream repo (where secrets are available) and merge that — rather than merging the fork PR directly. If your repo takes no external fork contributions, this caveat does not affect you.
+Once `agent-critic` is required, **external fork PRs become unmergeable through the normal flow**: fork PRs run without access to your repository secrets (`CURSOR_API_KEY`, `CODEX_API_KEY`, …), so the `agent-critic` job cannot reach the critic vendors and the required check never goes green. This is by design (GitHub withholds secrets from fork-triggered runs to prevent secret exfiltration) and is the same class of problem tracked at [`momentiq-ai/dark-factory#15`](https://github.com/momentiq-ai/dark-factory/issues/15). Until that fork-handling design ships, maintainers must **internalize external contributions** — re-create the fork's branch inside the upstream repo (where secrets are available) and merge that — rather than merging the fork PR directly. If your repo takes no external fork contributions, this caveat does not affect you.
 
 ## 11. Validation
 
