@@ -45,7 +45,7 @@ verify the expected outcome, then move on. If anything fails, diagnose with
 2. Scaffold with Sage. Ask me for: product name, primary persona, optional
    secondary persona, production domain. Default the slug to a kebab-case
    slugified product name. Run:
-     npx @momentiq/sage-cli@alpha init <slug> \
+     npx @momentiq/sage-cli init <slug> \
        --product-name "<name>" \
        --primary-persona <persona> \
        --domain <domain>
@@ -130,7 +130,7 @@ Total install time on a fresh macOS workstation: 10–20 minutes.
 The Sage CLI is one npm command that bundles the Sage template inside the published package. No GitHub access needed.
 
 ```bash
-npx @momentiq/sage-cli@alpha init my-product \
+npx @momentiq/sage-cli init my-product \
   --product-name "My Product" \
   --primary-persona employer \
   --domain my-product.example
