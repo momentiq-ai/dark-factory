@@ -358,9 +358,9 @@ The composition is the moat. You're not stitching three vendors together; you're
 - [Dark Factory CLI reference](https://github.com/momentiq-ai/dark-factory/blob/main/packages/cli/README.md) — `df review`, `df doctor`, `df mcp`, structured bypass
 - [Cerebe SDK documentation](https://cerebe.ai/docs) — memory primitives, LLM routing, knowledge graphs, PLRE meta-learning
 
-### When you outgrow LA pilot
+### Hosted Dark Factory runtime
 
-The hosted Dark Factory runtime is in **Limited Availability** today — curated pilot customer, hands-on onboarding. SOC2, billing automation, self-serve install wizard, fleet dashboard, and the BYOK key vault are all on the GA roadmap. If you're ready for a serious deployment, [get in touch](https://momentiq.ai/contact?topic=enterprise).
+Momentiq operates the hosted Dark Factory runtime — the W3 GitHub App `momentiq-dark-factory`, the aggregation read-model, and the BYOK key vault. [Get in touch](https://momentiq.ai/contact?topic=enterprise) to onboard your repos.
 
 ### Filing issues + asking questions
 

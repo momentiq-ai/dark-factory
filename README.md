@@ -197,9 +197,9 @@ Published on npm:
 - [`@momentiq/dark-factory-schemas`](https://www.npmjs.com/package/@momentiq/dark-factory-schemas)
 
 The hosted Dark Factory runtime (the W3 GitHub App `momentiq-dark-factory`,
-the aggregation read-model, and the BYOK key vault) is run by Momentiq for
-pilot customers. If you're ready for a serious deployment, [get in
-touch](https://momentiq.ai/contact?topic=enterprise).
+the aggregation read-model, and the BYOK key vault) is operated by Momentiq.
+[Get in touch](https://momentiq.ai/contact?topic=enterprise) to onboard your
+repos.
 
 ## License
 
