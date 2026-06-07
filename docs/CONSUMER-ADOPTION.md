@@ -144,7 +144,7 @@ The CLI is published to the public npm registry at [`@momentiq/dark-factory-cli`
 }
 ```
 
-Substitute `2.2.4` for the current `latest` on npm — check with `npm view @momentiq/dark-factory-cli version` (no auth required; the package is public). If you already have a `package.json` (e.g. a workspaces monorepo), add the devDep to your root manifest — the CLI does not need to live inside any workspace.
+If a newer version has shipped since this guide was written, look up the exact value with `npm view @momentiq/dark-factory-cli version` (no auth required; the package is public) and pin to that value — never to the floating `latest` dist-tag. If you already have a `package.json` (e.g. a workspaces monorepo), add the devDep to your root manifest — the CLI does not need to live inside any workspace.
 
 **b. `.npmrc`** — pin the `@momentiq` scope to the public npm registry (defensive; npm's default is the same):
 
@@ -1058,8 +1058,8 @@ system, no extra service, no state file**:
 Issue-anchor redesign):
 
 - The arg shape changed: `[pr]` → `[issue]` across all four verbs. There is **no
-  compat shim** — pin to the current `latest` (see §4) and adopt the new arg
-  shape.
+  compat shim** — pin to the exact CLI version shown in §4 (currently `2.2.4`)
+  and adopt the new arg shape.
 - The slash-command `.md` heredoc surface (which existed in Cycle 8 to wrap the
   bash scripts under Claude Code's `$ARGUMENTS` substitution) is gone. The TS CLI
   takes real argv directly, structurally closing the heredoc-breakout
