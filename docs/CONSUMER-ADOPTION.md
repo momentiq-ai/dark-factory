@@ -544,14 +544,14 @@ jobs:
   pr-status-check:
     uses: momentiq-ai/dark-factory/.github/workflows/pr-status-check.yml@<exact-commit-sha>
     with:
-      cli-version: '0.1.0-alpha.6'
+      cli-version: '2.2.4'
     secrets:
       MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
 
   agent-critic:
     uses: momentiq-ai/dark-factory/.github/workflows/agent-critic.yml@<exact-commit-sha>
     with:
-      cli-version: '0.1.0-alpha.6'
+      cli-version: '2.2.4'
       darkfactory_config_path: '.agent-review/config.json'
     secrets:
       MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
@@ -563,7 +563,7 @@ jobs:
   cycle-doc-validation:
     uses: momentiq-ai/dark-factory/.github/workflows/cycle-doc-validation.yml@<exact-commit-sha>
     with:
-      cli-version: '0.1.0-alpha.6'
+      cli-version: '2.2.4'
     secrets:
       MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
 
@@ -577,7 +577,7 @@ jobs:
   branch-protection-audit:
     uses: momentiq-ai/dark-factory/.github/workflows/branch-protection-audit.yml@<exact-commit-sha>
     with:
-      cli-version: '0.1.0-alpha.6'
+      cli-version: '2.2.4'
       gate-enabled: 'false'   # flip to 'true' once you adopt a ruleset
     secrets:
       MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
@@ -855,14 +855,14 @@ The `--json` outputs are **byte-equivalent** with their MCP-tool counterparts' `
 
 ## 12. Update cadence
 
-- Pin to a specific alpha/beta version (`0.1.0-alpha.N`) — never floating ranges.
-- Bump CLI deliberately when dark-factory releases a new version. Check the [changelog](https://github.com/momentiq-ai/dark-factory/blob/main/CHANGELOG.md) (when it lands in Phase F+) or the [release tags](https://github.com/momentiq-ai/dark-factory/tags).
+- Pin to a specific version (e.g. `2.2.4`) — never floating ranges. The current `latest` is on [npm](https://www.npmjs.com/package/@momentiq/dark-factory-cli); pick the version intentionally.
+- Bump CLI deliberately when dark-factory releases a new version. Check the [release tags](https://github.com/momentiq-ai/dark-factory/tags) or the `CHANGELOG.md` files under [`packages/cli/`](https://github.com/momentiq-ai/dark-factory/blob/main/packages/cli/CHANGELOG.md) and [`packages/sage-cli/`](https://github.com/momentiq-ai/dark-factory/blob/main/packages/sage-cli/CHANGELOG.md).
 - When bumping, update both `package.json` (`devDependencies."@momentiq/dark-factory-cli"`) AND `.github/workflows/dark-factory-pr.yml` (`with: cli-version:`). The `df doctor` subcommand surfaces drift between them.
 - Reusable workflow SHA bumps are decoupled: you can bump the CLI without bumping the workflow SHA and vice versa. Test in a draft PR before landing in main.
 
 ## 13. Wire the MCP server into your agent
 
-`@momentiq/dark-factory-cli@0.2.0-alpha.0+` ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini) can connect over stdio and get a structured tool + resource + prompt catalog instead of shelling out to `df` and parsing stdout. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
+`@momentiq/dark-factory-cli` ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini) can connect over stdio and get a structured tool + resource + prompt catalog instead of shelling out to `df` and parsing stdout. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
 
 ### What you get
 
