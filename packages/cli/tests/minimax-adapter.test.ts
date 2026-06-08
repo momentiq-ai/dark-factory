@@ -1,11 +1,11 @@
 // Cycle 20 — Phase B unit tests for the MiniMax-direct SDK adapter
-// (Together AI's OpenAI-compatible Chat Completions endpoint).
+// (OpenRouter's OpenAI-compatible Chat Completions endpoint).
 //
 // These cover the SDK-mock path (success, retry, error, truncation,
-// abort) AND the pure-helper exports (extractTogetherApiErrorStatus,
+// abort) AND the pure-helper exports (extractOpenRouterApiErrorStatus,
 // isMinimaxPermanentFailure). The SDK is mocked via the constructor's
 // `createClient` factory so the tests do not require the `openai`
-// runtime nor a live TOGETHER_AI_API_KEY.
+// runtime nor a live OPEN_ROUTER_API_KEY.
 //
 // The mocks intentionally stay narrow and shape-compatible with the
 // real openai SDK Chat-Completions stream: each mock chunk is the
@@ -31,9 +31,9 @@ import {
 import {
   MINIMAX_PERMANENT_STATUS,
   MinimaxDirectSdkAdapter,
-  extractTogetherApiErrorStatus,
+  extractOpenRouterApiErrorStatus,
   isMinimaxPermanentFailure,
-  TOGETHER_AI_BASE_URL,
+  OPENROUTER_BASE_URL,
   type MinimaxClient,
   type MinimaxStreamChunk,
 } from "../src/adapters/minimax-direct-sdk.js";
@@ -110,17 +110,21 @@ function finishChunk(finishReason: "stop" | "length" | "content_filter"): Minima
 }
 
 function usageChunk(
-  options: { promptTokens?: number; completionTokens?: number } = {},
+  options: { promptTokens?: number; completionTokens?: number; cachedTokens?: number } = {},
 ): MinimaxStreamChunk {
   // OpenAI streaming contract: terminal chunk for usage has `choices: []`
   // and the `usage` block populated when `stream_options.include_usage`
-  // was set.
+  // was set. OpenRouter additionally surfaces the cached-prefix portion
+  // under `prompt_tokens_details.cached_tokens`.
   return {
     choices: [],
     usage: {
       ...(options.promptTokens !== undefined ? { prompt_tokens: options.promptTokens } : {}),
       ...(options.completionTokens !== undefined
         ? { completion_tokens: options.completionTokens }
+        : {}),
+      ...(options.cachedTokens !== undefined
+        ? { prompt_tokens_details: { cached_tokens: options.cachedTokens } }
         : {}),
     },
   };
@@ -129,12 +133,12 @@ function usageChunk(
 // ---------------------------------------------------------------------------
 // Pure helpers
 
-test("extractTogetherApiErrorStatus: reads status off APIError-like errors", () => {
-  expect_eq(extractTogetherApiErrorStatus({ status: 404 }), 404);
-  expect_eq(extractTogetherApiErrorStatus({ response: { status: 429 } }), 429);
-  expect_eq(extractTogetherApiErrorStatus(new Error("transport blip")), null);
-  expect_eq(extractTogetherApiErrorStatus(null), null);
-  expect_eq(extractTogetherApiErrorStatus("nope"), null);
+test("extractOpenRouterApiErrorStatus: reads status off APIError-like errors", () => {
+  expect_eq(extractOpenRouterApiErrorStatus({ status: 404 }), 404);
+  expect_eq(extractOpenRouterApiErrorStatus({ response: { status: 429 } }), 429);
+  expect_eq(extractOpenRouterApiErrorStatus(new Error("transport blip")), null);
+  expect_eq(extractOpenRouterApiErrorStatus(null), null);
+  expect_eq(extractOpenRouterApiErrorStatus("nope"), null);
 });
 
 test("isMinimaxPermanentFailure: classifies HTTP statuses correctly", () => {
@@ -152,9 +156,9 @@ test("isMinimaxPermanentFailure: classifies HTTP statuses correctly", () => {
 // ---------------------------------------------------------------------------
 // Adapter declaration
 
-test("MinimaxDirectSdkAdapter declares requiredEnvVars = ['TOGETHER_AI_API_KEY']", () => {
+test("MinimaxDirectSdkAdapter declares requiredEnvVars = ['OPEN_ROUTER_API_KEY']", () => {
   const adapter = new MinimaxDirectSdkAdapter();
-  expect_deep([...adapter.requiredEnvVars], ["TOGETHER_AI_API_KEY"]);
+  expect_deep([...adapter.requiredEnvVars], ["OPEN_ROUTER_API_KEY"]);
 });
 
 test("MinimaxDirectSdkAdapter id is 'minimax-direct-sdk'", () => {
@@ -226,17 +230,17 @@ test("review: baseUrl option threads through to the SDK client constructor", asy
   };
   const adapter = new MinimaxDirectSdkAdapter({
     apiKey: "k",
-    baseUrl: "https://alt.together.example/v1",
+    baseUrl: "https://alt.openrouter.example/v1",
     createClient: (_apiKey, baseUrl) => {
       seenBaseUrls.push(baseUrl);
       return mockClient;
     },
   });
   await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
-  expect_deep(seenBaseUrls, ["https://alt.together.example/v1"]);
+  expect_deep(seenBaseUrls, ["https://alt.openrouter.example/v1"]);
 });
 
-test("review: default baseUrl is Together AI's /v1 endpoint", async () => {
+test("review: default baseUrl is OpenRouter's /v1 endpoint", async () => {
   const seenBaseUrls: string[] = [];
   const mockClient: MinimaxClient = {
     chat: {
@@ -255,14 +259,57 @@ test("review: default baseUrl is Together AI's /v1 endpoint", async () => {
     },
   });
   await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
-  expect_deep(seenBaseUrls, [TOGETHER_AI_BASE_URL]);
-  expect_eq(TOGETHER_AI_BASE_URL, "https://api.together.xyz/v1");
+  expect_deep(seenBaseUrls, [OPENROUTER_BASE_URL]);
+  expect_eq(OPENROUTER_BASE_URL, "https://openrouter.ai/api/v1");
+});
+
+// ---------------------------------------------------------------------------
+// review() — OpenRouter provider routing (data-collection compliance default)
+
+test("review: sends provider.data_collection='deny' by default (compliance default)", async () => {
+  let seenProvider: unknown;
+  const mockClient: MinimaxClient = {
+    chat: {
+      completions: {
+        create: async (params) => {
+          seenProvider = params.provider;
+          return makeStream([deltaChunk(APPROVED_RESPONSE_JSON), finishChunk("stop"), usageChunk()]);
+        },
+      },
+    },
+    models: { list: async () => makeStream([]) as unknown as AsyncIterable<{ id?: string }> },
+  };
+  const adapter = new MinimaxDirectSdkAdapter({ apiKey: "k", createClient: () => mockClient });
+  await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
+  expect_deep(seenProvider, { data_collection: "deny" });
+});
+
+test("review: dataCollection option overrides the routing preference (escape hatch)", async () => {
+  let seenProvider: unknown;
+  const mockClient: MinimaxClient = {
+    chat: {
+      completions: {
+        create: async (params) => {
+          seenProvider = params.provider;
+          return makeStream([deltaChunk(APPROVED_RESPONSE_JSON), finishChunk("stop"), usageChunk()]);
+        },
+      },
+    },
+    models: { list: async () => makeStream([]) as unknown as AsyncIterable<{ id?: string }> },
+  };
+  const adapter = new MinimaxDirectSdkAdapter({
+    apiKey: "k",
+    dataCollection: "allow",
+    createClient: () => mockClient,
+  });
+  await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
+  expect_deep(seenProvider, { data_collection: "allow" });
 });
 
 // ---------------------------------------------------------------------------
 // review() — failure paths
 
-test("review: missing TOGETHER_AI_API_KEY → permanent failure (no SDK call)", async () => {
+test("review: missing OPEN_ROUTER_API_KEY → permanent failure (no SDK call)", async () => {
   const calls: number[] = [];
   const adapter = new MinimaxDirectSdkAdapter({
     apiKey: "", // empty string falsy
@@ -275,17 +322,17 @@ test("review: missing TOGETHER_AI_API_KEY → permanent failure (no SDK call)", 
     },
   });
   // Stub env so this is deterministic regardless of caller env.
-  const original = process.env["TOGETHER_AI_API_KEY"];
-  delete process.env["TOGETHER_AI_API_KEY"];
+  const original = process.env["OPEN_ROUTER_API_KEY"];
+  delete process.env["OPEN_ROUTER_API_KEY"];
   try {
     const result = await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
     expect_eq(result.status, "error");
-    expect_match(result.error?.message ?? "", /TOGETHER_AI_API_KEY/);
+    expect_match(result.error?.message ?? "", /OPEN_ROUTER_API_KEY/);
     expect_eq(result.error?.retryable, false);
     // The createClient factory was NEVER invoked.
     expect_eq(calls.length, 0);
   } finally {
-    if (original !== undefined) process.env["TOGETHER_AI_API_KEY"] = original;
+    if (original !== undefined) process.env["OPEN_ROUTER_API_KEY"] = original;
   }
 });
 
@@ -516,35 +563,35 @@ test("review: AbortSignal aborted before stream starts → result is error with 
 // ---------------------------------------------------------------------------
 // doctor()
 
-test("doctor: missing TOGETHER_AI_API_KEY on optional shadow critic does not fail doctor", async () => {
-  const original = process.env["TOGETHER_AI_API_KEY"];
-  delete process.env["TOGETHER_AI_API_KEY"];
+test("doctor: missing OPEN_ROUTER_API_KEY on optional shadow critic does not fail doctor", async () => {
+  const original = process.env["OPEN_ROUTER_API_KEY"];
+  delete process.env["OPEN_ROUTER_API_KEY"];
   try {
     const adapter = new MinimaxDirectSdkAdapter({ apiKey: "" });
     const checks = await adapter.doctor(CRITIC);
-    const keyCheck = checks.find((c) => c.name === "together_ai_api_key");
+    const keyCheck = checks.find((c) => c.name === "open_router_api_key");
     expect_truthy(keyCheck);
     expect_eq(keyCheck!.passed, true);
     expect_match(keyCheck!.detail, /optional shadow critic/);
     expect_eq(keyCheck!.remediation, undefined);
   } finally {
-    if (original !== undefined) process.env["TOGETHER_AI_API_KEY"] = original;
+    if (original !== undefined) process.env["OPEN_ROUTER_API_KEY"] = original;
   }
 });
 
-test("doctor: missing TOGETHER_AI_API_KEY on required critic surfaces actionable remediation", async () => {
-  const original = process.env["TOGETHER_AI_API_KEY"];
-  delete process.env["TOGETHER_AI_API_KEY"];
+test("doctor: missing OPEN_ROUTER_API_KEY on required critic surfaces actionable remediation", async () => {
+  const original = process.env["OPEN_ROUTER_API_KEY"];
+  delete process.env["OPEN_ROUTER_API_KEY"];
   try {
     const adapter = new MinimaxDirectSdkAdapter({ apiKey: "" });
     const checks = await adapter.doctor({ ...CRITIC, required: true });
-    const keyCheck = checks.find((c) => c.name === "together_ai_api_key");
+    const keyCheck = checks.find((c) => c.name === "open_router_api_key");
     expect_truthy(keyCheck);
     expect_eq(keyCheck!.passed, false);
-    expect_match(keyCheck!.remediation ?? "", /TOGETHER_AI_API_KEY/);
-    expect_match(keyCheck!.remediation ?? "", /Together AI/);
+    expect_match(keyCheck!.remediation ?? "", /OPEN_ROUTER_API_KEY/);
+    expect_match(keyCheck!.remediation ?? "", /OpenRouter/);
   } finally {
-    if (original !== undefined) process.env["TOGETHER_AI_API_KEY"] = original;
+    if (original !== undefined) process.env["OPEN_ROUTER_API_KEY"] = original;
   }
 });
 
@@ -576,9 +623,8 @@ test("doctor: model id NOT in models.list surfaces remediation", async () => {
       list: () =>
         ({
           async *[Symbol.asyncIterator]() {
-            // Simulate Together catalog WITHOUT the configured id — e.g.,
-            // pre-M3-GA when the operator's config pinned `minimax-m3`
-            // but the catalog still only has M2.x.
+            // Simulate OpenRouter's catalog WITHOUT the configured id —
+            // e.g., a model-id typo or a future id rename.
             yield { id: "MiniMaxAI/MiniMax-M2.7" };
             yield { id: "MiniMaxAI/MiniMax-M2" };
           },
@@ -590,7 +636,7 @@ test("doctor: model id NOT in models.list surfaces remediation", async () => {
   const idCheck = checks.find((c) => c.name === "minimax_model_id");
   expect_truthy(idCheck);
   expect_eq(idCheck!.passed, false);
-  expect_match(idCheck!.remediation ?? "", /Together AI/);
+  expect_match(idCheck!.remediation ?? "", /OpenRouter/);
 });
 
 test("doctor: non-minimax model id family is flagged by family-prefix check before live models.list call", async () => {
@@ -694,10 +740,10 @@ test("review: model emits `gate` instead of `command` in qualityGateResults — 
 
 // ---------------------------------------------------------------------------
 // Cycle 6.3 — per-critic telemetry on the returned CriticResult.
-// MiniMax via Together exposes input/output via `usage` on the terminal
+// MiniMax via OpenRouter exposes input/output via `usage` on the terminal
 // chunk when `stream_options.include_usage: true` is sent (latest non-null
-// wins, captured in lastUsage). Cached-prefix tokens are not exposed on
-// the current MinimaxUsage interface.
+// wins, captured in lastUsage). OpenRouter also breaks out the cached-prefix
+// portion under `prompt_tokens_details.cached_tokens` → `tokensCached`.
 
 test("review: CriticResult carries tokensInput/Output + retries from usage chunk (success path)", async () => {
   const mockClient: MinimaxClient = {
@@ -708,7 +754,7 @@ test("review: CriticResult carries tokensInput/Output + retries from usage chunk
             deltaChunk(APPROVED_RESPONSE_JSON.slice(0, 30)),
             deltaChunk(APPROVED_RESPONSE_JSON.slice(30)),
             finishChunk("stop"),
-            usageChunk({ promptTokens: 1200, completionTokens: 240 }),
+            usageChunk({ promptTokens: 1200, completionTokens: 240, cachedTokens: 800 }),
           ]),
       },
     },
@@ -721,8 +767,8 @@ test("review: CriticResult carries tokensInput/Output + retries from usage chunk
   expect_eq(result.status, "complete");
   expect_eq(result.tokensInput, 1200);
   expect_eq(result.tokensOutput, 240);
-  // MinimaxUsage today does not break out cached input tokens.
-  expect_eq(result.tokensCached, undefined);
+  // OpenRouter breaks out the cached-prefix portion → tokensCached.
+  expect_eq(result.tokensCached, 800);
   expect_eq(result.retries, 0);
 });
 

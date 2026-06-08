@@ -1,8 +1,18 @@
-// Cycle 20 — MiniMax M3 direct-API adapter via the `openai` npm package
-// against Together AI's OpenAI-compatible inference endpoint.
+// Cycle 20 — MiniMax M3 critic adapter via the `openai` npm package
+// against OpenRouter's OpenAI-compatible inference endpoint.
+//
+// Provider decision (cycle20 D1, pivoted 2026-06-08): MiniMax M3 is
+// served through OpenRouter, whose `minimax/minimax-m3` endpoint routes
+// to MiniMax's own provider — headquartered in SG, with inference
+// datacenters in the US (per OpenRouter's per-provider residency
+// metadata). The pivot from the original Together AI plan (#302: Together
+// never shipped M3) keeps the inference compute US-based, which is the
+// data-residency property the hosted critic requires. The SG corporate
+// jurisdiction is a compliance-posture note surfaced to compliance, not a
+// runtime concern of this adapter.
 //
 // Why a fifth adapter (cycle20 § Scope): the four-vendor critic fleet
-// (cursor + codex + gemini + grok) leaves three vendor lineages
+// (cursor + codex + gemini + grok) leaves four vendor lineages
 // (Anthropic-adjacent / OpenAI / Google / xAI). MiniMax M3 is an OSS-
 // weights model whose training distribution + RLHF process are
 // uncorrelated with those four, so adding it as a 5th critic carries
@@ -13,15 +23,25 @@
 //
 // The adapter:
 //   - implements `CriticAdapter` from `critic.ts` with
-//     `requiredEnvVars = [TOGETHER_AI_API_KEY_ENV]`
-//   - calls Together AI's `/v1/chat/completions` endpoint (OpenAI-
+//     `requiredEnvVars = [OPEN_ROUTER_API_KEY_ENV]`
+//   - calls OpenRouter's `/v1/chat/completions` endpoint (OpenAI-
 //     compatible Chat Completions API; cycle20 D3 explicitly chose
-//     this shape over the Responses API because Together exposes
-//     Chat Completions, not Responses, for MiniMax M3)
+//     this shape over the Responses API because OpenRouter exposes
+//     Chat Completions for MiniMax M3)
+//   - sends `provider.data_collection: "deny"` so OpenRouter only routes
+//     to a provider that does not retain/train on the prompt — the
+//     prompt is third-party customer diff content. This is a fail-LOUD
+//     compliance default: if the request 404s with "no allowed
+//     providers", that means MiniMax-on-OpenRouter can NOT guarantee
+//     no-retention, which is a compliance finding to escalate — NOT a
+//     reason to silently flip to "allow". Overridable via the
+//     `dataCollection` constructor option.
 //   - token-accounts off the OpenAI-format `usage` field on the
 //     terminal `chunk.usage` of the streamed response (matching the
 //     OpenAI SDK contract — `stream_options: { include_usage: true }`
-//     surfaces `usage` on the final chunk)
+//     surfaces `usage` on the final chunk), including the cached-prefix
+//     token count (`usage.prompt_tokens_details.cached_tokens`) that
+//     OpenRouter bills at the cache-read rate ($0.06/Mtok vs $0.30 input)
 //   - mirrors the 322.1 retry shape (`runRetryLoop` + `attemptReview`)
 //     from a single source of truth in `cursor-sdk.ts`, so the policy +
 //     budget are byte-identical across adapters
@@ -62,21 +82,29 @@ import {
 } from "./_retry.js";
 
 export const MINIMAX_DIRECT_SDK_ADAPTER_ID = "minimax-direct-sdk";
-export const TOGETHER_AI_API_KEY_ENV = "TOGETHER_AI_API_KEY";
-// Together AI's OpenAI-compatible inference endpoint. The MiniMax M3
-// model id is configured via `critic.model.id` and routed by Together's
-// model dispatch on `/v1/chat/completions`.
-export const TOGETHER_AI_BASE_URL = "https://api.together.xyz/v1";
+export const OPEN_ROUTER_API_KEY_ENV = "OPEN_ROUTER_API_KEY";
+// OpenRouter's OpenAI-compatible inference endpoint. The MiniMax M3
+// model id (`minimax/minimax-m3`) is configured via `critic.model.id`
+// and routed by OpenRouter's model dispatch on `/v1/chat/completions`.
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+// Compliance default for OpenRouter provider routing. "deny" => only
+// route to a provider that does not store/train on the prompt. See the
+// file header for the fail-loud rationale.
+export type OpenRouterDataCollection = "deny" | "allow";
+export const OPENROUTER_DATA_COLLECTION_DEFAULT: OpenRouterDataCollection = "deny";
 
 // Chat Completions permanent-failure HTTP statuses — same buckets as
-// the Grok adapter uses against the Responses API since both Together
+// the Grok adapter uses against the Responses API since both OpenRouter
 // (OpenAI-compatible) and OpenAI itself share status semantics. Burning
 // retry budget on these wastes wall-clock AND can mask the real fault
 // (e.g., a wrong API key would silently exhaust retries before
 // surfacing).
 //   400 invalid_request    — bad request shape, model id typo
 //   401 / 403              — auth failure
-//   404 model_not_found    — model id not in the provider's catalog
+//   404 model_not_found    — model id not in the provider's catalog, OR
+//                            no allowed provider (data_collection=deny +
+//                            no eligible provider — a compliance signal)
 //   429 rate_limit         — quota / rate-limit (retrying within 20s
 //                            burns budget; surface immediately so the
 //                            operator can investigate)
@@ -124,8 +152,13 @@ export interface MinimaxChatCompletionsCreateParams {
   stream: true;
   // The OpenAI Chat Completions streaming contract requires
   // `stream_options.include_usage` to surface `usage` on the terminal
-  // chunk. Together AI passes this through to MiniMax M3 unchanged.
+  // chunk. OpenRouter passes this through to MiniMax M3 unchanged.
   stream_options?: { include_usage?: boolean };
+  // OpenRouter-specific provider routing preference. Forwarded as an
+  // extra body field by the OpenAI SDK (it does not strip unknown keys).
+  // `data_collection: "deny"` constrains routing to a provider that does
+  // not retain/train on the prompt — see file header.
+  provider?: { data_collection?: OpenRouterDataCollection };
 }
 
 /**
@@ -136,12 +169,13 @@ export interface MinimaxChatCompletionsCreateParams {
  *     `content_filter`) — `length` + `content_filter` are treated as
  *     truncation (permanent failure with preserved partial text); `stop`
  *     is the normal completion path
- *   - `usage.prompt_tokens` / `usage.completion_tokens` — telemetry
- *     token usage on the final chunk (per the OpenAI streaming contract,
+ *   - `usage.prompt_tokens` / `usage.completion_tokens` /
+ *     `usage.prompt_tokens_details.cached_tokens` — telemetry token
+ *     usage on the final chunk (per the OpenAI streaming contract,
  *     surfaced when `stream_options.include_usage: true` was sent)
  *
  * Field shapes treated as `unknown` so the adapter is resilient to
- * Together/OpenAI extending the chunk envelope between when this was
+ * OpenRouter/OpenAI extending the chunk envelope between when this was
  * written and when it runs.
  */
 export interface MinimaxStreamChunk {
@@ -159,15 +193,23 @@ export interface MinimaxUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  // OpenAI-compatible cached-prefix accounting. OpenRouter surfaces the
+  // cached portion of `prompt_tokens` here; it is billed at the
+  // cache-read rate, so cost attribution needs it broken out.
+  prompt_tokens_details?: { cached_tokens?: number };
 }
 
 export interface MinimaxDirectSdkAdapterOptions {
   apiKey?: string;
   // Allows the worker / operator to point the adapter at a different
-  // OpenAI-compatible Together endpoint (e.g. a regional shard, or a
-  // future M3 provider that ships before Together's GA flip). Defaults
-  // to {@link TOGETHER_AI_BASE_URL}.
+  // OpenAI-compatible endpoint (e.g. a regional shard, or a future
+  // direct-MiniMax US endpoint). Defaults to {@link OPENROUTER_BASE_URL}.
   baseUrl?: string;
+  // OpenRouter provider-routing data policy. Defaults to
+  // {@link OPENROUTER_DATA_COLLECTION_DEFAULT} ("deny") — the
+  // compliance-first posture for third-party customer diff content. See
+  // the file header for why "deny" is fail-loud, not best-effort.
+  dataCollection?: OpenRouterDataCollection;
   // Test escape hatch: inject a mock client. In production the adapter
   // constructs `new OpenAI({ apiKey, baseURL })` from the env-loaded API
   // key on each `review()` call.
@@ -188,7 +230,7 @@ export interface MinimaxDirectSdkAdapterOptions {
  * retryable lets the loop catch real transient blips while not silently
  * retrying logic errors.
  */
-export function extractTogetherApiErrorStatus(err: unknown): number | null {
+export function extractOpenRouterApiErrorStatus(err: unknown): number | null {
   if (!err || typeof err !== "object") return null;
   const e = err as Record<string, unknown>;
   if (typeof e["status"] === "number") return e["status"];
@@ -202,7 +244,7 @@ export function extractTogetherApiErrorStatus(err: unknown): number | null {
 }
 
 /**
- * Policy gate: decide whether a Together / Chat Completions failure is
+ * Policy gate: decide whether an OpenRouter / Chat Completions failure is
  * retryable. Returns `false` for HTTP statuses in
  * {@link MINIMAX_PERMANENT_STATUS}, `true` otherwise (including
  * no-status network errors).
@@ -216,19 +258,27 @@ export function isMinimaxPermanentFailure(status: number | null): boolean {
 
 export class MinimaxDirectSdkAdapter implements CriticAdapter {
   readonly id = MINIMAX_DIRECT_SDK_ADAPTER_ID;
-  readonly requiredEnvVars: readonly string[] = [TOGETHER_AI_API_KEY_ENV];
+  readonly requiredEnvVars: readonly string[] = [OPEN_ROUTER_API_KEY_ENV];
 
   private readonly createClient: (apiKey: string, baseUrl: string) => MinimaxClient;
   private readonly baseUrl: string;
+  private readonly dataCollection: OpenRouterDataCollection;
 
   constructor(private readonly options: MinimaxDirectSdkAdapterOptions = {}) {
-    this.baseUrl = options.baseUrl ?? TOGETHER_AI_BASE_URL;
+    this.baseUrl = options.baseUrl ?? OPENROUTER_BASE_URL;
+    this.dataCollection = options.dataCollection ?? OPENROUTER_DATA_COLLECTION_DEFAULT;
     this.createClient =
       options.createClient ??
       ((apiKey, baseUrl) =>
         new OpenAI({
           apiKey,
           baseURL: baseUrl,
+          // OpenRouter app-attribution headers (optional; recommended so
+          // usage is identifiable in the OpenRouter dashboard).
+          defaultHeaders: {
+            "HTTP-Referer": "https://github.com/momentiq-ai/dark-factory",
+            "X-Title": "Dark Factory critic",
+          },
         }) as unknown as MinimaxClient);
   }
 
@@ -272,7 +322,7 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
     options: CriticReviewOptions,
     attemptIdx: number,
   ): Promise<AttemptOutcome> {
-    const apiKey = this.options.apiKey ?? process.env[TOGETHER_AI_API_KEY_ENV];
+    const apiKey = this.options.apiKey ?? process.env[OPEN_ROUTER_API_KEY_ENV];
     if (!apiKey) {
       // Missing key is permanent — no retry can fix a missing secret.
       return {
@@ -281,7 +331,7 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
         statusMessage: null,
         result: buildErrorResult({
           critic,
-          message: `${TOGETHER_AI_API_KEY_ENV} is not set; cannot run MiniMax critic`,
+          message: `${OPEN_ROUTER_API_KEY_ENV} is not set; cannot run MiniMax critic`,
           retryable: false,
           retryCount: attemptIdx,
         }),
@@ -346,6 +396,10 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
           // sent. Without it `lastUsage` stays undefined and the
           // telemetry payload omits token counts → null cost rows.
           stream_options: { include_usage: true },
+          // Compliance: constrain OpenRouter routing to a no-retention
+          // provider for the third-party customer diff. Fail-loud — see
+          // file header.
+          provider: { data_collection: this.dataCollection },
         },
         options.signal !== undefined ? { signal: options.signal } : {},
       );
@@ -384,7 +438,7 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
     } catch (err) {
       const e = err as Error;
       const status =
-        err instanceof APIError ? err.status : extractTogetherApiErrorStatus(err);
+        err instanceof APIError ? err.status : extractOpenRouterApiErrorStatus(err);
       const permanent = isMinimaxPermanentFailure(status);
       const codeStr = status !== null ? `http_${status}` : "transport_error";
       options.emit?.({
@@ -546,14 +600,16 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
     }
 
     const durationMs = Date.now() - startMs;
+    const cachedTokens = lastUsage?.prompt_tokens_details?.cached_tokens;
     const enriched: CriticResult = {
       ...result,
       durationMs,
       // Cycle 6.3 — surface per-critic telemetry on the artifact-shaped
       // result. The OpenAI Chat Completions usage block exposes
-      // `prompt_tokens` / `completion_tokens`; Together's MiniMax M3
-      // path does not surface a cached-prefix token count today, so
-      // `tokensCached` stays undefined.
+      // `prompt_tokens` / `completion_tokens`; OpenRouter's MiniMax M3
+      // path additionally breaks out the cached-prefix portion under
+      // `prompt_tokens_details.cached_tokens` (billed at the cache-read
+      // rate), captured as `tokensCached` for accurate cost attribution.
       retries: attemptIdx,
       ...(typeof lastUsage?.prompt_tokens === "number"
         ? { tokensInput: lastUsage.prompt_tokens }
@@ -561,6 +617,7 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
       ...(typeof lastUsage?.completion_tokens === "number"
         ? { tokensOutput: lastUsage.completion_tokens }
         : {}),
+      ...(typeof cachedTokens === "number" ? { tokensCached: cachedTokens } : {}),
       validation: {
         qualityGateResults: packet.validation.evidence,
         qualityGatesMissing: packet.validation.missing,
@@ -596,20 +653,20 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
 
   async doctor(critic: CriticConfig): Promise<DoctorCheck[]> {
     const checks: DoctorCheck[] = [];
-    const apiKey = this.options.apiKey ?? process.env[TOGETHER_AI_API_KEY_ENV];
+    const apiKey = this.options.apiKey ?? process.env[OPEN_ROUTER_API_KEY_ENV];
     const missingOptionalKey = !apiKey && !critic.required;
     checks.push({
-      name: "together_ai_api_key",
+      name: "open_router_api_key",
       passed: Boolean(apiKey) || missingOptionalKey,
       detail: apiKey
-        ? `${TOGETHER_AI_API_KEY_ENV} present`
+        ? `${OPEN_ROUTER_API_KEY_ENV} present`
         : missingOptionalKey
-          ? `${TOGETHER_AI_API_KEY_ENV} missing; optional shadow critic will be skipped at review time`
-          : `${TOGETHER_AI_API_KEY_ENV} missing`,
+          ? `${OPEN_ROUTER_API_KEY_ENV} missing; optional shadow critic will be skipped at review time`
+          : `${OPEN_ROUTER_API_KEY_ENV} missing`,
       ...(apiKey || missingOptionalKey
         ? {}
         : {
-            remediation: `export ${TOGETHER_AI_API_KEY_ENV}=... or add it to the Doppler scope (dark-factory/prd). MiniMax M3 is served via Together AI's OpenAI-compatible inference endpoint.`,
+            remediation: `export ${OPEN_ROUTER_API_KEY_ENV}=... or add it to the Doppler scope (dark-factory/prd). MiniMax M3 is served via OpenRouter's OpenAI-compatible inference endpoint.`,
           }),
     });
 
@@ -627,7 +684,7 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
       name: "minimax_sdk_loaded",
       passed: sdkLoaded,
       detail: sdkLoaded
-        ? "openai SDK imported (used as Together AI client via baseURL)"
+        ? "openai SDK imported (used as OpenRouter client via baseURL)"
         : "openai SDK missing or shape unexpected",
       ...(sdkLoaded
         ? {}
@@ -639,7 +696,7 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
     // call below — useful when the operator's API key isn't yet
     // provisioned but the doctor is still expected to catch obvious
     // config errors. We match `minimax`-prefixed ids case-insensitively
-    // (Together's catalog uses `MiniMaxAI/MiniMax-M*` casing).
+    // (OpenRouter's slug is `minimax/minimax-m3`).
     const familyOk = critic.model.id.toLowerCase().includes("minimax");
     checks.push({
       name: "minimax_model_id_family",
@@ -651,14 +708,14 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
         ? {}
         : {
             remediation:
-              "the configured MiniMax critic's model.id should contain 'minimax' (e.g., 'minimax-m3' or Together's full id). Update .agent-review/config.json:critics[].model.id.",
+              "the configured MiniMax critic's model.id should contain 'minimax' (e.g., 'minimax/minimax-m3'). Update .agent-review/config.json:critics[].model.id.",
           }),
     });
 
     if (!sdkLoaded || !apiKey) return checks;
 
     // Verify the configured model id resolves via models.list(). Mirrors
-    // the Grok doctor's live-catalog check so a future Together model
+    // the Grok doctor's live-catalog check so a future OpenRouter model
     // retirement / id rename is caught before review time.
     try {
       const client = this.createClient(apiKey, this.baseUrl);
@@ -717,7 +774,7 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
           ? {}
           : {
               remediation:
-                "update .agent-review/config.json:critics[].model.id to a model id surfaced by Together AI's /v1/models endpoint",
+                "update .agent-review/config.json:critics[].model.id to a model id surfaced by OpenRouter's /v1/models endpoint (e.g. 'minimax/minimax-m3')",
             }),
       });
     } catch (err) {
@@ -725,7 +782,7 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
         name: "minimax_model_id",
         passed: false,
         detail: `models.list() failed: ${(err as Error).message}`,
-        remediation: `verify ${TOGETHER_AI_API_KEY_ENV} and network connectivity (Together AI endpoint: ${this.baseUrl})`,
+        remediation: `verify ${OPEN_ROUTER_API_KEY_ENV} and network connectivity (OpenRouter endpoint: ${this.baseUrl})`,
       });
     }
     return checks;

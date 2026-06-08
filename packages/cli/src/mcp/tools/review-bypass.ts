@@ -239,7 +239,7 @@ const ADAPTER_LOADERS: ReadonlyArray<{
   { id: "codex-sdk", modulePath: "../../adapters/codex-sdk.js", className: "CodexSdkAdapter" },
   { id: "gemini-sdk", modulePath: "../../adapters/gemini-sdk.js", className: "GeminiSdkAdapter" },
   { id: "grok-direct-sdk", modulePath: "../../adapters/grok-direct-sdk.js", className: "GrokDirectSdkAdapter" },
-  // Cycle 20 — MiniMax M3 via Together AI.
+  // Cycle 20 — MiniMax M3 via OpenRouter.
   { id: "minimax-direct-sdk", modulePath: "../../adapters/minimax-direct-sdk.js", className: "MinimaxDirectSdkAdapter" },
   // Consumer DFP #107 — mirror cli.ts ADAPTER_LOADERS + the MCP doctor
   // list so the review-bypass adapter registry knows about
