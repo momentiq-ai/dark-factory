@@ -75,6 +75,7 @@ import {
 import { loadAgentReviewConfig, type LoadedConfig } from "./policy/config.js";
 import { buildCriticReport, buildZeroEvidenceDiagnostic } from "./report.js";
 import { runReview, runCommitGate } from "./runner.js";
+import { finalizeExit } from "./exit.js";
 import {
   buildDefaultSelfConsistencyProbe,
   type SelfConsistencyProbeFn,
@@ -2128,12 +2129,13 @@ function isInvokedAsMain(): boolean {
 
 if (isInvokedAsMain()) {
   main(process.argv).then(
-    (code) => {
-      process.exitCode = code;
-    },
+    // `finalizeExit` records the exit code AND arms an unref'd force-exit
+    // backstop so a leaked handle in a vendor critic SDK can't hang the
+    // process past the CI job timeout (issue #167). See `./exit.ts`.
+    (code) => finalizeExit(code),
     (err: unknown) => {
       process.stderr.write(`df: fatal: ${(err as Error).message}\n`);
-      process.exitCode = 1;
+      finalizeExit(1);
     },
   );
 }
