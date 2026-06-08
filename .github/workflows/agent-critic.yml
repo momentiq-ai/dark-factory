@@ -207,6 +207,19 @@ jobs:
         # critics contribute to `quorum_unmet`, which is non-blocking).
         if: env.REQUESTED_VERSION == 'local'
         env:
+          # Issue #170 — select the `cloud` profile for dark-factory's own
+          # CI gate. `df critic` resolves the profile via `resolveProfile()`
+          # (--profile flag > AGENT_REVIEW_PROFILE > "local") and threads it
+          # into `runReview()`, so the profile's `auth` pins take effect.
+          # The `cloud` profile is the full quartet (cursor + codex + gemini
+          # + grok) and pins `codex-local-chief-engineer: api` — CI ships
+          # only CODEX_API_KEY (no interactive ChatGPT session is possible
+          # headless), so `api` is the #2103-compliant explicit auth source.
+          # Without this, `df critic` ran the profile-less back-compat path
+          # and codex hit "no auth source pinned" on every run. The `local`
+          # profile (codex: chatgpt, subscription billing for dev
+          # workstations) is deliberately NOT used here.
+          AGENT_REVIEW_PROFILE: cloud
           # Wire vendor API keys from workflow secrets into the CLI
           # process. Mirror the keys the adapters read by convention
           # (CURSOR_API_KEY / CODEX_API_KEY / GEMINI_API_KEY / XAI_API_KEY).
