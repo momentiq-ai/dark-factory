@@ -342,10 +342,19 @@ export interface VerificationRoute {
 // evaluation time. `commit` and `evidencePath` agree (both null only for
 // the docs-only suppression route), per parseVerificationRoute's invariant.
 //
-// The commands are the canonical floor; a consumer MAY override a route's
-// `command` in its own `.agent-review/config.json` to match its toolchain
-// (e.g. a different test runner). The trigger globs + evidenceKind are the
-// stable cross-consumer contract.
+// The stable cross-consumer contract is the (`trigger` globs, `evidenceKind`,
+// `evidencePath`) triple — that is what every consumer inherits unchanged.
+// The `command` strings are REPRESENTATIVE PLACEHOLDERS, NOT
+// executable-as-shipped: in v1 the per-route PRODUCER is supplied by the
+// consumer's `/verify` skill (the DFP-side route-runner driver — see DFP
+// Cycle 21 Open Question 1), which maps each route's `evidenceKind` to its
+// real producer (e.g. `terraform plan`, `helm template`, the targeted test
+// run, the Playwright pass). A consumer wiring the route-runner directly
+// MUST override each `command` with its own toolchain's producer in
+// `.agent-review/config.json`; the canonical `df verify --route <id>` string
+// names the intent (which evidenceKind to produce), not a CLI subcommand
+// that exists today. Do NOT adopt these commands verbatim expecting them to
+// run — they will not resolve.
 //
 // The `web/**` / `*.tsx` playwright route ships here so every consumer with
 // a UI inherits it; it arms NOTHING in repos with no UI surface (their diff
