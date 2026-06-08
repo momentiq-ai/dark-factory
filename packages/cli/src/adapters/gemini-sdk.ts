@@ -48,7 +48,13 @@ import {
 
 import type { CriticAdapter, CriticReviewOptions } from "./critic.js";
 import {
+  buildContextWindowExceededResult,
   buildErrorResult,
+  checkContextWindow,
+  CONTEXT_WINDOW_ERROR_CODE,
+  estimateTokensFromBytes,
+  GEMINI_CONTEXT_WINDOW_TOKENS,
+  isContextLengthError,
   mergeAdapterMetadata,
   normalizeCriticEcho,
   parseAssistantJson,
@@ -304,6 +310,41 @@ export class GeminiSdkAdapter implements CriticAdapter {
       });
     }
 
+    // Issue #169 — PRE-FLIGHT context-window gate. The assembled prompt
+    // carries its UTF-8 byte length; if the cheap token estimate exceeds
+    // Gemini's input window, short-circuit to a CLEAN structured error
+    // BEFORE dispatching the call. Saves a doomed paid request and emits a
+    // legible degrade instead of the raw provider INVALID_ARGUMENT 400.
+    // Permanent: a larger-than-the-window diff re-trips on retry.
+    const preflight = checkContextWindow({
+      critic,
+      vendor: "gemini",
+      promptByteLength: prompt.byteLength,
+      limit: GEMINI_CONTEXT_WINDOW_TOKENS,
+      retryCount: attemptIdx,
+    });
+    if (preflight) {
+      options.emit?.({
+        ts: new Date().toISOString(),
+        event: "critic_run_error",
+        commit: packet.commit.sha,
+        criticId: critic.id,
+        adapter: this.id,
+        model: critic.model.id,
+        durationMs: Date.now() - startMs,
+        error: preflight.error?.message ?? "context window exceeded",
+        status: "run_failure_permanent",
+        retryCount: attemptIdx,
+        errorCode: CONTEXT_WINDOW_ERROR_CODE,
+      });
+      return {
+        kind: "permanent_failure",
+        errorCode: CONTEXT_WINDOW_ERROR_CODE,
+        statusMessage: null,
+        result: preflight,
+      };
+    }
+
     const client = this.createClient(apiKey);
     const thinkingBudget = resolveThinkingBudget(critic);
 
@@ -361,6 +402,41 @@ export class GeminiSdkAdapter implements CriticAdapter {
     } catch (err) {
       const e = err as Error;
       const status = err instanceof ApiError ? err.status : extractApiErrorStatus(err);
+      // Issue #169 — classify a provider over-limit 400 by its message
+      // signature (defense-in-depth when the pre-flight estimate
+      // undershoots and the doomed call goes out). Rewrite the raw
+      // INVALID_ARGUMENT copy into the SAME clean structured error the
+      // pre-flight gate emits, so the artifact never carries nested
+      // provider JSON. Keyed on the message, not the HTTP code, so it
+      // catches the over-limit class regardless of provider status tagging.
+      if (isContextLengthError(e.message)) {
+        const estimatedTokens = estimateTokensFromBytes(prompt.byteLength);
+        options.emit?.({
+          ts: new Date().toISOString(),
+          event: "critic_run_error",
+          commit: packet.commit.sha,
+          criticId: critic.id,
+          adapter: this.id,
+          model: critic.model.id,
+          durationMs: Date.now() - startMs,
+          error: `diff exceeds gemini context window (~${estimatedTokens} tokens, limit ${GEMINI_CONTEXT_WINDOW_TOKENS})`,
+          status: "run_failure_permanent",
+          retryCount: attemptIdx,
+          errorCode: CONTEXT_WINDOW_ERROR_CODE,
+        });
+        return {
+          kind: "permanent_failure",
+          errorCode: CONTEXT_WINDOW_ERROR_CODE,
+          statusMessage: null,
+          result: buildContextWindowExceededResult({
+            critic,
+            vendor: "gemini",
+            estimatedTokens,
+            limit: GEMINI_CONTEXT_WINDOW_TOKENS,
+            retryCount: attemptIdx,
+          }),
+        };
+      }
       const permanent = isGeminiPermanentFailure(status);
       const codeStr = status !== null ? `http_${status}` : "transport_error";
       options.emit?.({
