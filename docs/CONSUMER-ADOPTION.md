@@ -8,11 +8,7 @@ Audience: maintainers of a repo that wants to consume `@momentiq/dark-factory-cl
 - **Binding enforcement** — a branch ruleset that makes your chosen PR-gate critic a *required* status check (`dark-factory/critic` for the hosted App, or `agent-critic / agent-critic` for CI), so red verdicts actually block merges (not just post advisory comments). This is the difference between *installing* Dark Factory and *enforcing* it (§10).
 - **Optional branch-protection drift detector** if your repo has a ruleset.
 
-This document is the canonical adoption guide. Concrete worked examples:
-
-- **taxpilot2a F.5a** ([PR #45](https://github.com/momentiq-ai/taxpilot2a/pull/45)) — first external consumer; full CI wiring, `.agent-review/config.json`, `.npmrc` + root `package.json`.
-- **taxpilot2a F.5a follow-up** ([PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46)) — documents the prerequisite `actions/permissions/access` flip on `momentiq-ai/dark-factory` so cross-repo `uses:` works.
-- **lyra F.5b** (planned) — second external consumer (under `alien8d/`, fully outside momentiq-ai org).
+This document is the canonical adoption guide. Two early pilot consumers have run it end-to-end (one inside the `momentiq-ai` org, one outside it) and the gotchas they hit are folded into the prerequisite and "make it binding" sections below.
 
 ## 1. Onboard agent context (NEW — Cycle 15)
 
@@ -122,7 +118,7 @@ Dark Factory runs the **same** multi-vendor adversarial critic fleet against you
 | Item | Where | Notes |
 |---|---|---|
 | Node.js >= 20 | `node --version` | The CLI's `engines.node` is `>=20`. |
-| `momentiq-ai/dark-factory` Actions access set to `organization` | `gh api -X PUT repos/momentiq-ai/dark-factory/actions/permissions/access -f access_level=organization` (org admin only) | Without this, your `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@<sha>` calls fail at startup with "workflow file issue". See [taxpilot2a PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) — this trap was discovered the hard way. |
+| `momentiq-ai/dark-factory` Actions access set to `organization` | `gh api -X PUT repos/momentiq-ai/dark-factory/actions/permissions/access -f access_level=organization` (org admin only) | Without this, your `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@<sha>` calls fail at startup with "workflow file issue". Apply it once per consumer org; an early pilot consumer discovered this the hard way. |
 
 ## 4. Install the CLI
 
@@ -526,7 +522,7 @@ Pin each reusable workflow to an exact **commit SHA** (NOT a `@v0` tag — per `
 ```yaml
 # .github/workflows/dark-factory-pr.yml
 # Prereq: momentiq-ai/dark-factory actions/permissions/access must be
-# set to 'organization' (org admin only). See taxpilot2a#46.
+# set to 'organization' (org admin only) — see Prerequisites table above.
 
 name: Dark Factory PR Gates
 
@@ -579,7 +575,7 @@ jobs:
 
 **Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. Every dark-factory reusable workflow deliberately omits a job-level `name:` override so the callee segment defaults to the job id, giving consumers a uniform `<id> / <id>` contract: `agent-critic:` → **`agent-critic / agent-critic`**, `cycle-doc-validation:` → **`cycle-doc-validation / cycle-doc-validation`**, and `pr-status-check:` → **`pr-status-check / pr-status-check`** (issue #27 — a prior `name: "PR Status Check"` override broke the contract and permanently blocked merges). This is the EXACT string your ruleset must require in §10 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §10 below to make the check binding.
 
-See [taxpilot2a's dark-factory-pr.yml](https://github.com/momentiq-ai/taxpilot2a/blob/main/.github/workflows/dark-factory-pr.yml) for a working production example pinned to a real commit SHA.
+Pin to a real commit SHA — see `git ls-remote https://github.com/momentiq-ai/dark-factory main` for the current main HEAD, or pick a tagged release from the [releases page](https://github.com/momentiq-ai/dark-factory/releases).
 
 ## 9. Provision secrets on your repo's GH Actions
 
@@ -603,7 +599,7 @@ gh secret set CODEX_API_KEY --repo <your-org>/<your-repo>
 
 **This is the step that turns Dark Factory from advisory to enforcing. Skipping it is the single most common adoption failure.**
 
-Everything up to here makes the gates *run* and *post verdicts*. None of it makes them *block a merge*. The local Husky `pre-push` hook (§5) gates `git push` on your own machine — but it does nothing for merges that go through the GitHub UI, the merge queue, an auto-merge, a PR opened from another machine, or anything that bypasses the local hook. **CI enforcement is what gates the merge queue.** Without a ruleset that requires the `agent-critic` status check, a PR with red critic findings merges anyway — exactly what happened to `taxpilot2a` PR #48 (merged ~4 minutes before `agent-critic` finished, with the critic's findings landing on `main` unguarded; tracked at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213)).
+Everything up to here makes the gates *run* and *post verdicts*. None of it makes them *block a merge*. The local Husky `pre-push` hook (§5) gates `git push` on your own machine — but it does nothing for merges that go through the GitHub UI, the merge queue, an auto-merge, a PR opened from another machine, or anything that bypasses the local hook. **CI enforcement is what gates the merge queue.** Without a ruleset that requires the `agent-critic` status check, a PR with red critic findings merges anyway — an early pilot consumer had a PR auto-merge ~4 minutes before `agent-critic` finished, with the critic's findings landing on `main` unguarded (incident tracked at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213)).
 
 > **Rulesets are NOT optional for enforcement.** Earlier sections describe `branch-protection-audit` as an *optional* drift detector — that audit is genuinely optional. **Requiring the `agent-critic` check is not.** If you want Dark Factory to actually block anything, you must require it. "Installed Dark Factory" and "enforcing Dark Factory" are two different states; this section closes the gap between them.
 
@@ -1246,5 +1242,4 @@ The originating cycle is [`momentiq-ai/dark-factory-platform` → Cycle 13](http
 - **Cross-repo subagent isolation:** when dispatching Claude Code subagents across multiple consumer repos in one session, each subagent MUST clone to a unique path (`/Users/<you>/projects/<repo>-wt-<task>`). Otherwise concurrent subagents trample each other's git state. This is documented in the `feedback_cross_repo_subagent_isolation` memory pattern (private to PJ's Claude Code memory).
 - **A2 follow-up — CLI adapter dynamic loading:** the CLI dynamically imports vendor adapters inside `buildDefaultAdapterRegistry()` (`packages/cli/src/cli.ts` lines ~70-80) so the binary loads under `--ignore-scripts` for non-`df critic` subcommands. Don't trip over this when debugging install issues.
 - **Reusable workflow security model:** `CLAUDE.md` § Reusable workflow conventions explains the trusted-surface rebind (workflow-baked `EXPECTED_INTEGRITY` + `$RUNNER_TEMP/df-trusted-*` extraction) for paranoid consumers.
-- **Worked external example:** [taxpilot2a PR #45](https://github.com/momentiq-ai/taxpilot2a/pull/45) (F.5a integration) + [PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) (access-permission follow-up).
 - **Docker build evidence shim contract (§5.5):** [`dark-factory-platform#141`](https://github.com/momentiq-ai/dark-factory-platform/issues/141) — host-side `scripts/check-dockerfile.sh` shim spec; the upstream half (CLI evidence consumption + SHA binding + injection-resistant prompt section) shipped in `dark-factory#115`.

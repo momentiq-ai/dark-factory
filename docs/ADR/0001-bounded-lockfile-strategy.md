@@ -251,10 +251,9 @@ when `generatedFilePolicy.globs` is omitted):
   This is the back-compat-safe default; nothing in any existing
   consumer breaks silently. The word "opt-in" applies to v1 strictly.
 - Future cycle: promotes default to `mode: "compact"` with the default
-  globs once external consumers (`taxpilot2a`, `lyra`) have run with
-  it for ≥ 1 week without regression. That promotion is a separate
-  ADR amendment + version bump and is NOT part of this ADR's
-  acceptance.
+  globs once at least one external consumer has run with it for ≥ 1
+  week without regression. That promotion is a separate ADR amendment
+  + version bump and is NOT part of this ADR's acceptance.
 
 #### 2.2.1 Effective-mode resolution per path
 
@@ -825,8 +824,7 @@ verbatim, no shell-out.
   default).
 - **Follow-up cycle** promotes the default to `mode: "compact"` for
   the shipped default glob list. Defer until at least one external
-  consumer (taxpilot2a / lyra) has run with it for ≥ 1 week of normal
-  traffic.
+  consumer has run with it for ≥ 1 week of normal traffic.
 
 ### 5.5 Out of scope (negative space)
 
