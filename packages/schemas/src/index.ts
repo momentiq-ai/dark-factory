@@ -281,6 +281,35 @@ export interface ContextConfig {
   generatedFilePolicy?: GeneratedFilePolicy;
 }
 
+// Cycle 21 — Evidence-Gated Validation Routes (momentiq-ai/dark-factory#183).
+// A discriminator that types the SHAPE of evidence a route must yield, so
+// the route-runner knows which producer to invoke and the gate can (later)
+// assert kind-specific completeness:
+//   - "playwright"  — a UI route: ARIA snapshot + before/after screenshot
+//                     (+ optional VLM check)
+//   - "migration"   — `up`+`down` apply + a backfill-invariant check
+//   - "terraform"   — a `terraform plan` artifact
+//   - "test"        — a targeted test run (the `services/*/src/**` route)
+//   - "docker"      — the #141 build shim's DockerBuildEvidence
+//   - "none"        — no evidence (the docs-only exclusive suppression route)
+// ADDITIVE/OPTIONAL on VerificationRoute: existing configs with a free-form
+// `category` and no `evidenceKind` parse and behave identically.
+export type EvidenceKind =
+  | "playwright"
+  | "migration"
+  | "terraform"
+  | "test"
+  | "docker"
+  | "none";
+export const EVIDENCE_KINDS: readonly EvidenceKind[] = [
+  "playwright",
+  "migration",
+  "terraform",
+  "test",
+  "docker",
+  "none",
+];
+
 export interface VerificationRoute {
   id: string;
   trigger: string[];
@@ -294,7 +323,107 @@ export interface VerificationRoute {
   evidencePath: string | null;
   category: string;
   exclusive?: boolean;
+  // Cycle 21 (momentiq-ai/dark-factory#183) — optional evidence-kind
+  // discriminator. Additive: routes that predate the field parse with
+  // `evidenceKind` undefined and behave exactly as before. `category`
+  // stays free-form (a human label); `evidenceKind` is the machine
+  // discriminator the route-runner + gate reason about.
+  evidenceKind?: EvidenceKind;
 }
+
+// Cycle 21 (momentiq-ai/dark-factory#185) — the canonical default
+// verification-route table. This is the deterministic floor every consumer
+// with the corresponding change classes inherits (ADR 2026-06 § Decision 1
+// route table). It is exported as data (not seeded inline) so the OSS CLI,
+// the hosted runtime, and the dashboard all arm the SAME routes — the
+// byte-identical gate-core contract.
+//
+// `${sha}` in `evidencePath` is substituted by the route-runner at
+// evaluation time. `commit` and `evidencePath` agree (both null only for
+// the docs-only suppression route), per parseVerificationRoute's invariant.
+//
+// The stable cross-consumer contract is the (`trigger` globs, `evidenceKind`,
+// `evidencePath`) triple — that is what every consumer inherits unchanged.
+// The `command` strings are REPRESENTATIVE PLACEHOLDERS, NOT
+// executable-as-shipped: in v1 the per-route PRODUCER is supplied by the
+// consumer's `/verify` skill (the DFP-side route-runner driver — see DFP
+// Cycle 21 Open Question 1), which maps each route's `evidenceKind` to its
+// real producer (e.g. `terraform plan`, `helm template`, the targeted test
+// run, the Playwright pass). A consumer wiring the route-runner directly
+// MUST override each `command` with its own toolchain's producer in
+// `.agent-review/config.json`; the canonical `df verify --route <id>` string
+// names the intent (which evidenceKind to produce), not a CLI subcommand
+// that exists today. Do NOT adopt these commands verbatim expecting them to
+// run — they will not resolve.
+//
+// The `web/**` / `*.tsx` playwright route ships here so every consumer with
+// a UI inherits it; it arms NOTHING in repos with no UI surface (their diff
+// never matches its triggers). The UI route is local-only in v1 (it needs a
+// browser + the Doppler validation-user session); hosted re-execution is a
+// v2 item (ADR § Roadmap to v2).
+export const DEFAULT_VERIFICATION_ROUTES: readonly VerificationRoute[] = [
+  {
+    id: "playwright",
+    trigger: ["web/**", "**/*.tsx"],
+    command: "df verify --route playwright",
+    evidencePath: "agent-reviews/quality-gates/${sha}.json",
+    category: "ui",
+    evidenceKind: "playwright",
+  },
+  {
+    id: "migration",
+    trigger: ["**/migrations/**"],
+    command: "df verify --route migration",
+    evidencePath: "agent-reviews/quality-gates/${sha}.json",
+    category: "migration",
+    evidenceKind: "migration",
+  },
+  {
+    id: "terraform",
+    trigger: ["infra/terraform/**"],
+    command: "df verify --route terraform",
+    evidencePath: "agent-reviews/quality-gates/${sha}.json",
+    category: "infra",
+    evidenceKind: "terraform",
+  },
+  {
+    id: "helm",
+    trigger: ["deploy/helm/**"],
+    command: "df verify --route helm",
+    evidencePath: "agent-reviews/quality-gates/${sha}.json",
+    category: "infra",
+    // helm lint + template render is a deterministic command route; it
+    // shares the targeted-command evidence shape ("test"), distinguished
+    // from a unit-test run only by category. (No dedicated EvidenceKind
+    // for helm in v1 — the ADR route table groups it with command routes.)
+    evidenceKind: "test",
+  },
+  {
+    id: "docker",
+    trigger: ["**/Dockerfile", "**/Dockerfile.*"],
+    command: "df verify --route docker",
+    evidencePath: "agent-reviews/quality-gates/${sha}.json",
+    category: "docker",
+    evidenceKind: "docker",
+  },
+  {
+    id: "targeted-test",
+    trigger: ["services/*/src/**"],
+    command: "df verify --route targeted-test",
+    evidencePath: "agent-reviews/quality-gates/${sha}.json",
+    category: "test",
+    evidenceKind: "test",
+  },
+  {
+    id: "docs-only",
+    trigger: ["**/*.md", "docs/**", "**/CHANGELOG*"],
+    command: null,
+    evidencePath: null,
+    category: "docs",
+    exclusive: true,
+    evidenceKind: "none",
+  },
+];
 
 export interface TddClassifierConfigSchema {
   productionGlobs: string[];
@@ -380,6 +509,15 @@ export interface QualityGateEvidence {
   // when version === 2. Each entry's `exitCode === 0` is the deterministic
   // pass condition for the route in gate-push.
   gateResults?: Record<string, QualityGateResult>;
+  // Cycle 21 (momentiq-ai/dark-factory#186) — diff-hash content binding.
+  // The producer populates this from `ReviewPacket.diffHash` so evidence
+  // produced for the same SHA under a DIFFERENT diff cannot satisfy a
+  // route gate. ADDITIVE/OPTIONAL: evidence without it keeps parsing
+  // (the binding is SHA-only until the producer stamps the diff hash);
+  // `enforceVerificationRoutes` rejects same-SHA / different-diff-hash
+  // evidence only WHEN this field is present. The down-payment against
+  // T2 (gamed/stale evidence).
+  diffHash?: string;
 }
 
 // DockerBuildEvidence — structured evidence emitted by the consumer
@@ -1986,6 +2124,15 @@ function parseVerificationRoute(raw: unknown, path: string): VerificationRoute {
     );
   }
   const exclusive = optional(isBoolean, obj["exclusive"], `${path}.exclusive`, "boolean");
+  // Cycle 21 (momentiq-ai/dark-factory#183) — optional evidenceKind
+  // discriminator. Absent → undefined (back-compat). Present → must be a
+  // recognized kind; an unknown kind is a parse error so a typo can't
+  // silently disable kind-aware routing.
+  const evidenceKindRaw = obj["evidenceKind"];
+  let evidenceKind: EvidenceKind | undefined;
+  if (evidenceKindRaw !== undefined && evidenceKindRaw !== null) {
+    evidenceKind = needEnum(EVIDENCE_KINDS, evidenceKindRaw, `${path}.evidenceKind`);
+  }
   return {
     id,
     trigger,
@@ -1993,6 +2140,7 @@ function parseVerificationRoute(raw: unknown, path: string): VerificationRoute {
     evidencePath,
     category,
     ...(exclusive !== undefined ? { exclusive } : {}),
+    ...(evidenceKind !== undefined ? { evidenceKind } : {}),
   };
 }
 
@@ -2159,12 +2307,17 @@ export function parseQualityGateEvidence(raw: unknown): QualityGateEvidence {
       gateResults[key] = parseQualityGateResult(value, `$.gateResults["${key}"]`);
     }
   }
+  // Cycle 21 (momentiq-ai/dark-factory#186) — optional diff-hash binding.
+  // Parsed via the same optional() pattern as other v2 extensions so
+  // evidence that predates the field still parses identically.
+  const diffHash = optional(isString, root["diffHash"], "$.diffHash", "string");
   return {
     version: version as 1 | 2,
     commit,
     generatedAt,
     results,
     ...(gateResults !== undefined ? { gateResults } : {}),
+    ...(diffHash !== undefined ? { diffHash } : {}),
   };
 }
 

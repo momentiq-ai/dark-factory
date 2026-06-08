@@ -10,7 +10,7 @@ import {
   evaluateCommitGate,
   runTddClassifier,
 } from "./policy/gate.js";
-import { changedFiles, commitParent, resolveCommit } from "./git.js";
+import { changedFiles, commitDiff, commitParent, diffHash, resolveCommit } from "./git.js";
 import { diagnosticsDir, resolveArtifactDir } from "./paths.js";
 import { resolvePolicyBaseline, type PolicyNotice } from "./policy/baseline.js";
 import {
@@ -689,6 +689,22 @@ export async function runCommitGate(options: GateRunOptions): Promise<GateResult
     try {
       const parent = await safeParent(sha, cwd);
       const files = await changedFiles(parent, sha, cwd, { readContent: false });
+      // Cycle 21 (#186) — compute the gated diff hash over the same
+      // parent..sha range the routes are evaluated against, and thread it
+      // into enforceVerificationRoutes. When the per-SHA evidence carries a
+      // matching `diffHash` the binding is satisfied; a mismatch (same SHA,
+      // different diff — re-staged stale evidence) fails the route closed.
+      // SHA-only evidence (no diffHash on the file) is unaffected, so this
+      // is a no-op for pre-#186 producers.
+      let gatedDiffHash: string | undefined;
+      try {
+        gatedDiffHash = diffHash(await commitDiff(parent, sha, cwd));
+      } catch {
+        // If the diff can't be recomputed the SHA binding still applies;
+        // skip the diff-hash half rather than fail the whole route gate
+        // on a transient git error.
+        gatedDiffHash = undefined;
+      }
       // Include `oldPath` from rename/copy entries so a rename out of a
       // routed glob (e.g., `backend/app/foo.py` → `web/generated/foo.ts`)
       // still triggers the source's route. Without this, the only path
@@ -698,6 +714,7 @@ export async function runCommitGate(options: GateRunOptions): Promise<GateResult
         loaded,
         sha,
         changedPaths: collectChangedPaths(files),
+        ...(gatedDiffHash !== undefined ? { diffHash: gatedDiffHash } : {}),
       });
       for (const r of routeEval.perRoute) {
         if (r.status === "missing") {

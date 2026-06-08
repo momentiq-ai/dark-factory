@@ -29,6 +29,19 @@ export {
   type ReadEvidenceResult,
 } from "./quality-gates.js";
 
+// Cycle 21 (momentiq-ai/dark-factory#185) — the generalized route-runner:
+// the producer that runs each armed route's command and writes per-SHA
+// QualityGateEvidence under gateResults[routeId] with the 0/1/2 exit-code
+// contract (the generalization of the #141 Docker build-evidence shim).
+export {
+  runRoutes,
+  classifyExit,
+  type RunRoutesOptions,
+  type RouteRunResult,
+  type RouteRunSummary,
+  type RouteOutcome,
+} from "./route-runner.js";
+
 // Docker-build evidence — closes the DFP #141 verification gap (critic
 // adapter sandboxes can't reach a Docker socket; the consumer's
 // `scripts/check-dockerfile.sh` shim stamps build results here so the

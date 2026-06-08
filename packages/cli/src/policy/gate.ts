@@ -1104,10 +1104,97 @@ export interface RouteResult {
   detail: string;
 }
 
+// ---------------------------------------------------------------------------
+// Cycle 21 — Evidence-Gated Validation Routes (momentiq-ai/dark-factory#184).
+//
+// The classifier that maps a change → required-evidence routes is a
+// deterministic path-glob route TABLE (the floor). `tableArmedRoutes`
+// computes that floor: the subset of the table whose `trigger` globs match
+// at least one changed path.
+//
+// `planRoutes` adds an ADDITIVE planner seam on top of the floor. A planner
+// hook may only ADD routes (e.g. for a cross-cutting change the static
+// globs miss); it can NEVER remove a route the table armed. The returned
+// set is the UNION (de-duplicated by id), table routes taking precedence.
+//
+// The monotonicity is load-bearing: an additive-only planner can only ever
+// INCREASE the evidence burden, so a non-deterministic (eventually
+// LLM-backed) planner can never weaken or relax the gate. The deterministic
+// table is always the floor. v1 ships the table + the additive hook
+// (interface + a default no-op); the full LLM planner phases in later
+// behind this same additive-only contract.
+
+/**
+ * A planner hook: given the changed paths and the table-armed floor, it MAY
+ * return additional routes to enforce. It can only ADD — `planRoutes`
+ * unions the planner's output with the floor and never lets the planner
+ * remove a table-armed route. v1's default planner is a no-op (returns []).
+ */
+export type RoutePlanner = (
+  changedPaths: readonly string[],
+  tableArmed: readonly VerificationRoute[],
+) => VerificationRoute[];
+
+/**
+ * The deterministic floor: routes in `table` whose `trigger` globs match at
+ * least one of `changedPaths`. Pure; no IO.
+ */
+export function tableArmedRoutes(
+  changedPaths: readonly string[],
+  table: readonly VerificationRoute[],
+): VerificationRoute[] {
+  const armed: VerificationRoute[] = [];
+  for (const route of table) {
+    if (changedPaths.some((p) => matchAnyGlob(p, route.trigger))) {
+      armed.push(route);
+    }
+  }
+  return armed;
+}
+
+/**
+ * Plan the verification routes for a change: start from the deterministic
+ * table floor (`tableArmedRoutes`), let the optional additive `planner`
+ * append routes, and return the UNION de-duplicated by `id`.
+ *
+ * INVARIANT (tested in route-planner.test.ts): `tableArmed ⊆ planned` for
+ * ANY planner output. The planner can only add; a table-armed route always
+ * survives, and a planner re-proposing a table route does not double-count
+ * it (table precedence on id collision).
+ */
+export function planRoutes(
+  changedPaths: readonly string[],
+  table: readonly VerificationRoute[],
+  planner?: RoutePlanner,
+): VerificationRoute[] {
+  const armed = tableArmedRoutes(changedPaths, table);
+  if (!planner) return armed;
+  const byId = new Map<string, VerificationRoute>();
+  // Table floor first so it wins on id collision — the planner cannot
+  // override (or remove) a route the table armed.
+  for (const r of armed) byId.set(r.id, r);
+  for (const r of planner(changedPaths, armed)) {
+    if (!byId.has(r.id)) byId.set(r.id, r);
+  }
+  return [...byId.values()];
+}
+
 export interface EnforceRoutesOptions {
   loaded: LoadedConfig;
   sha: string;
   changedPaths: readonly string[];
+  // Cycle 21 (momentiq-ai/dark-factory#184) — optional additive planner.
+  // When supplied, `enforceVerificationRoutes` enforces the PLANNED set
+  // (table floor ∪ planner additions), not the raw table. Default: the
+  // table floor only (v1 no-op planner).
+  planner?: RoutePlanner;
+  // Cycle 21 (momentiq-ai/dark-factory#186) — the diff hash of the gated
+  // range. When supplied AND the per-SHA evidence carries a `diffHash`,
+  // `enforceVerificationRoutes` rejects evidence whose `diffHash` does not
+  // match (a route gated under a DIFFERENT diff cannot satisfy this gate).
+  // Absent, or evidence without a `diffHash`, preserves SHA-only binding
+  // (back-compat). The down-payment against T2 (gamed/stale evidence).
+  diffHash?: string;
 }
 
 export async function enforceVerificationRoutes(
@@ -1119,13 +1206,16 @@ export async function enforceVerificationRoutes(
     return { triggered: [], active: [], perRoute: [] };
   }
 
-  // Step 1 — determine triggered routes.
-  const triggered: VerificationRoute[] = [];
-  for (const route of routes) {
-    if (changedPaths.some((p) => matchAnyGlob(p, route.trigger))) {
-      triggered.push(route);
-    }
-  }
+  // Step 1 — determine triggered routes via the additive planner. The
+  // planner unions the deterministic table floor with any additive
+  // proposals; `tableArmed ⊆ triggered` always holds (the planner can
+  // only add — momentiq-ai/dark-factory#184). With no planner this is
+  // exactly the table floor, identical to the pre-Cycle-21 behavior.
+  const triggered: VerificationRoute[] = planRoutes(
+    changedPaths,
+    routes,
+    options.planner,
+  );
 
   // Step 2 — exclusive-route suppression. The cycle-318.2 doc rule: an
   // exclusive route fires ONLY when every changed path matches its
@@ -1152,6 +1242,19 @@ export async function enforceVerificationRoutes(
   const evidence = await readPerShaEvidence(loaded, sha);
   const perRoute: RouteResult[] = [];
 
+  // Cycle 21 (momentiq-ai/dark-factory#186) — diff-hash content binding.
+  // When the caller supplies the gated diff hash AND the evidence carries
+  // its own `diffHash`, a mismatch means the evidence was produced for the
+  // same SHA under a DIFFERENT diff (re-staged stale evidence). Treat the
+  // whole evidence file as invalid for route enforcement — every active
+  // command route fails closed, like missing/failing evidence. SHA-only
+  // evidence (no `diffHash` on the file) preserves the pre-#186 binding so
+  // existing producers keep passing until they stamp the field.
+  const diffHashMismatch =
+    options.diffHash !== undefined &&
+    evidence?.diffHash !== undefined &&
+    evidence.diffHash !== options.diffHash;
+
   for (const route of active) {
     if (route.command === null) {
       // Suppression-only routes have no command; if they're "active"
@@ -1161,6 +1264,14 @@ export async function enforceVerificationRoutes(
         routeId: route.id,
         status: "skipped",
         detail: "suppression-only route (no command to enforce)",
+      });
+      continue;
+    }
+    if (diffHashMismatch) {
+      perRoute.push({
+        routeId: route.id,
+        status: "failed",
+        detail: `route "${route.id}" evidence is stale: evidence diffHash ${evidence?.diffHash} != gated diff ${options.diffHash} (same SHA, different diff — re-run the route against the current diff)`,
       });
       continue;
     }
