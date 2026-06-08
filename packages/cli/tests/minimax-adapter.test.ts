@@ -33,6 +33,7 @@ import {
   MinimaxDirectSdkAdapter,
   extractOpenRouterApiErrorStatus,
   isMinimaxPermanentFailure,
+  isOpenRouterEndpoint,
   OPENROUTER_BASE_URL,
   type MinimaxClient,
   type MinimaxStreamChunk,
@@ -328,6 +329,41 @@ test("review: custom (non-OpenRouter) baseUrl omits the OpenRouter-specific prov
   });
   await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
   expect_eq(sawProviderKey, false, "provider field must be omitted for non-OpenRouter baseUrl");
+});
+
+test("review: default OpenRouter baseUrl WITH a trailing slash STILL sends the provider field (host-matched)", async () => {
+  // codex finding on #159: exact-string baseUrl matching dropped the
+  // compliance constraint on a trailing-slash variant. Host-matching must
+  // keep sending it.
+  let seenProvider: unknown;
+  const mockClient: MinimaxClient = {
+    chat: {
+      completions: {
+        create: async (params) => {
+          seenProvider = params.provider;
+          return makeStream([deltaChunk(APPROVED_RESPONSE_JSON), finishChunk("stop"), usageChunk()]);
+        },
+      },
+    },
+    models: { list: async () => makeStream([]) as unknown as AsyncIterable<{ id?: string }> },
+  };
+  const adapter = new MinimaxDirectSdkAdapter({
+    apiKey: "k",
+    baseUrl: `${OPENROUTER_BASE_URL}/`, // trailing slash — still OpenRouter
+    createClient: () => mockClient,
+  });
+  await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
+  expect_deep(seenProvider, { data_collection: "deny" });
+});
+
+test("isOpenRouterEndpoint: host-matches OpenRouter variants, rejects other hosts", () => {
+  expect_eq(isOpenRouterEndpoint(OPENROUTER_BASE_URL), true);
+  expect_eq(isOpenRouterEndpoint(`${OPENROUTER_BASE_URL}/`), true);
+  expect_eq(isOpenRouterEndpoint("https://openrouter.ai/api/v1/chat/completions"), true);
+  expect_eq(isOpenRouterEndpoint("https://eu.openrouter.ai/api/v1"), true);
+  expect_eq(isOpenRouterEndpoint("https://api.together.xyz/v1"), false);
+  expect_eq(isOpenRouterEndpoint("https://api.minimax.io/v1"), false);
+  expect_eq(isOpenRouterEndpoint("not-a-url"), false);
 });
 
 // ---------------------------------------------------------------------------

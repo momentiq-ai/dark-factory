@@ -35,10 +35,11 @@
 //     providers", that means MiniMax-on-OpenRouter can NOT guarantee
 //     no-retention, which is a compliance finding to escalate — NOT a
 //     reason to silently flip to "allow". Overridable via the
-//     `dataCollection` constructor option, and sent ONLY when `baseUrl`
-//     targets the default OpenRouter endpoint — a custom `baseUrl`
-//     (another OpenAI-compatible endpoint) omits this OpenRouter-specific
-//     `provider` field.
+//     `dataCollection` constructor option, and sent for any OpenRouter
+//     host (matched by hostname, not exact string — so trailing-slash /
+//     path variants still get it); a custom `baseUrl` pointing at a
+//     genuinely different OpenAI-compatible endpoint omits this
+//     OpenRouter-specific `provider` field.
 //   - token-accounts off the OpenAI-format `usage` field on the
 //     terminal `chunk.usage` of the streamed response (matching the
 //     OpenAI SDK contract — `stream_options: { include_usage: true }`
@@ -90,6 +91,23 @@ export const OPEN_ROUTER_API_KEY_ENV = "OPEN_ROUTER_API_KEY";
 // model id (`minimax/minimax-m3`) is configured via `critic.model.id`
 // and routed by OpenRouter's model dispatch on `/v1/chat/completions`.
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * True iff `baseUrl`'s host is OpenRouter (any path / trailing-slash variant,
+ * and regional `*.openrouter.ai` subdomains). Gates the OpenRouter-specific
+ * `provider` routing field by HOST rather than exact string equality, so the
+ * no-retention compliance constraint is applied to ALL OpenRouter targets and
+ * omitted only for a genuinely different OpenAI-compatible host. A malformed
+ * URL returns `false` (treated as non-OpenRouter). Exported for unit testing.
+ */
+export function isOpenRouterEndpoint(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "openrouter.ai" || host.endsWith(".openrouter.ai");
+  } catch {
+    return false;
+  }
+}
 
 // Compliance default for OpenRouter provider routing. "deny" => only
 // route to a provider that does not store/train on the prompt. See the
@@ -401,11 +419,12 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
           stream_options: { include_usage: true },
           // Compliance: constrain OpenRouter routing to a no-retention
           // provider for the third-party customer diff. Fail-loud — see
-          // file header. `provider` routing is OpenRouter-specific, so it
-          // is sent ONLY when targeting the default OpenRouter endpoint; a
-          // caller who overrides `baseUrl` to another OpenAI-compatible
-          // endpoint owns its own data policy (the field is unknown there).
-          ...(this.baseUrl === OPENROUTER_BASE_URL
+          // file header. `provider` routing is OpenRouter-specific, so it is
+          // sent for ALL OpenRouter hosts (default + path/trailing-slash
+          // variants + regional shards, matched by HOST not raw string) and
+          // omitted only for a genuinely different OpenAI-compatible endpoint,
+          // whose caller owns its own data policy (the field is unknown there).
+          ...(isOpenRouterEndpoint(this.baseUrl)
             ? { provider: { data_collection: this.dataCollection } }
             : {}),
         },
