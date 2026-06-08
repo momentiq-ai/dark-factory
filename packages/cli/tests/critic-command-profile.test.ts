@@ -8,10 +8,11 @@
 // on every CI run — the symptom reported in #170.
 //
 // The fix is two-part:
-//   1. `parseCriticArgs` surfaces `--profile`, and `cmdCritic` resolves
-//      it via `resolveProfile()` (flag > AGENT_REVIEW_PROFILE > "local")
-//      and threads `profileName` into `runReview()` — so profile `auth`
-//      pins actually take effect on the `df critic` path.
+//   1. `parseCriticArgs` surfaces `--profile`, and `cmdCritic` resolves a
+//      profile via `resolveCriticProfile()` (flag > AGENT_REVIEW_PROFILE,
+//      else `undefined` to PRESERVE df critic's profile-less default) and
+//      threads `profileName` into `runReview()` — so a selected profile's
+//      `auth` pins take effect on the `df critic` path.
 //   2. The `agent-critic` workflow selects the `cloud` profile (full
 //      quartet; codex pinned to `api` because CI ships only
 //      `CODEX_API_KEY`, never an interactive ChatGPT session).
@@ -29,9 +30,8 @@ import {
   expect_eq,
   expect_truthy,
 } from "./_assert-shim.js";
-import { parseCriticArgs } from "../src/cli.js";
+import { parseCriticArgs, resolveCriticProfile } from "../src/cli.js";
 import {
-  resolveProfile,
   resolveProfileWithConfig,
   applyProfileAuth,
 } from "../src/policy/profile.js";
@@ -63,26 +63,45 @@ test("parseCriticArgs: surfaces --profile so `df critic` can select a profile", 
   expect_eq(opts.profileName, "cloud");
 });
 
-test("parseCriticArgs: --profile absent leaves profileName undefined (resolveProfile applies the default)", () => {
+test("parseCriticArgs: --profile absent leaves profileName undefined", () => {
   const opts = parseCriticArgs(["--ref", "HEAD"]);
   expect_eq(opts.profileName, undefined);
 });
 
-test("resolveProfile: a `df critic` invocation with --profile cloud resolves to 'cloud'", () => {
-  // Mirrors how cmdCritic now wires parseCriticArgs.profileName through
-  // resolveProfile (flag > AGENT_REVIEW_PROFILE > 'local').
+// `resolveCriticProfile` is exactly the value `cmdCritic` threads into
+// `runReview()`. These guard the #170 fix at the seam that regressed —
+// including the contract that a bare `df critic` stays profile-less.
+
+test("resolveCriticProfile: --profile cloud resolves to 'cloud'", () => {
   const opts = parseCriticArgs(["--profile", "cloud"]);
-  const resolved = resolveProfile({ profile: opts.profileName }, {});
-  expect_eq(resolved, "cloud");
+  expect_eq(resolveCriticProfile(opts, {}), "cloud");
 });
 
-test("resolveProfile: `df critic` honors AGENT_REVIEW_PROFILE when no --profile flag", () => {
+test("resolveCriticProfile: honors AGENT_REVIEW_PROFILE when no --profile flag", () => {
   const opts = parseCriticArgs([]);
-  const resolved = resolveProfile(
-    { profile: opts.profileName },
-    { AGENT_REVIEW_PROFILE: "cloud" },
+  expect_eq(resolveCriticProfile(opts, { AGENT_REVIEW_PROFILE: "cloud" }), "cloud");
+});
+
+test("resolveCriticProfile: --profile flag wins over AGENT_REVIEW_PROFILE", () => {
+  const opts = parseCriticArgs(["--profile", "cloud"]);
+  expect_eq(
+    resolveCriticProfile(opts, { AGENT_REVIEW_PROFILE: "local" }),
+    "cloud",
   );
-  expect_eq(resolved, "cloud");
+});
+
+test("resolveCriticProfile: neither flag nor env → undefined (profile-less default, NOT 'local')", () => {
+  // The crux of the #170 contracts fix (cursor + codex [high]): a bare
+  // `df critic` must NOT adopt resolveProfile's "local" fallback, or it
+  // changes the published default and breaks the reusable workflow's
+  // profile-less consumer path.
+  const opts = parseCriticArgs(["--ref", "HEAD"]);
+  expect_eq(resolveCriticProfile(opts, {}), undefined);
+});
+
+test("resolveCriticProfile: blank AGENT_REVIEW_PROFILE is treated as unset → undefined", () => {
+  const opts = parseCriticArgs([]);
+  expect_eq(resolveCriticProfile(opts, { AGENT_REVIEW_PROFILE: "   " }), undefined);
 });
 
 // ---------------------------------------------------------------------------

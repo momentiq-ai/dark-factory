@@ -505,11 +505,43 @@ export function parseCriticArgs(rest: string[]): CriticOptions {
   }
   // Issue #170 — only a non-empty string flag value counts; a bare
   // `--profile` (parses as boolean `true`) or `--profile=""` falls
-  // through so `resolveProfile()` can apply the env / "local" default.
+  // through, leaving `profileName` unset so `resolveCriticProfile` falls
+  // back to the env (or to profile-less when neither is set).
   if (typeof flags["profile"] === "string" && flags["profile"].trim().length > 0) {
     out.profileName = flags["profile"] as string;
   }
   return out;
+}
+
+/**
+ * Resolve the profile for a `df critic` run — issue #170.
+ *
+ * Returns a profile name ONLY when one is explicitly requested: the
+ * `--profile` flag (surfaced as `opts.profileName`) or the
+ * `AGENT_REVIEW_PROFILE` env, with the standard flag > env precedence.
+ * Returns `undefined` when neither is set, so `df critic` keeps its
+ * historical PROFILE-LESS default (all configured critics, no profile
+ * critic-filtering or `auth` pins) rather than silently adopting
+ * `resolveProfile`'s "local" fallback — which would change the published
+ * default behaviour of `df critic` and break the reusable workflow's
+ * consumer path (it sets no profile env) for callers whose config has a
+ * `profiles` map but no "local" entry. dark-factory's own `agent-critic`
+ * CI sets `AGENT_REVIEW_PROFILE=cloud` explicitly; that env, not a
+ * default, is what activates the cloud codex `auth: api` pin (#170).
+ *
+ * Exported so the wiring is unit-tested directly (`cmdCritic` is not
+ * exported and has no runReview injection seam).
+ */
+export function resolveCriticProfile(
+  opts: { profileName?: string | undefined },
+  env: { AGENT_REVIEW_PROFILE?: string | undefined },
+): string | undefined {
+  const envRaw = env.AGENT_REVIEW_PROFILE;
+  const explicit =
+    opts.profileName !== undefined ||
+    (typeof envRaw === "string" && envRaw.trim().length > 0);
+  if (!explicit) return undefined;
+  return resolveProfile({ profile: opts.profileName }, env);
 }
 
 // Adapter loader identity → module path. Kept as a typed array so the
@@ -626,7 +658,7 @@ async function cmdCritic(rest: string[]): Promise<number> {
         "df critic — run the multi-vendor adversarial critic against HEAD",
         "",
         "Usage:",
-        "  df critic [--ref <gitref>] [--config <path>] [--cwd <path>]",
+        "  df critic [--ref <gitref>] [--config <path>] [--cwd <path>] [--profile <name>]",
         "",
         "Reads .agent-review/config.json (or --config <path>), instantiates",
         "the configured vendor adapters, runs the critics against the named",
@@ -639,6 +671,13 @@ async function cmdCritic(rest: string[]): Promise<number> {
         "    Vendor critic API keys. Missing keys cause the corresponding",
         "    critic to register as `status=error` (non-blocking under the",
         "    default min-complete-quorum policy).",
+        "  AGENT_REVIEW_PROFILE",
+        "    Profile to run (precedence: --profile flag > this env). When",
+        "    neither is set, df critic runs profile-less — all configured",
+        "    critics, no profile critic-filtering or `auth` pins (its",
+        "    historical default). Selecting a profile applies that profile's",
+        "    critic set + `auth` pins (e.g. the `cloud` profile pins codex",
+        "    to `api`).",
         "",
         "Exit code:",
         "  Always 0 in this build — vendor / config errors are surfaced",
@@ -657,18 +696,18 @@ async function cmdCritic(rest: string[]): Promise<number> {
     });
     const registry = await buildDefaultAdapterRegistry();
 
-    // Issue #170 — resolve the active profile (precedence: `--profile`
-    // flag > `AGENT_REVIEW_PROFILE` env > "local") and thread it into
-    // `runReview()`. Without this, `df critic` ran the profile-less
-    // back-compat path: every critic ran unfiltered AND `applyProfileAuth`
-    // never fired, so the codex critic reached its adapter with
-    // `critic.auth === undefined` and errored "no auth source pinned" on
-    // every `agent-critic` CI run. The workflow selects the `cloud`
-    // profile (full quartet; codex pinned to `api`) so the codex auth
-    // source is now declared on CI. `resolveProfileWithConfig` (inside
-    // runReview) still throws loudly on a mistyped/unknown profile name.
-    const profileName = resolveProfile(
-      { profile: opts.profileName },
+    // Issue #170 — thread the (explicitly-selected) profile into
+    // `runReview()` so its `auth` pins take effect on the `df critic`
+    // path. Codex previously errored "no auth source pinned" on every CI
+    // run because `df critic` never resolved a profile, so `critic.auth`
+    // stayed undefined. `undefined` here (no `--profile` flag / no
+    // `AGENT_REVIEW_PROFILE` env) preserves the profile-less default — the
+    // rationale + the "don't adopt the 'local' fallback" reasoning live in
+    // `resolveCriticProfile`. dark-factory's CI sets the env to `cloud`.
+    // `resolveProfileWithConfig` (inside runReview) still throws loudly on
+    // a mistyped/unknown profile name.
+    const profileName = resolveCriticProfile(
+      opts,
       process.env as { AGENT_REVIEW_PROFILE?: string | undefined },
     );
 
@@ -685,7 +724,7 @@ async function cmdCritic(rest: string[]): Promise<number> {
       registry,
       ref: opts.ref,
       telemetry: sink,
-      profileName,
+      ...(profileName !== undefined ? { profileName } : {}),
       ...(selfConsistencyProbe !== undefined ? { selfConsistencyProbe } : {}),
     });
 
