@@ -139,6 +139,193 @@ export function buildErrorResult(args: BuildErrorResultArgs): CriticResult {
 }
 
 // ---------------------------------------------------------------------------
+// Context-window degradation (issue #169) — turn the "assembled diff prompt
+// exceeds the vendor's context window" case into a CLEAN, LEGIBLE structured
+// error instead of letting the raw provider 400 JSON
+// (`The input token count exceeds the maximum number of tokens allowed
+// 1048576`, `This model's maximum prompt length is 1000000 but the request
+// contains 1491263 tokens`) propagate into the artifact + per-critic summary.
+//
+// Lives here (next to `buildErrorResult`) so EVERY direct-API adapter
+// (gemini, grok, and any future vendor) shares ONE budget heuristic, ONE
+// reason-string shape, and ONE 400-signature classifier — the same
+// single-source-of-truth discipline the rest of this file enforces. An
+// adapter that re-implemented the check locally could drift the operator-
+// facing reason string between vendors; routing through these helpers means
+// the degrade reads identically across the fleet.
+//
+// SCOPE (issue #169): this is graceful degradation ONLY — a clean errored
+// critic that does not veto the gate under the min-complete-quorum policy.
+// It deliberately does NOT chunk or compact the diff to make the over-limit
+// review succeed; that is a separate, larger effort.
+
+// Structured error code stamped on the CriticResult.error.code for this
+// class, so operators can discriminate context-window degrades from
+// transport/auth/transient failures in `_runs.ndjson` and `make df-stats`.
+export const CONTEXT_WINDOW_ERROR_CODE = "context_window_exceeded";
+
+// Bytes-per-token divisor for the cheap pre-flight estimate. Mirrors the
+// in-repo convention already baked into the lockfile compactor's byte cap
+// (`MAX_COMPACTED_DIFF_BYTES = 250_000`, documented there as "250KB ≈ 60K
+// tokens" ⇒ ~4.17 bytes/token). We round DOWN to 4 so the estimate skews
+// slightly HIGH (fewer bytes per token ⇒ more estimated tokens): a high-side
+// estimate errs toward short-circuiting a doomed call rather than dispatching
+// it. A pre-flight under-estimate is not a correctness hole anyway — the
+// adapter's 400-classifier (`isContextLengthError`) still converts the raw
+// provider over-limit 400 into the same clean structured error.
+export const BYTES_PER_TOKEN_ESTIMATE = 4;
+
+// Per-vendor input context windows (tokens). These are the documented model
+// limits the providers enforce server-side and surface in their over-limit
+// 400s; an adapter passes the relevant one into `checkContextWindow`. Named
+// constants (not magic numbers at the call site) so a model-window change is
+// a one-line edit with a self-documenting name.
+//
+//   gemini  — `The input token count exceeds the maximum number of tokens
+//             allowed 1048576` (INVALID_ARGUMENT)
+//   grok    — `This model's maximum prompt length is 1000000 but the request
+//             contains <n> tokens`
+export const GEMINI_CONTEXT_WINDOW_TOKENS = 1_048_576;
+export const GROK_CONTEXT_WINDOW_TOKENS = 1_000_000;
+
+/**
+ * Cheap, deterministic token estimate from a UTF-8 byte length. Used for the
+ * PRE-FLIGHT budget check (the adapter already has the assembled prompt's
+ * `byteLength` from `compileCriticPrompt`, so no tokenizer dependency or
+ * extra pass over the text is needed). Returns a non-negative integer.
+ *
+ * Exported for direct unit testing.
+ */
+export function estimateTokensFromBytes(byteLength: number): number {
+  if (!Number.isFinite(byteLength) || byteLength <= 0) return 0;
+  return Math.ceil(byteLength / BYTES_PER_TOKEN_ESTIMATE);
+}
+
+/**
+ * Canonical operator-facing reason string for the over-context-window
+ * degrade. Single source of truth so gemini + grok (+ future adapters) emit
+ * a byte-identical shape. Example:
+ *
+ *   "diff exceeds gemini context window (1500000 tokens > 1048576 limit)"
+ *
+ * `estimatedTokens` is the pre-flight estimate; `limit` is the vendor's
+ * documented context window. Exported for direct unit testing.
+ */
+export function formatContextWindowExceededMessage(args: {
+  vendor: string;
+  estimatedTokens: number;
+  limit: number;
+}): string {
+  return (
+    `diff exceeds ${args.vendor} context window ` +
+    `(${args.estimatedTokens} tokens > ${args.limit} limit)`
+  );
+}
+
+/**
+ * Classify a thrown provider error message as a context-length / over-limit
+ * 400. Both target vendors surface this as an HTTP 400 (already on the
+ * adapters' permanent-status set) but with a raw, vendor-specific message;
+ * matching the signature lets the adapter REWRITE that raw message into the
+ * clean structured reason instead of leaking provider JSON.
+ *
+ * Matches (case-insensitive) the documented over-limit phrasings:
+ *   - gemini: "input token count exceeds the maximum number of tokens allowed"
+ *   - grok/OpenAI-compatible: "maximum prompt length is <n> but the request
+ *     contains <m> tokens" / "maximum context length" / generic
+ *     "context length" + "exceed".
+ *
+ * Intentionally conservative: it keys on stable substrings of the providers'
+ * over-limit copy, NOT on the numeric values (which vary per request), so it
+ * stays a precise classifier and does not swallow unrelated 400s (bad model
+ * id, malformed request) that must keep their original diagnostic.
+ *
+ * Exported for direct unit testing.
+ */
+export function isContextLengthError(message: string | undefined | null): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  // gemini INVALID_ARGUMENT over-limit
+  if (m.includes("input token count exceeds") && m.includes("maximum number of tokens")) {
+    return true;
+  }
+  // grok / OpenAI-compatible "maximum prompt length is N but the request contains M tokens"
+  if (m.includes("maximum prompt length") && m.includes("tokens")) return true;
+  // OpenAI-family canonical "maximum context length is N tokens ... your messages resulted in M tokens"
+  if (m.includes("maximum context length") && m.includes("tokens")) return true;
+  // Defensive generic: any "context length" / "context window" phrasing paired
+  // with an over-limit verb. Keeps the classifier resilient to minor copy
+  // drift without matching unrelated 400s.
+  if (
+    (m.includes("context length") || m.includes("context window")) &&
+    (m.includes("exceed") || m.includes("too long") || m.includes("too large"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Build the clean, schema-conformant {@link CriticResult} for an
+ * over-context-window degrade. Routes through {@link buildErrorResult} so the
+ * envelope (reviewer echo, empty findings, `confidence: "unknown"`,
+ * `status: "error"`) is identical to every other adapter error, with:
+ *   - `retryable: false` — a larger-than-the-window diff re-trips on retry;
+ *     burning retry budget is pure waste.
+ *   - `code: CONTEXT_WINDOW_ERROR_CODE` — discriminable in telemetry.
+ *
+ * Exported for direct unit testing.
+ */
+export function buildContextWindowExceededResult(args: {
+  critic: CriticConfig;
+  vendor: string;
+  estimatedTokens: number;
+  limit: number;
+  retryCount?: number;
+}): CriticResult {
+  const message = formatContextWindowExceededMessage({
+    vendor: args.vendor,
+    estimatedTokens: args.estimatedTokens,
+    limit: args.limit,
+  });
+  return buildErrorResult({
+    critic: args.critic,
+    message,
+    retryable: false,
+    code: CONTEXT_WINDOW_ERROR_CODE,
+    ...(args.retryCount !== undefined ? { retryCount: args.retryCount } : {}),
+  });
+}
+
+/**
+ * PRE-FLIGHT budget gate (issue #169 preference #1). Given the assembled
+ * prompt's UTF-8 byte length and the vendor's token context window, returns
+ * the clean structured error {@link CriticResult} when the cheap token
+ * estimate exceeds the budget, or `null` when the prompt fits (dispatch the
+ * real call). Computing this BEFORE the API call short-circuits a doomed paid
+ * request.
+ *
+ * Exported for direct unit testing.
+ */
+export function checkContextWindow(args: {
+  critic: CriticConfig;
+  vendor: string;
+  promptByteLength: number;
+  limit: number;
+  retryCount?: number;
+}): CriticResult | null {
+  const estimatedTokens = estimateTokensFromBytes(args.promptByteLength);
+  if (estimatedTokens <= args.limit) return null;
+  return buildContextWindowExceededResult({
+    critic: args.critic,
+    vendor: args.vendor,
+    estimatedTokens,
+    limit: args.limit,
+    ...(args.retryCount !== undefined ? { retryCount: args.retryCount } : {}),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // mergeAdapterMetadata — stamp the adapter-side metadata onto the parsed
 // critic JSON before strict schema validation.
 //

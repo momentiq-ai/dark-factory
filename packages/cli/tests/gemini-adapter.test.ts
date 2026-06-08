@@ -424,6 +424,66 @@ test("review: safety-block (promptFeedback.blockReason) → permanent failure wi
   expect_eq(result.error?.retryable, false);
 });
 
+// ---------------------------------------------------------------------------
+// Issue #169 — over-context-window graceful degrade
+
+test("review: oversized diff → pre-flight context-window degrade (SDK NEVER called)", async () => {
+  // A diff whose assembled prompt blows past Gemini's 1,048,576-token
+  // window must short-circuit to a CLEAN structured error BEFORE the SDK
+  // call — saving a doomed paid request. Force it by inflating the packet
+  // diff well past 4 bytes/token * limit (~4.2MB).
+  let sdkCalls = 0;
+  const hugeDiff = "+ added line of code\n".repeat(260_000); // ~5.5MB ⇒ ~1.37M tok est
+  const bigPacket: ReviewPacket = { ...PACKET, diff: hugeDiff };
+  const mockClient: GeminiClient = {
+    models: {
+      generateContentStream: async () => {
+        sdkCalls++;
+        return makeStream([{ text: APPROVED_RESPONSE_JSON }]);
+      },
+    },
+  };
+  const adapter = new GeminiSdkAdapter({ apiKey: "k", createClient: () => mockClient });
+  const result = await adapter.review(bigPacket, CRITIC, { blockingSeverities: ["blocker"] });
+  expect_eq(result.status, "error");
+  expect_eq(result.error?.code, "context_window_exceeded");
+  expect_eq(result.error?.retryable, false);
+  expect_match(result.error?.message ?? "", /diff exceeds gemini context window/);
+  expect_match(result.error?.message ?? "", /tokens > 1048576 limit/);
+  // The pre-flight gate returned before touching the SDK at all.
+  expect_eq(sdkCalls, 0, "SDK must NOT be dispatched for an over-window prompt");
+});
+
+test("review: raw provider context-length 400 → rewritten to clean context-window error", async () => {
+  // Defense-in-depth: if the pre-flight estimate undershoots and the call
+  // goes out anyway, the raw Gemini INVALID_ARGUMENT 400 must be
+  // CLASSIFIED and rewritten to the same clean reason — the ugly nested
+  // provider copy must NOT leak into the artifact.
+  let attemptCount = 0;
+  const mockClient: GeminiClient = {
+    models: {
+      generateContentStream: async () => {
+        attemptCount++;
+        const e = new Error(
+          "The input token count exceeds the maximum number of tokens allowed 1048576",
+        );
+        (e as Error & { status?: number }).status = 400;
+        throw e;
+      },
+    },
+  };
+  const adapter = new GeminiSdkAdapter({ apiKey: "k", createClient: () => mockClient });
+  const result = await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
+  expect_eq(result.status, "error");
+  expect_eq(result.error?.code, "context_window_exceeded");
+  expect_eq(result.error?.retryable, false);
+  expect_match(result.error?.message ?? "", /diff exceeds gemini context window/);
+  // Permanent: a 400 over-limit must NOT consume retry budget.
+  expect_eq(attemptCount, 1, "context-length 400 must not retry");
+  // The raw provider copy must NOT survive into the operator-facing message.
+  expect_no_match(result.error?.message ?? "", /INVALID_ARGUMENT|input token count exceeds/i);
+});
+
 test("review: AbortSignal aborted before stream completes → result is error with aborted summary", async () => {
   const controller = new AbortController();
   // Abort BEFORE invoking review so the runRetryLoop short-circuits at
