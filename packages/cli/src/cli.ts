@@ -477,9 +477,18 @@ interface CriticOptions {
   ref: string;
   configPath?: string;
   cwd?: string;
+  // Issue #170 — the resolved value of `--profile` (string) or
+  // undefined when the flag is absent (or bare/empty). `cmdCritic`
+  // feeds this through `resolveProfile()` so profile `auth` pins take
+  // effect on the `df critic` path; previously `df critic` ran the
+  // profile-less back-compat path, so codex (the only auth-strict
+  // adapter) hit "no auth source pinned" on every CI run.
+  profileName?: string;
 }
 
-function parseCriticArgs(rest: string[]): CriticOptions {
+// Exported for unit tests (issue #170): pure argv parser, no side
+// effects. Mirrors the other exported pure resolvers (resolveProfile).
+export function parseCriticArgs(rest: string[]): CriticOptions {
   const { flags } = parseFlags(rest);
   const ref =
     typeof flags["ref"] === "string"
@@ -493,6 +502,12 @@ function parseCriticArgs(rest: string[]): CriticOptions {
   }
   if (typeof flags["cwd"] === "string") {
     out.cwd = flags["cwd"] as string;
+  }
+  // Issue #170 — only a non-empty string flag value counts; a bare
+  // `--profile` (parses as boolean `true`) or `--profile=""` falls
+  // through so `resolveProfile()` can apply the env / "local" default.
+  if (typeof flags["profile"] === "string" && flags["profile"].trim().length > 0) {
+    out.profileName = flags["profile"] as string;
   }
   return out;
 }
@@ -642,6 +657,21 @@ async function cmdCritic(rest: string[]): Promise<number> {
     });
     const registry = await buildDefaultAdapterRegistry();
 
+    // Issue #170 — resolve the active profile (precedence: `--profile`
+    // flag > `AGENT_REVIEW_PROFILE` env > "local") and thread it into
+    // `runReview()`. Without this, `df critic` ran the profile-less
+    // back-compat path: every critic ran unfiltered AND `applyProfileAuth`
+    // never fired, so the codex critic reached its adapter with
+    // `critic.auth === undefined` and errored "no auth source pinned" on
+    // every `agent-critic` CI run. The workflow selects the `cloud`
+    // profile (full quartet; codex pinned to `api`) so the codex auth
+    // source is now declared on CI. `resolveProfileWithConfig` (inside
+    // runReview) still throws loudly on a mistyped/unknown profile name.
+    const profileName = resolveProfile(
+      { profile: opts.profileName },
+      process.env as { AGENT_REVIEW_PROFILE?: string | undefined },
+    );
+
     // Wire a file telemetry sink so the run lands in
     // `.git/agent-reviews/_runs.ndjson` (the same path `df audit stats`
     // reads). This is dogfood proof: the substrate exercises its own
@@ -655,6 +685,7 @@ async function cmdCritic(rest: string[]): Promise<number> {
       registry,
       ref: opts.ref,
       telemetry: sink,
+      profileName,
       ...(selfConsistencyProbe !== undefined ? { selfConsistencyProbe } : {}),
     });
 
