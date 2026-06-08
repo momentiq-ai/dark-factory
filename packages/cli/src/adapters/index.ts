@@ -61,6 +61,28 @@ export {
   type GrokReasoningEffort,
 } from "./grok-direct-sdk.js";
 
+// Cycle 20 — MiniMax M3 via OpenRouter's OpenAI-compatible inference
+// endpoint. Mirrors grok-direct-sdk's adapter shape but calls
+// `/v1/chat/completions` (OpenAI Chat Completions API) instead of the
+// Responses API, because OpenRouter exposes Chat Completions for
+// MiniMax M3.
+export {
+  MinimaxDirectSdkAdapter,
+  MINIMAX_DIRECT_SDK_ADAPTER_ID,
+  OPEN_ROUTER_API_KEY_ENV,
+  OPENROUTER_BASE_URL,
+  OPENROUTER_DATA_COLLECTION_DEFAULT,
+  MINIMAX_PERMANENT_STATUS,
+  extractOpenRouterApiErrorStatus,
+  isMinimaxPermanentFailure,
+  type OpenRouterDataCollection,
+  type MinimaxClient,
+  type MinimaxChatCompletionsCreateParams,
+  type MinimaxStreamChunk,
+  type MinimaxUsage,
+  type MinimaxDirectSdkAdapterOptions,
+} from "./minimax-direct-sdk.js";
+
 export {
   CodexSdkAdapter,
   CODEX_SDK_ADAPTER_ID,

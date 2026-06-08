@@ -9,7 +9,11 @@ relevant) as `df` subcommands:
 
 1. **Critic Orchestrator** (`./adapters/*`) — vendor-neutral adapter contract
    (`CriticAdapter`) with concrete adapters for Cursor SDK, OpenAI Codex SDK,
-   Google Gemini, and Grok (xAI via OpenAI-compatible API).
+   Google Gemini, Grok (xAI via OpenAI-compatible API), and MiniMax M3
+   (`minimax-direct-sdk`, via OpenRouter's OpenAI-compatible endpoint;
+   requires `OPEN_ROUTER_API_KEY`). MiniMax is not part of the default
+   four-vendor quorum — it is an optional fifth adapter a consumer or the
+   hosted runtime can wire in.
 2. **Policy Engine** (`./policy/*`) — gate evaluation, min-complete-quorum
    aggregation, TDD classifier, finding-rubric strip, verification routes,
    profile resolution, and config loading.
