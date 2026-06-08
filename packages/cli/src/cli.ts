@@ -477,12 +477,16 @@ interface CriticOptions {
   ref: string;
   configPath?: string;
   cwd?: string;
-  // Issue #170 — the resolved value of `--profile` (string) or
-  // undefined when the flag is absent (or bare/empty). `cmdCritic`
-  // feeds this through `resolveProfile()` so profile `auth` pins take
-  // effect on the `df critic` path; previously `df critic` ran the
-  // profile-less back-compat path, so codex (the only auth-strict
-  // adapter) hit "no auth source pinned" on every CI run.
+  // Issue #170 — the `--profile` flag value (non-empty string) or
+  // undefined when the flag is absent (or bare/empty). `cmdCritic` feeds
+  // this through `resolveCriticProfile()` — which delegates to
+  // `resolveProfile` ONLY when a profile is explicitly set (flag or
+  // `AGENT_REVIEW_PROFILE`), else returns undefined to preserve the
+  // profile-less default — so a selected profile's `auth` pins take effect
+  // on the `df critic` path. Previously `df critic` always ran profile-less,
+  // so codex (the only auth-strict adapter) hit "no auth source pinned" on
+  // every CI run. Do NOT change this to default to "local" (see
+  // `resolveCriticProfile`).
   profileName?: string;
 }
 
