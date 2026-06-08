@@ -306,6 +306,30 @@ test("review: dataCollection option overrides the routing preference (escape hat
   expect_deep(seenProvider, { data_collection: "allow" });
 });
 
+test("review: custom (non-OpenRouter) baseUrl omits the OpenRouter-specific provider field", async () => {
+  // The `provider` routing field is OpenRouter-specific; a caller pointing
+  // baseUrl at another OpenAI-compatible endpoint must NOT receive it.
+  let sawProviderKey = true;
+  const mockClient: MinimaxClient = {
+    chat: {
+      completions: {
+        create: async (params) => {
+          sawProviderKey = "provider" in params;
+          return makeStream([deltaChunk(APPROVED_RESPONSE_JSON), finishChunk("stop"), usageChunk()]);
+        },
+      },
+    },
+    models: { list: async () => makeStream([]) as unknown as AsyncIterable<{ id?: string }> },
+  };
+  const adapter = new MinimaxDirectSdkAdapter({
+    apiKey: "k",
+    baseUrl: "https://alt.openai-compatible.example/v1",
+    createClient: () => mockClient,
+  });
+  await adapter.review(PACKET, CRITIC, { blockingSeverities: ["blocker"] });
+  expect_eq(sawProviderKey, false, "provider field must be omitted for non-OpenRouter baseUrl");
+});
+
 // ---------------------------------------------------------------------------
 // review() — failure paths
 

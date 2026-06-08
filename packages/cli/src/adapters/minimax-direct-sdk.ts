@@ -35,7 +35,10 @@
 //     providers", that means MiniMax-on-OpenRouter can NOT guarantee
 //     no-retention, which is a compliance finding to escalate — NOT a
 //     reason to silently flip to "allow". Overridable via the
-//     `dataCollection` constructor option.
+//     `dataCollection` constructor option, and sent ONLY when `baseUrl`
+//     targets the default OpenRouter endpoint — a custom `baseUrl`
+//     (another OpenAI-compatible endpoint) omits this OpenRouter-specific
+//     `provider` field.
 //   - token-accounts off the OpenAI-format `usage` field on the
 //     terminal `chunk.usage` of the streamed response (matching the
 //     OpenAI SDK contract — `stream_options: { include_usage: true }`
@@ -398,8 +401,13 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
           stream_options: { include_usage: true },
           // Compliance: constrain OpenRouter routing to a no-retention
           // provider for the third-party customer diff. Fail-loud — see
-          // file header.
-          provider: { data_collection: this.dataCollection },
+          // file header. `provider` routing is OpenRouter-specific, so it
+          // is sent ONLY when targeting the default OpenRouter endpoint; a
+          // caller who overrides `baseUrl` to another OpenAI-compatible
+          // endpoint owns its own data policy (the field is unknown there).
+          ...(this.baseUrl === OPENROUTER_BASE_URL
+            ? { provider: { data_collection: this.dataCollection } }
+            : {}),
         },
         options.signal !== undefined ? { signal: options.signal } : {},
       );
