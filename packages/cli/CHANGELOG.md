@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.3.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.2.4...dark-factory-cli-v2.3.0) (2026-06-08)
+
+
+### Features
+
+* **adapters:** add minimax-direct-sdk adapter — MiniMax M3 via OpenRouter — Cycle 20 ([#159](https://github.com/momentiq-ai/dark-factory/issues/159)) ([a2b242d](https://github.com/momentiq-ai/dark-factory/commit/a2b242d3b19b2bcb2ce9e0bd6489aa90f96390fb))
+
+
+### Bug Fixes
+
+* **adapters:** graceful context-window degrade for gemini + grok ([#169](https://github.com/momentiq-ai/dark-factory/issues/169)) ([#177](https://github.com/momentiq-ai/dark-factory/issues/177)) ([ea0650e](https://github.com/momentiq-ai/dark-factory/commit/ea0650ed2d68ede35d2b0ef6d24fc8952cda4ff1))
+* **cli:** unref'd force-exit backstop so a leaked SDK handle can't hang the CLI past the CI clamp ([#167](https://github.com/momentiq-ai/dark-factory/issues/167)) ([#171](https://github.com/momentiq-ai/dark-factory/issues/171)) ([1da22ed](https://github.com/momentiq-ai/dark-factory/commit/1da22ed31e12d6c1e120f7db6691d61edf2e3c56))
+* **critic:** wire profile selection into `df critic` so codex auth pins apply on CI ([#170](https://github.com/momentiq-ai/dark-factory/issues/170)) ([#178](https://github.com/momentiq-ai/dark-factory/issues/178)) ([7004558](https://github.com/momentiq-ai/dark-factory/commit/70045584b9788f507ab87ed232242f30e4c20a26))
+
 ## [2.2.4](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.2.3...dark-factory-cli-v2.2.4) (2026-06-06)
 
 
