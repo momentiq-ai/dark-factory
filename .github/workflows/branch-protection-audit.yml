@@ -105,8 +105,11 @@ on:
         required: false
       MOMENTIQ_NPM_READ_TOKEN:
         description: |
-          Read-token for the @momentiq npm scope. Required when
-          `cli-version` != 'local'. Becomes optional post-331.3.
+          Deprecated — no longer used (the `@momentiq/dark-factory-cli`
+          package is published to the public npm registry; no auth is
+          required to install it). Preserved here as `required: false`
+          so callers still passing it via `secrets:` don't error. Will
+          be removed in a future major version of this reusable workflow.
         required: false
 
 permissions:
@@ -159,36 +162,30 @@ jobs:
         run: npm run build
 
       - name: Install @momentiq/dark-factory-cli (consumer path)
-        # Phase B-PUBLISH-wf consumer install — same pattern as
-        # pr-status-check.yml. See that file's header for the deferred-
-        # hardening note re: full integrity-baked `npm pack`.
+        # Consumer install path. The CLI is published to the public npm
+        # registry — no auth is needed — so `npm install` resolves
+        # against the default registry without a custom `.npmrc`. The
+        # install runs in an isolated `$RUNNER_TEMP` dir so it can't be
+        # influenced by the consumer's lockfile, and `--ignore-scripts`
+        # blocks arbitrary lifecycle scripts (sqlite3's prebuilt is
+        # re-enabled via the whitelisted `npm rebuild` below).
         if: env.EVENT_NAME != 'merge_group' && env.REQUESTED_VERSION != 'local'
-        env:
-          NPM_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${NPM_TOKEN:-}" ]; then
-            echo "::error::MOMENTIQ_NPM_READ_TOKEN secret required for the consumer install path (cli-version='$REQUESTED_VERSION')." >&2
-            exit 1
-          fi
-          NPMRC="$(mktemp)"
-          trap 'rm -f "$NPMRC"' EXIT
-          chmod 600 "$NPMRC"
-          printf '@momentiq:registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$NPMRC"
           INSTALL_DIR="$RUNNER_TEMP/df-cli"
           mkdir -p "$INSTALL_DIR"
           cd "$INSTALL_DIR"
           cat > package.json <<'EOF'
           {"name": "df-cli-runtime", "version": "0.0.0", "private": true}
           EOF
-          npm install --userconfig "$NPMRC" --no-audit --no-fund --ignore-scripts \
+          npm install --no-audit --no-fund --ignore-scripts \
             "@momentiq/dark-factory-cli@${REQUESTED_VERSION}"
           # dark-factory#11 + sage3c#2198 — rebuild sqlite3 prebuilt only.
           # @cursor/sdk pulls in sqlite3 which needs its native binding.
           # `npm rebuild sqlite3` runs ONLY sqlite3's lifecycle (fetches
           # the prebuilt via node-pre-gyp); the rest of the tree stays
           # sealed under --ignore-scripts. See agent-critic.yml rationale.
-          npm rebuild sqlite3 --userconfig "$NPMRC"
+          npm rebuild sqlite3
           DF_CLI="$INSTALL_DIR/node_modules/.bin/df"
           if [ ! -x "$DF_CLI" ]; then
             echo "::error::Installed @momentiq/dark-factory-cli@$REQUESTED_VERSION but binary not found at $DF_CLI." >&2

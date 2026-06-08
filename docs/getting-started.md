@@ -45,7 +45,7 @@ verify the expected outcome, then move on. If anything fails, diagnose with
 2. Scaffold with Sage. Ask me for: product name, primary persona, optional
    secondary persona, production domain. Default the slug to a kebab-case
    slugified product name. Run:
-     npx @momentiq/sage-cli@alpha init <slug> \
+     npx @momentiq/sage-cli init <slug> \
        --product-name "<name>" \
        --primary-persona <persona> \
        --domain <domain>
@@ -130,7 +130,7 @@ Total install time on a fresh macOS workstation: 10–20 minutes.
 The Sage CLI is one npm command that bundles the Sage template inside the published package. No GitHub access needed.
 
 ```bash
-npx @momentiq/sage-cli@alpha init my-product \
+npx @momentiq/sage-cli init my-product \
   --product-name "My Product" \
   --primary-persona employer \
   --domain my-product.example
@@ -358,9 +358,9 @@ The composition is the moat. You're not stitching three vendors together; you're
 - [Dark Factory CLI reference](https://github.com/momentiq-ai/dark-factory/blob/main/packages/cli/README.md) — `df review`, `df doctor`, `df mcp`, structured bypass
 - [Cerebe SDK documentation](https://cerebe.ai/docs) — memory primitives, LLM routing, knowledge graphs, PLRE meta-learning
 
-### When you outgrow LA pilot
+### Hosted Dark Factory runtime
 
-The hosted Dark Factory runtime is in **Limited Availability** today — curated pilot customer, hands-on onboarding. SOC2, billing automation, self-serve install wizard, fleet dashboard, and the BYOK key vault are all on the GA roadmap. If you're ready for a serious deployment, [get in touch](https://momentiq.ai/contact?topic=enterprise).
+Momentiq operates the hosted Dark Factory runtime — the W3 GitHub App `momentiq-dark-factory`, the aggregation read-model, and the BYOK key vault. [Get in touch](https://momentiq.ai/contact?topic=enterprise) to onboard your repos.
 
 ### Filing issues + asking questions
 

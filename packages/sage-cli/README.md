@@ -17,7 +17,7 @@ make k8s-build-deploy-smart
 Or one-shot:
 
 ```bash
-npx @momentiq/sage-cli create hireflow
+npx @momentiq/sage-cli init hireflow
 # interactive prompts will fill in the required values
 ```
 
@@ -51,7 +51,7 @@ A scaffolded product with, on commit one:
 
 ## Commands
 
-### `sage init [slug]` (alias: `sage create`)
+### `sage init [slug]`
 
 Scaffold a new product from the bundled Sage template.
 

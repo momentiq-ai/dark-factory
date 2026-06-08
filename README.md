@@ -32,7 +32,7 @@ this is a gate, not a vibe.
 ## Sage — scaffold a product in one command
 
 ```bash
-npx @momentiq/sage-cli@alpha init my-product \
+npx @momentiq/sage-cli init my-product \
   --product-name "My Product" \
   --primary-persona employer \
   --domain my-product.example
@@ -190,11 +190,16 @@ Full consumer guide: [`docs/CONSUMER-ADOPTION.md`](docs/CONSUMER-ADOPTION.md).
 
 ## Status
 
-`@momentiq/dark-factory-cli@1.0.0` is shipped on npm. The hosted Dark Factory
-runtime is in **Limited Availability** — curated pilot customers, hands-on
-onboarding. SOC2, billing automation, self-serve install wizard, fleet
-dashboard, and the BYOK key vault are on the GA roadmap. If you're ready for a
-serious deployment, [get in touch](https://momentiq.ai/contact?topic=enterprise).
+Published on npm:
+
+- [`@momentiq/dark-factory-cli`](https://www.npmjs.com/package/@momentiq/dark-factory-cli)
+- [`@momentiq/sage-cli`](https://www.npmjs.com/package/@momentiq/sage-cli)
+- [`@momentiq/dark-factory-schemas`](https://www.npmjs.com/package/@momentiq/dark-factory-schemas)
+
+The hosted Dark Factory runtime (the W3 GitHub App `momentiq-dark-factory`,
+the aggregation read-model, and the BYOK key vault) is operated by Momentiq.
+[Get in touch](https://momentiq.ai/contact?topic=enterprise) to onboard your
+repos.
 
 ## License
 
