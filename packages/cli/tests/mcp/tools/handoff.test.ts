@@ -237,6 +237,35 @@ describe("df_handoff (MCP tool)", () => {
       expect(text).toMatch(/positive integer/);
     });
   });
+
+  it("reuse:true threads the #319 Fix C override through the MCP layer", async () => {
+    const staleNote = `${MARK_O}\n_Updated: 2026-05-25 by old session_\n\nwhy: x\n${MARK_C}`;
+    // Without reuse → the staleness guard refuses (isError, no PATCH).
+    await withHandoffMcp(async (client, gh) => {
+      gh.setIssueViewDefault(issueView({ number: 42, body: bodyWithBlock() }));
+      const result = await client.callTool({
+        name: "df_handoff",
+        arguments: { note: staleNote, issue: "42" },
+      });
+      expect(result.isError).toBe(true);
+      expect(firstText(result)).toMatch(/stale|--reuse|days before now/i);
+      expect(
+        gh.calls().some((c) => c.startsWith("gh issue edit 42 --body-file")),
+      ).toBe(false);
+    });
+    // With reuse:true → the override threads to runHandoff and the PATCH fires.
+    await withHandoffMcp(async (client, gh) => {
+      gh.setIssueViewDefault(issueView({ number: 42, body: bodyWithBlock() }));
+      const result = await client.callTool({
+        name: "df_handoff",
+        arguments: { note: staleNote, issue: "42", reuse: true },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(
+        gh.calls().some((c) => c.startsWith("gh issue edit 42 --body-file")),
+      ).toBe(true);
+    });
+  });
 });
 
 // ===========================================================================
