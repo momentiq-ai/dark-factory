@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.4.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.3.0...dark-factory-cli-v2.4.0) (2026-06-08)
+
+
+### Features
+
+* **gate-core:** evidence-gated validation routes — schema + additive planner + route-runner + diffHash binding — Cycle 21 ([#187](https://github.com/momentiq-ai/dark-factory/issues/187)) ([1623bd5](https://github.com/momentiq-ai/dark-factory/commit/1623bd53eb56cd5cc5e202df415e97a7343b6de2))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.6.1 to 0.7.0
+
 ## [2.3.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.2.4...dark-factory-cli-v2.3.0) (2026-06-08)
 
 

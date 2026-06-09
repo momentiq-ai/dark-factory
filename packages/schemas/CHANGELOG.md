@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.6.1...dark-factory-schemas-v0.7.0) (2026-06-08)
+
+
+### Features
+
+* **gate-core:** evidence-gated validation routes — schema + additive planner + route-runner + diffHash binding — Cycle 21 ([#187](https://github.com/momentiq-ai/dark-factory/issues/187)) ([1623bd5](https://github.com/momentiq-ai/dark-factory/commit/1623bd53eb56cd5cc5e202df415e97a7343b6de2))
+
 ## [0.6.1](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.6.0...dark-factory-schemas-v0.6.1) (2026-06-06)
 
 
