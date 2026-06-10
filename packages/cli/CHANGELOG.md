@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.4.0...dark-factory-cli-v2.5.0) (2026-06-10)
+
+
+### Features
+
+* **handoff:** refuse no-arg link-set mismatch + stale notes ([#319](https://github.com/momentiq-ai/dark-factory/issues/319) Fix B/C) ([#179](https://github.com/momentiq-ai/dark-factory/issues/179)) ([055a07c](https://github.com/momentiq-ai/dark-factory/commit/055a07c3a062735cf9e6b73fe61ec62c62a37682))
+
 ## [2.4.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.3.0...dark-factory-cli-v2.4.0) (2026-06-08)
 
 
