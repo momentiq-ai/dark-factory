@@ -1,7 +1,7 @@
 {
   "$schema": "../skill-schema.json",
   "name": "chief-engineer-blitz",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "summary": "Doctrine for orchestrated multi-PR blitz delivery against a decomposable objective — six phases (Plan / Spec / Implement / Triage / Validate / Closure), strict critic-finding triage, real exit-criteria validation.",
   "originatingRepo": "momentiq-ai/dark-factory-platform",
   "files": [
