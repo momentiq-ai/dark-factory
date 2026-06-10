@@ -1248,3 +1248,163 @@ describe("/handoff — idempotency", () => {
     expect(filter(body1)).toBe(filter(body2));
   });
 });
+
+// ===========================================================================
+// 13. #319 Fix B — refuse no-arg auto-discovery on link-set mismatch
+// ===========================================================================
+// The incident: a no-arg `df handoff --link <cycle20 refs>` auto-discovered an
+// unrelated session's open handoff (#317, linked to dashboard work) and PATCHed
+// it. Fix B refuses when the incoming --link set shares ZERO refs with the
+// discovered issue's existing linked items.
+
+describe("/handoff — #319 Fix B (no-arg link-set mismatch)", () => {
+  it("no-arg + incoming links zero-overlap w/ discovered issue → refuse, no PATCH", async () => {
+    const { gh, git, clock } = setup();
+    gh.setIssueListDefault([listItem({ number: 101, assignees: [], body: "x" })]);
+    gh.setIssueViewDefault(
+      issueView({
+        number: 101,
+        body: bodyWithLinks(
+          "- pr dashboard#198 — exec 404 fix\n- issue dashboard#197 — root cause",
+        ),
+      }),
+    );
+    await expect(
+      runHandoff({ noteStdin: NOTE, link: ["500", "501"], gh, git, clock }),
+    ).rejects.toThrow(/overlap|different work-stream/i);
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 101 --body-file")),
+    ).toBe(false);
+  });
+
+  it("no-arg + ≥1 incoming link overlaps discovered issue → allow update", async () => {
+    const { gh, git, clock } = setup();
+    gh.setIssueListDefault([listItem({ number: 101, assignees: [], body: "x" })]);
+    gh.setIssueViewDefault(
+      issueView({ number: 101, body: bodyWithLinks("- pr #103 — deploy spec") }),
+    );
+    gh.setPrViewDefault(103, prView({ title: "deploy spec" }));
+    gh.setPrViewDefault(104, prView({ title: "more work" }));
+    const result = await runHandoff({
+      noteStdin: NOTE,
+      link: ["103", "104"],
+      gh,
+      git,
+      clock,
+    });
+    expect(result.created).toBe(false);
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 101 --body-file")),
+    ).toBe(true);
+  });
+
+  it("no-arg + discovered issue has no existing links → first links allowed (guard)", async () => {
+    const { gh, git, clock } = setup();
+    gh.setIssueListDefault([listItem({ number: 101, assignees: [], body: "x" })]);
+    gh.setIssueViewDefault(issueView({ number: 101, body: bodyWithBlock() }));
+    gh.setPrViewDefault(500, prView({ title: "new work" }));
+    const result = await runHandoff({
+      noteStdin: NOTE,
+      link: ["500"],
+      gh,
+      git,
+      clock,
+    });
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 101 --body-file")),
+    ).toBe(true);
+  });
+
+  it("explicit /handoff <issue> --link (zero overlap) → still PATCHes (Fix B is no-arg-only)", async () => {
+    const { gh, git, clock } = setup();
+    gh.setIssueViewDefault(
+      issueView({ number: 101, body: bodyWithLinks("- pr dashboard#198 — exec 404 fix") }),
+    );
+    gh.setPrViewDefault(500, prView({ title: "cycle20" }));
+    const result = await runHandoff({
+      noteStdin: NOTE,
+      issue: 101,
+      link: ["500"],
+      gh,
+      git,
+      clock,
+    });
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 101 --body-file")),
+    ).toBe(true);
+  });
+});
+
+// ===========================================================================
+// 14. #319 Fix C — staleness guard on the incoming note's _Updated:_ date
+// ===========================================================================
+// FixedClock pins today to 2026-05-30, so the default NOTE (dated 2026-05-30)
+// is fresh; a note dated 2026-05-25 is 5 days stale.
+
+describe("/handoff — #319 Fix C (stale note guard)", () => {
+  const staleNote = `${MARK_O}\n_Updated: 2026-05-25 by old session_\n\nwhy: x\n${MARK_C}`;
+
+  it("incoming note dated ≥2d before now → refuse without reuse", async () => {
+    const { gh, git, clock } = setup();
+    gh.setIssueViewDefault(issueView({ number: 42, body: bodyWithBlock() }));
+    await expect(
+      runHandoff({ noteStdin: staleNote, issue: 42, gh, git, clock }),
+    ).rejects.toThrow(/stale|--reuse|days before now/i);
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 42 --body-file")),
+    ).toBe(false);
+  });
+
+  it("stale note + reuse:true → proceeds (Fix C override)", async () => {
+    const { gh, git, clock } = setup();
+    gh.setIssueViewDefault(issueView({ number: 42, body: bodyWithBlock() }));
+    const result = await runHandoff({
+      noteStdin: staleNote,
+      issue: 42,
+      reuse: true,
+      gh,
+      git,
+      clock,
+    });
+    expect(result.created).toBe(false);
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 42 --body-file")),
+    ).toBe(true);
+  });
+
+  it("note dated today → not stale, no reuse needed", async () => {
+    const { gh, git, clock } = setup();
+    gh.setIssueViewDefault(issueView({ number: 42, body: bodyWithBlock() }));
+    const result = await runHandoff({ noteStdin: NOTE, issue: 42, gh, git, clock });
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 42 --body-file")),
+    ).toBe(true);
+  });
+
+  it("1-day-old note → not stale (threshold ≥2d)", async () => {
+    const { gh, git, clock } = setup();
+    gh.setIssueViewDefault(issueView({ number: 42, body: bodyWithBlock() }));
+    const yNote = `${MARK_O}\n_Updated: 2026-05-29 by y session_\n\nwhy: x\n${MARK_C}`;
+    const result = await runHandoff({ noteStdin: yNote, issue: 42, gh, git, clock });
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 42 --body-file")),
+    ).toBe(true);
+  });
+
+  it("note with no parseable Updated date → warn + proceed (non-blocking)", async () => {
+    const { gh, git, clock } = setup();
+    gh.setIssueViewDefault(issueView({ number: 42, body: bodyWithBlock() }));
+    const noDateNote = `${MARK_O}\n(no updated line)\n\nwhy: x\n${MARK_C}`;
+    const result = await runHandoff({
+      noteStdin: noDateNote,
+      issue: 42,
+      gh,
+      git,
+      clock,
+    });
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 42 --body-file")),
+    ).toBe(true);
+    expect(result.logs.some((l) => /no parseable.*Updated/i.test(l))).toBe(true);
+  });
+});

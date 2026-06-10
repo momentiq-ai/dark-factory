@@ -1711,7 +1711,7 @@ async function cmdHandoff(rest: string[]): Promise<number> {
         "df handoff — put a work-stream on the handoff stack (v2 Issue-anchored).",
         "",
         "Usage:",
-        "  df handoff [issue] [--link <ref>]... [--unlink <ref>]... [--new]",
+        "  df handoff [issue] [--link <ref>]... [--unlink <ref>]... [--new] [--reuse]",
         "",
         "Upserts the marker-bounded rehydration note (read from stdin) as the",
         "dedicated handoff Issue's body, adds the `handoff` label, leaves it",
@@ -1728,6 +1728,8 @@ async function cmdHandoff(rest: string[]): Promise<number> {
         "  --unlink <ref>     Remove a linked item. May repeat.",
         "  --new              Force-create a new Issue even if @me already has an",
         "                     open handoff.",
+        "  --reuse            Post even if the note's `_Updated:_` date is ≥2 days",
+        "                     old (the staleness guard targets leftover drafts; #319).",
         "  --help, -h         Show this message.",
         "",
         "Output:",
@@ -1757,6 +1759,7 @@ async function cmdHandoff(rest: string[]): Promise<number> {
   const link: string[] = [];
   const unlink: string[] = [];
   let forceNew = false;
+  let reuse = false;
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i] as string;
     if (arg === "--link") {
@@ -1775,6 +1778,8 @@ async function cmdHandoff(rest: string[]): Promise<number> {
       unlink.push(v);
     } else if (arg === "--new") {
       forceNew = true;
+    } else if (arg === "--reuse") {
+      reuse = true;
     } else if (arg.startsWith("-")) {
       process.stderr.write(`df handoff: unknown flag: ${arg}\n`);
       return 2;
@@ -1807,6 +1812,7 @@ async function cmdHandoff(rest: string[]): Promise<number> {
       link,
       unlink,
       forceNew,
+      reuse,
       gh: new SpawnGhClient(),
       git: new SpawnGitClient(),
       clock: new SystemClock(),

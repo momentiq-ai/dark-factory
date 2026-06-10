@@ -338,6 +338,7 @@ describe("df CLI — Cycle 12 handoff subcommands (v2 Issue-anchored)", () => {
     expect(r.stdout).toContain("--link <ref>");
     expect(r.stdout).toContain("--unlink <ref>");
     expect(r.stdout).toContain("--new");
+    expect(r.stdout).toContain("--reuse");
   });
 
   it("handoffs --help routes to the subcommand's own help (v2 wording)", async () => {
@@ -370,6 +371,15 @@ describe("df CLI — Cycle 12 handoff subcommands (v2 Issue-anchored)", () => {
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toContain("df handoff: issue must be a positive integer");
     expect(r.stderr).toContain("'0'");
+  });
+
+  it("handoff --reuse is a recognized flag (#319 Fix C): '--reuse 0' reaches issue validation, not 'unknown flag'", async () => {
+    const r = await runDfCli(["handoff", "--reuse", "0"]);
+    expect(r.exitCode).toBe(2);
+    // Proves --reuse was CONSUMED by the parser (else it would hit the generic
+    // 'unknown flag' branch). The "0" then fails issue validation.
+    expect(r.stderr).toContain("df handoff: issue must be a positive integer");
+    expect(r.stderr).not.toContain("unknown flag");
   });
 
   it("handoff with payload-shaped argv exits 2 — requireSafeArgs rejects shell metachars, never echoes payload", async () => {

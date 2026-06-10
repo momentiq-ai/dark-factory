@@ -1040,6 +1040,10 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
             "minLength": 1,
             "type": "string",
           },
+          "reuse": {
+            "description": "Post even if the note's \`_Updated:_\` date is ≥2 days old. The staleness guard targets a leftover draft / another session's file; pass true only when intentionally resuming an older draft (#319).",
+            "type": "boolean",
+          },
           "unlink": {
             "description": "Work items to unlink (same ref forms as \`link\`).",
             "items": {

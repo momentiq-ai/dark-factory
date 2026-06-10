@@ -131,6 +131,14 @@ export function registerHandoffTools(
             "Force-create a new issue even if @me already has an open " +
               "handoff.",
           ),
+        reuse: z
+          .boolean()
+          .optional()
+          .describe(
+            "Post even if the note's `_Updated:_` date is ≥2 days old. The " +
+              "staleness guard targets a leftover draft / another session's " +
+              "file; pass true only when intentionally resuming an older draft (#319).",
+          ),
       },
       outputSchema: {
         issue: z.string().describe("The issue the note landed on."),
@@ -156,6 +164,7 @@ export function registerHandoffTools(
         link: input.link ?? [],
         unlink: input.unlink ?? [],
         forceNew: input.new ?? false,
+        reuse: input.reuse ?? false,
         ...clients,
       });
       return {

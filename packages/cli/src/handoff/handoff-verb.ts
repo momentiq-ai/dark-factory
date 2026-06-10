@@ -66,6 +66,12 @@ export interface RunHandoffOptions {
   readonly link?: readonly string[];
   readonly unlink?: readonly string[];
   readonly forceNew?: boolean;
+  /**
+   * #319 Fix C override. When true, skip the staleness guard that refuses an
+   * incoming note whose `_Updated:_` date is ≥2 days before now (intentional
+   * for resuming an earlier draft).
+   */
+  readonly reuse?: boolean;
   readonly gh: GhClient;
   readonly git: GitClient;
   readonly clock: Clock;
@@ -82,6 +88,30 @@ export interface RunHandoffResult {
 // ---------------------------------------------------------------------------
 // Helpers.
 // ---------------------------------------------------------------------------
+
+/**
+ * #319 Fix C. Extract the agent-context note's `_Updated: YYYY-MM-DD_` recency
+ * date (the template's `> _Updated: <date> by <session>_` line). Returns the
+ * YYYY-MM-DD, or null when the note has no parseable Updated date.
+ */
+function extractNoteUpdatedYmd(note: string): string | null {
+  const m = /_?Updated:\s*(\d{4}-\d{2}-\d{2})/.exec(note);
+  return m ? m[1]! : null;
+}
+
+/**
+ * #319 Fix C. Convert a YYYY-MM-DD to a UTC epoch-day integer for whole-day
+ * deltas. `Date.UTC` is pure arithmetic on its arguments (it does NOT read the
+ * wall clock), so this stays deterministic — "now" comes from the injected
+ * Clock, never from here. Returns null on a malformed date.
+ */
+function ymdToEpochDay(ymd: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) return null;
+  return Math.floor(
+    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86_400_000,
+  );
+}
 
 /**
  * Strip a pre-existing "Linked work items" section from the operator's
@@ -233,6 +263,28 @@ export async function runHandoff(
     throw new HandoffError(noteScrub.refusal);
   }
 
+  // #319 Fix C — staleness guard on the incoming note's `_Updated:_` date. A
+  // note dated ≥2 days before now is likely a stale draft or a leftover file
+  // from another session (the kind of input the #319 incident fed through).
+  // Refuse unless opts.reuse. A note with no parseable Updated date can't be
+  // checked — warn and proceed (don't block on a parse miss).
+  if (opts.reuse !== true) {
+    const noteUpdatedYmd = extractNoteUpdatedYmd(noteStdin);
+    if (noteUpdatedYmd === null) {
+      logs.push(
+        "no parseable `_Updated: YYYY-MM-DD_` date in the note — skipping the staleness check (compose per SKILL.md to enable it).",
+      );
+    } else {
+      const noteDay = ymdToEpochDay(noteUpdatedYmd);
+      const todayDay = ymdToEpochDay(clock.todayYmd());
+      if (noteDay !== null && todayDay !== null && todayDay - noteDay >= 2) {
+        throw new HandoffError(
+          `incoming note is dated ${noteUpdatedYmd} (${todayDay - noteDay} days before now) — likely a stale draft or a leftover file from another session. If this is intentional (resuming an earlier draft), pass --reuse. Otherwise re-compose a fresh note (SKILL.md). (#319 Fix C)`,
+        );
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Phase B — dirty worktree → warn, do not refuse (handoff.sh:72-75). D4.
   // -------------------------------------------------------------------------
@@ -339,6 +391,31 @@ export async function runHandoff(
       }
       existingBody = view.body;
       initialUpdatedAt = view.updatedAt;
+      // #319 Fix B — refuse auto-discovery on link-set mismatch. The incident:
+      // a no-arg `df handoff --link <refs>` auto-discovered an UNRELATED
+      // session's open handoff and PATCHed it. If the operator brought --link
+      // refs AND the discovered issue already has linked items AND NONE of the
+      // incoming refs overlap, this is very likely a different work-stream.
+      // Refuse (no mutation yet — Phase D --link resolution hasn't run). Naming
+      // the issue explicitly bypasses this (it's the override); so does --new.
+      // canonicalizeLinkRef does NO network call, so this is free.
+      if (links.length > 0) {
+        const existingDisplays = new Set(
+          extractLinkedItems(existingBody)
+            .map((e) => e.split(/\s+/)[2])
+            .filter((d): d is string => d !== undefined && d !== ""),
+        );
+        if (existingDisplays.size > 0) {
+          const overlap = links.some((ref) =>
+            existingDisplays.has(canonicalizeLinkRef(ref).display),
+          );
+          if (!overlap) {
+            throw new HandoffError(
+              `auto-discovered open handoff #${picked.number}, but none of your --link refs overlap its existing linked work items — this looks like a different work-stream's handoff. Pass --new for a fresh issue, or name it explicitly (df handoff ${picked.number} …) to update it anyway. (#319 Fix B)`,
+            );
+          }
+        }
+      }
       logs.push(
         `updated #${picked.number} instead of creating new — pass \`--new\` to force a new issue.`,
       );
