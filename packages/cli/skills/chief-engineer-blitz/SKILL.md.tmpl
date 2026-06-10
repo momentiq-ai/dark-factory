@@ -341,10 +341,10 @@ kicking in. Two options:
 
 1. **Continue** — the auto-compaction summarizes prior turns; you can keep
    going. Fine for routine work.
-2. **Hand off** — use the `handoff` skill to leave a comprehensive note for
-   a fresh session. Particularly right when the remaining work is a NEW
-   phase (e.g. you're done with implementations, need to start the cross-repo
-   PRs).
+2. **Hand off** — run `df handoff` (or the `df.handoff` MCP prompt) to leave a
+   comprehensive note for a fresh session. Particularly right when the remaining
+   work is a NEW phase (e.g. you're done with implementations, need to start the
+   cross-repo PRs).
 
 **Don't bail just because the blitz is long.** Bail if context is genuinely
 gone or if the remaining work needs a fresh planning pass. Otherwise: push
@@ -420,8 +420,9 @@ session) will thank you.
 - **`brainstorming`** — use this for the design phase BEFORE the blitz, when
   scope isn't decomposable yet. A blitz against a not-yet-decomposed objective
   is a blitz against vapor.
-- **`handoff`** — use this if context-budget runs out mid-blitz, to leave a
-  comprehensive note for the next session.
+- **`df handoff`** (the agent handoff protocol — a `df` CLI verb + the
+  `df.handoff` MCP prompt, not a bundled skill) — use this if context-budget
+  runs out mid-blitz, to leave a comprehensive note for the next session.
 - **`writing-plans`** — the Plan phase output is a plan; use this skill's
   template if a structured plan format helps.
 - **`subagent-driven-development`** — overlaps significantly; that skill is
