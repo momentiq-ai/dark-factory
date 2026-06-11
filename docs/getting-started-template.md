@@ -64,12 +64,15 @@ diagnose and propose a fix.
        | tar -xz --strip-components=1 -C <my-slug>
    then cd into it.
 3. Name it: bun run init -- --dry-run --name "<My Product>"  (preview), then apply.
-4. bun install. Confirm ./node_modules/.bin/df --help works and that the husky
-   hooks armed (git config core.hooksPath == .husky).
+4. Make it a git repo (the tarball has no .git): git init -b main && git add -A &&
+   git commit -m "chore: init from taxgen-template". Then bun install. Confirm
+   ./node_modules/.bin/df --help works and the husky hooks armed (git config
+   core.hooksPath == .husky/_).
 5. Native dev: cp .env.example .env; bun run dev. Surface http://localhost:5173
    and the backend health check at http://localhost:8787/health.
-6. First agent turn: help me get an Anthropic API key, set it in .env, and (per
-   the template's backend/src/agent) wire + send a first chat message.
+6. First agent turn: help me get an Anthropic API key, set it in .env, then send
+   a chat message in the dashboard — the reply streams back from Claude (the
+   agent is already implemented).
 7. Dark Factory local gate: make a trivial change, commit, and confirm the
    post-commit critic wrote .git/agent-reviews/<sha>.md with a verdict; then push
    and confirm the pre-push gate passed.
@@ -125,17 +128,23 @@ Pure text substitution of the template's slug/display name across the tree — t
 lightweight replacement for Copier's variable rendering. See the template's
 [`docs/getting-started.md`](https://github.com/SJBarras/taxgen-template/blob/main/docs/getting-started.md) Step 0.
 
-### Step 3 — Install (this is what turns the gate on)
+### Step 3 — Initialize git + install (this turns the gate on)
+
+The tarball gave you a clean tree with **no `.git`**. Make it your own repo
+first — Husky needs a git repo to arm the hooks — then install:
 
 ```bash
+git init -b main
+git add -A && git commit -m "chore: init from taxgen-template"
 bun install
-./node_modules/.bin/df --help        # confirm the Dark Factory CLI landed
+./node_modules/.bin/df --help        # confirm the Dark Factory CLI landed (2.5.0)
 ```
 
 `bun install` pulls every workspace **and** `@momentiq/dark-factory-cli` (pinned
 exactly, per the consumer contract), then runs `prepare`, which arms the Husky
-hooks (`core.hooksPath` → `.husky/`). The hooks were **dormant until now** — the
-critic reviews from your **next commit onward**. Commit the resulting `bun.lock`.
+hooks (`core.hooksPath` → `.husky/_`). The hooks were **dormant until now** — the
+critic reviews from your **next commit onward** (so the initial commit above is
+intentionally un-gated). Commit the resulting `bun.lock`.
 
 ### Step 4 — Native dev (no Docker, no k8s)
 
@@ -149,8 +158,12 @@ difference from the Sage path, which brings up a k3d cluster here.
 
 ### Step 5 — First agent turn
 
-Get an Anthropic API key, set `ANTHROPIC_API_KEY` in `.env`, then wire and send a
-first chat message. Details (LangGraph.js shape, streaming) are in the template's
+The agent is **already implemented** — a LangGraph.js `StateGraph` calling Claude,
+streamed to the chat UI over SSE. Get an Anthropic API key, set
+`ANTHROPIC_API_KEY` in `.env`, and **send a message in the dashboard chat** — the
+reply streams in token by token. (No key yet? The chat shows a clear
+`authentication_error` — that's the wiring working; add the key.) Background on
+the LangGraph shape is in the template's
 [`docs/getting-started.md`](https://github.com/SJBarras/taxgen-template/blob/main/docs/getting-started.md) Step 3.
 *(Want Cerebe instead of raw Anthropic? See the template's `docs/notes.md`.)*
 
