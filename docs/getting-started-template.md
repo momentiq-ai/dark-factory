@@ -2,8 +2,8 @@
 
 > **Prefer a small, one-language starter over the full Sage scaffold?**
 > This is the lean path: clone a TypeScript template, `bun install`, and you're
-> gated by Dark Factory from commit one — no Copier, no Python, no Cerebe, and no
-> Kubernetes in your dev loop.
+> gated by Dark Factory from commit one — no Copier, no Python, and no Kubernetes
+> in your dev loop. Still powered by Cerebe, Momentiq's cognitive engine.
 
 This is an **alternate** to [`getting-started.md`](getting-started.md). That doc
 scaffolds the full Momentiq product (Sage → Cerebe → Dark Factory, with k8s,
@@ -16,7 +16,7 @@ language. Both end at the same place: **a running product gated by Dark Factory.
 |---|---|---|
 | Scaffolder | Copier template via `@momentiq/sage-cli` (needs Python) | GitHub template repo + a `bun run init` rename (no Python) |
 | Stack | FastAPI + Next.js + LangGraph (Python) | Hono + Vite/Svelte + LangGraph.js (one language: TypeScript) |
-| Cognitive engine | Cerebe (memory, routing, knowledge graphs) | Anthropic Claude by default (Cerebe optional) |
+| Cognitive engine | Cerebe — deep SDK integration (memory, KG, RAG) | Cerebe — chat via its OpenAI-compatible endpoint (deeper SDK features opt-in) |
 | Local dev | k3d Kubernetes cluster | native `bun run dev` — **no Docker/k8s** |
 | Deploy | Helm + GKE, ArgoCD GitOps | one container to a PaaS, or the bundled kustomize k8s base — opt-in |
 | Dark Factory gate | ✅ commit + push | ✅ commit + push (identical CLI + contract) |
@@ -31,7 +31,7 @@ evidence artifacts. You're choosing a scaffold, not a different gate.
 - A **TypeScript product** — Hono + LangGraph.js backend, Vite + Svelte frontend,
   sharing types through one package
 - Running **natively** at `http://localhost:5173` — no containers
-- A **first agent turn** answered by Claude (or Cerebe, if you wire it)
+- A **first agent turn** answered by Cerebe
 - A **first commit reviewed** by the Dark Factory local critic quorum, with an
   evidence-bound artifact at `.git/agent-reviews/<sha>.md`
 - *(Opt-in)* a **hosted critic** Check Run on your pull requests
@@ -70,8 +70,8 @@ diagnose and propose a fix.
    core.hooksPath == .husky/_).
 5. Native dev: cp .env.example .env; bun run dev. Surface http://localhost:5173
    and the backend health check at http://localhost:8787/health.
-6. First agent turn: help me get an Anthropic API key, set it in .env, then send
-   a chat message in the dashboard — the reply streams back from Claude (the
+6. First agent turn: help me get a Cerebe API key, set it in .env, then send
+   a chat message in the dashboard — the reply streams back from Cerebe (the
    agent is already implemented).
 7. Auth — recommended, but optional for a first test. Help me set up Clerk
    sign-in: create a Clerk app, put CLERK_SECRET_KEY + VITE_CLERK_PUBLISHABLE_KEY
@@ -100,7 +100,7 @@ to pull the template copy (Step 1) and create your repo.
 subscription, authenticated** (`cursor-agent` sign-in / `codex login`). With zero
 critics authenticated the pre-push gate **fails closed**.
 
-**Later, per step:** an Anthropic API key (the agent), and optionally Clerk
+**Later, per step:** a Cerebe API key (the agent), and optionally Clerk
 (auth) and Doppler (prod secrets). **Node.js is not required** — Bun runs
 everything, including the self-contained Dark Factory CLI bundle.
 
@@ -163,14 +163,14 @@ difference from the Sage path, which brings up a k3d cluster here.
 
 ### Step 5 — First agent turn
 
-The agent is **already implemented** — a LangGraph.js `StateGraph` calling Claude,
-streamed to the chat UI over SSE. Get an Anthropic API key, set
-`ANTHROPIC_API_KEY` in `.env`, and **send a message in the dashboard chat** — the
+The agent is **already implemented** — a LangGraph.js `StateGraph` calling Cerebe,
+streamed to the chat UI over SSE. Get a Cerebe API key, set
+`CEREBE_API_KEY` in `.env`, and **send a message in the dashboard chat** — the
 reply streams in token by token. (No key yet? The chat shows a clear
 `authentication_error` — that's the wiring working; add the key.) Background on
 the LangGraph shape is in the template's
 [`docs/getting-started.md`](https://github.com/SJBarras/taxgen-template/blob/main/docs/getting-started.md) Step 3.
-*(Want Cerebe instead of raw Anthropic? See the template's `docs/notes.md`.)*
+*(Prefer raw Anthropic instead? See the template's `docs/notes.md` §4.)*
 
 ### Step 6 — First commit hits the local Dark Factory gate
 
@@ -209,7 +209,7 @@ ship. Nothing there is needed for, or touched by, dev.
 ## What you have now
 
 - A **lean TypeScript product** running natively, no infrastructure
-- A **first agent call** through Claude
+- A **first agent call** through Cerebe
 - A **first commit + push gated** by the Dark Factory local critic quorum, with
   evidence on disk — the **same gate** as the Sage path
 - An opt-in route to the **hosted critic** and to **deployment**, both isolated
