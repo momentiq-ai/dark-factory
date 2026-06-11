@@ -59,8 +59,9 @@ diagnose and propose a fix.
 1. Prereqs: bun (>=1.1), git, gh. On Windows confirm I'm in WSL2 with the repo on
    the Linux filesystem. Authenticate at least one Dark Factory critic
    subscription (Cursor and/or Codex) — the gate fails closed without one.
-2. Create my repo from the template:
-     gh repo create <my-slug> --private --template SJBarras/taxgen-template --clone
+2. Get a clean, history-free copy of the template (no .git):
+     mkdir <my-slug> && gh api repos/SJBarras/taxgen-template/tarball/main \
+       | tar -xz --strip-components=1 -C <my-slug>
    then cd into it.
 3. Name it: bun run init -- --dry-run --name "<My Product>"  (preview), then apply.
 4. bun install. Confirm ./node_modules/.bin/df --help works and that the husky
@@ -85,7 +86,7 @@ Start at step 1. Ask before each shell command.
 **Must have:** [Bun](https://bun.sh) ≥ 1.1, Git ≥ 2.40, and **macOS or Linux**
 (on **Windows use [WSL2](https://learn.microsoft.com/windows/wsl/install)** — Bun
 inside the distro, repo on the Linux filesystem). [`gh`](https://cli.github.com)
-to create the repo from the template.
+to pull the template copy (Step 1) and create your repo.
 
 **Before your first commit is gated:** at least one **Cursor and/or Codex
 subscription, authenticated** (`cursor-agent` sign-in / `codex login`). With zero
@@ -95,16 +96,23 @@ critics authenticated the pre-push gate **fails closed**.
 (auth) and Doppler (prod secrets). **Node.js is not required** — Bun runs
 everything, including the self-contained Dark Factory CLI bundle.
 
-### Step 1 — Create your repo from the template
+### Step 1 — Get a clean copy of the template
+
+Pull a **pure file copy** of the template — no git history, no `.git` at all —
+straight from GitHub via your `gh` auth (works on the private repo):
 
 ```bash
-gh repo create my-product --private --template SJBarras/taxgen-template --clone
+mkdir my-product
+gh api repos/SJBarras/taxgen-template/tarball/main \
+  | tar -xz --strip-components=1 -C my-product
 cd my-product
 ```
 
-(Or click **“Use this template”** on the template repo. The template flag must be
-enabled on it, and you need read access — it may be private.) This replaces the
-Sage `copier copy` step entirely: a fresh repo, no history, no Python.
+This replaces the Sage `copier copy` step: a fresh tree, no history, no Python,
+and nothing to detach later. (`--strip-components=1` drops GitHub's
+`SJBarras-taxgen-template-<sha>/` wrapper directory.) You can pin a tag or commit
+SHA instead of `main`: `.../tarball/<ref>`. You'll turn this into your own git
+repo during setup below (before the local gate can run).
 
 ### Step 2 — Name your product
 
