@@ -73,10 +73,15 @@ diagnose and propose a fix.
 6. First agent turn: help me get an Anthropic API key, set it in .env, then send
    a chat message in the dashboard — the reply streams back from Claude (the
    agent is already implemented).
-7. Dark Factory local gate: make a trivial change, commit, and confirm the
+7. Auth — recommended, but optional for a first test. Help me set up Clerk
+   sign-in: create a Clerk app, put CLERK_SECRET_KEY + VITE_CLERK_PUBLISHABLE_KEY
+   in .env, and restart dev. The app is already wired for it — with keys it gates
+   behind sign-in; without them it runs open (fine for testing). Recommended
+   before exposing the dashboard to anyone.
+8. Dark Factory local gate: make a trivial change, commit, and confirm the
    post-commit critic wrote .git/agent-reviews/<sha>.md with a verdict; then push
    and confirm the pre-push gate passed.
-8. (Optional) Hosted gate: walk me through installing the Dark Factory GitHub App
+9. (Optional) Hosted gate: walk me through installing the Dark Factory GitHub App
    and the CI workflow per CONSUMER-ADOPTION.md.
 
 Start at step 1. Ask before each shell command.
