@@ -263,6 +263,19 @@ bun run dev          # backend :8787 + frontend :5173, both hot-reload
 Open <http://localhost:5173>. This is the whole inner loop — exactly the
 difference from the Sage path, which brings up a k3d cluster here.
 
+**Dev server commands:**
+
+| Command | What it does |
+|---|---|
+| `bun run dev` | Start both backend and frontend (hot-reload) |
+| `bun run dev:backend` | Start only the backend on `:8787` |
+| `bun run dev:frontend` | Start only the frontend on `:5173` |
+| `Ctrl+C` | Stop all running servers |
+
+Both servers hot-reload on file changes — no restart needed after editing code or
+`.env`. `Ctrl+C` in the terminal where you ran `bun run dev` stops everything
+cleanly (both processes are children of the Bun workspace runner).
+
 > **Workspace `.env` wiring.** Bun loads `.env` from the CWD, and `bun run
 > --filter '*' dev` runs each workspace from its own directory (`backend/`,
 > `frontend/`). The template handles this: the backend's dev script passes
