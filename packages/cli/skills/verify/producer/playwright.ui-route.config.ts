@@ -31,10 +31,18 @@ import { resolve } from "node:path";
 // storageState JSON with YOUR auth (Clerk/Auth0/bot login/etc.) and point
 // DF_UI_ROUTE_STORAGE_STATE at it for protected surfaces. Public surfaces need
 // none — when the file is absent we run unauthenticated rather than fail.
-// Default location: <config-dir>/.auth/storage-state.json (gitignore **/.auth/).
+//
+// The default path is anchored to `process.cwd()` — NOT `__dirname` or
+// `import.meta.url`. Playwright may load this config as CJS or ESM depending on
+// the consumer's `"type"` + Playwright version: `__dirname` is undefined under
+// ESM and `import.meta` is invalid under CJS, so either module-global would
+// crash the producer for half of consumers before it could even soft-skip. The
+// route script runs Playwright with `cwd` = the web dir (where this config
+// lives), so cwd-relative resolves to `<web>/.auth/storage-state.json` and
+// works in both. Gitignore **/.auth/.
 const STORAGE_STATE_PATH =
   process.env.DF_UI_ROUTE_STORAGE_STATE ||
-  resolve(__dirname, ".auth/storage-state.json");
+  resolve(process.cwd(), ".auth/storage-state.json");
 const storageState = existsSync(STORAGE_STATE_PATH) ? STORAGE_STATE_PATH : undefined;
 
 // Local preview port for the SHA-under-review server. Overridable via
