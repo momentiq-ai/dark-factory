@@ -425,6 +425,48 @@ export const DEFAULT_VERIFICATION_ROUTES: readonly VerificationRoute[] = [
   },
 ];
 
+// Cycle 22 (momentiq-ai/dark-factory#192) — the `df verify` orchestrator.
+//
+// `DEFAULT_VERIFICATION_ROUTES` ships each command route's `command` as the
+// non-executable placeholder `df verify --route <id>` (see the table comment
+// above). `df verify` is the route-runner ORCHESTRATOR, not a per-route
+// producer: if a route whose command is `df verify --route <id>` were spawned
+// by the route-runner from inside `df verify`, it would re-enter `df verify`
+// → the route-runner → spawn the same command again → infinite recursion. So
+// the route-runner GUARDS against this by refusing to spawn any command that
+// `isVerifyRouteCommand` flags, telling the consumer to override the
+// placeholder with its own toolchain's producer.
+//
+// These three helpers are the SINGLE SOURCE OF TRUTH for the placeholder
+// string, shared by (a) the default table's command strings, (b) the
+// route-runner recursion guard, and (c) the schemas drift test that pins
+// them — so renaming the subcommand can't silently desync the guard from the
+// shipped placeholders.
+export const VERIFY_CLI_COMMAND = "df verify";
+
+/**
+ * The canonical placeholder command for a default verification route:
+ * `df verify --route <id>`. Every command route in
+ * `DEFAULT_VERIFICATION_ROUTES` uses this; consumers override it in
+ * `.agent-review/config.json` with their real per-route producer.
+ */
+export function defaultRouteVerifyCommand(routeId: string): string {
+  return `${VERIFY_CLI_COMMAND} --route ${routeId}`;
+}
+
+/**
+ * True when `command` is a `df verify` invocation — i.e. it would re-invoke
+ * the verify orchestrator rather than run a real per-route producer. The
+ * route-runner uses this as a recursion guard (a route whose command is still
+ * the shipped placeholder must be overridden before `df verify`/`df gates`
+ * will run it). Matches `df verify` as the leading program + subcommand,
+ * tolerant of leading whitespace and the bare `df verify` form; a real
+ * producer such as `bash scripts/df-verify-route.sh <id>` is NOT flagged.
+ */
+export function isVerifyRouteCommand(command: string): boolean {
+  return /^\s*df\s+verify(\s|$)/.test(command);
+}
+
 export interface TddClassifierConfigSchema {
   productionGlobs: string[];
   testGlobs: string[];
