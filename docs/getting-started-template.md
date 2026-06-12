@@ -47,7 +47,7 @@ point and links into it rather than duplicating it.
 Paste this into Claude Code, Cursor, or any agentic surface; it will run the
 walkthrough interactively, confirm before anything destructive, and surface URLs:
 
-```
+````
 You are helping me start a lean agentic product from the taxgen-template
 (TypeScript: Bun + Hono + LangGraph.js backend, Vite + Svelte frontend), gated by
 Dark Factory. Native dev must never require Docker or Kubernetes.
@@ -56,64 +56,124 @@ Walk me through these steps interactively — show the command, ask before anyth
 destructive, run it, verify the outcome, then continue. If something fails,
 diagnose and propose a fix.
 
+0. Project setup. Before anything else, ask me:
+   a. Display name of the product (e.g., "Acme Dashboard").
+   b. What folder to create it in (default: kebab-case slug of the display name,
+      in the current directory).
+   c. Do I already have a Cerebe API key? (required for chat to work — get one at
+      https://cerebe.ai if not). Have me provide the key now or note that we'll
+      set it during env configuration.
+   d. Do I want to use Clerk for authentication? (optional — the app runs open
+      without it; recommended before exposing to others). If yes, have me create
+      a Clerk app at https://clerk.com and provide the two keys:
+      CLERK_SECRET_KEY and VITE_CLERK_PUBLISHABLE_KEY.
+   e. Do I want to use Doppler for secrets management? (optional — only relevant
+      for production deploys; local dev uses .env). If yes, have me set up a
+      Doppler project.
+   f. Database: local SQLite file (default, zero setup) or remote Turso/libSQL
+      (for horizontal scaling)? If Turso, have me create a database at
+      https://turso.tech and provide the DATABASE_URL and TURSO_AUTH_TOKEN.
+
 1. Prereqs: bun (>=1.1), git, gh. On Windows confirm I'm in WSL2 with the repo on
    the Linux filesystem. Authenticate at least one Dark Factory critic
    subscription (Cursor and/or Codex) — the gate fails closed without one.
-2. Get a clean, history-free copy of the template (no .git):
-     mkdir <my-slug> && gh api repos/SJBarras/taxgen-template/tarball/main \
-       | tar -xz --strip-components=1 -C <my-slug>
+
+2. Get a clean, history-free copy of the template (no .git), using the folder
+   from step 0b:
+     mkdir <folder> && gh api repos/SJBarras/taxgen-template/tarball/main \
+       | tar -xz --strip-components=1 -C <folder>
    then cd into it.
-3. Name it: bun run init -- --dry-run --name "<My Product>"  (preview), then apply.
+
+3. Name it using the display name from step 0a:
+     bun run init -- --dry-run --name "<Display Name>"  (preview), then apply.
+
 4. Make it a git repo (the tarball has no .git): git init -b main && git add -A &&
    git commit -m "chore: init from taxgen-template". Then bun install. Confirm
    ./node_modules/.bin/df --help works and the husky hooks armed (git config
    core.hooksPath == .husky/_).
-5. Native dev: cp .env.example .env; bun run dev. Surface http://localhost:5173
-   and the backend health check at http://localhost:8787/health.
-6. First agent turn: help me get a Cerebe API key, set it in .env, then send
-   a chat message in the dashboard — the reply streams back from Cerebe (the
-   agent is already implemented).
-7. Auth — recommended, but optional for a first test. Help me set up Clerk
-   sign-in: create a Clerk app, put CLERK_SECRET_KEY + VITE_CLERK_PUBLISHABLE_KEY
-   in .env, and restart dev. The app is already wired for it — with keys it gates
-   behind sign-in; without them it runs open (fine for testing). Recommended
-   before exposing the dashboard to anyone.
-8. Dark Factory local gate: make a trivial change, commit, and confirm the
+
+5. Configure environment: cp .env.example .env, then set the values based on the
+   choices from step 0:
+   - Always: set CEREBE_API_KEY to the key from step 0c.
+   - If Clerk: set CLERK_SECRET_KEY and VITE_CLERK_PUBLISHABLE_KEY from step 0d.
+   - If Doppler: run doppler login && doppler setup, then
+     doppler run -- bun run dev (instead of bare bun run dev) going forward.
+   - If Turso: set DATABASE_URL=libsql://... and TURSO_AUTH_TOKEN=... from step 0f.
+     If local SQLite (default): leave DATABASE_URL=file:./taxgen.db as-is.
+
+6. Native dev: bun run dev. Surface http://localhost:5173 and the backend health
+   check at http://localhost:8787/health. Confirm the chat works by sending a
+   message — the reply should stream back from Cerebe token by token.
+
+7. Dark Factory local gate: make a trivial change, commit, and confirm the
    post-commit critic wrote .git/agent-reviews/<sha>.md with a verdict; then push
    and confirm the pre-push gate passed.
-9. (Optional) Hosted gate: walk me through installing the Dark Factory GitHub App
+
+8. (Optional) Hosted gate: walk me through installing the Dark Factory GitHub App
    and the CI workflow per CONSUMER-ADOPTION.md.
 
-Start at step 1. Ask before each shell command.
-```
+Start at step 0. Ask before each shell command.
+````
+
+**Paste it where you already work:**
+
+- **Claude Code:** copy the block, paste into the prompt, hit Enter
+- **Cursor:** copy, open Composer (⌘I), paste, send
+- **Codex CLI:** `codex` → paste at the prompt → Enter
+- **claude.ai:** start a new chat, paste, send
+
+The agent drives steps 0–8; you answer the setup questions and confirm commands.
 
 ## …or follow the steps manually
 
-### Prereqs
+The rest of this page is the same walkthrough as text, in case you'd rather drive it yourself.
 
-**Must have:** [Bun](https://bun.sh) ≥ 1.1, Git ≥ 2.40, and **macOS or Linux**
-(on **Windows use [WSL2](https://learn.microsoft.com/windows/wsl/install)** — Bun
-inside the distro, repo on the Linux filesystem). [`gh`](https://cli.github.com)
-to pull the template copy (Step 1) and create your repo.
+## Prereqs (one screen)
+
+| Tool | Version | Why | macOS one-liner |
+|---|---|---|---|
+| [Bun](https://bun.sh) | ≥ 1.1 | Runtime, installer, and script runner for the entire stack | `brew install oven-sh/bun/bun` |
+| Git | ≥ 2.40 | Source control + pre-push hook surface | (preinstalled) |
+| [`gh` CLI](https://cli.github.com) | latest | Pull the template copy (Step 1) and create your repo | `brew install gh && gh auth login` |
+
+**Windows:** use [WSL2](https://learn.microsoft.com/windows/wsl/install) — Bun
+inside the distro, repo on the Linux filesystem.
 
 **Before your first commit is gated:** at least one **Cursor and/or Codex
 subscription, authenticated** (`cursor-agent` sign-in / `codex login`). With zero
 critics authenticated the pre-push gate **fails closed**.
 
-**Later, per step:** a Cerebe API key (the agent), and optionally Clerk
-(auth) and Doppler (prod secrets). **Node.js is not required** — Bun runs
-everything, including the self-contained Dark Factory CLI bundle.
+You also need:
+
+- A **Cerebe API key** — **required** for the agent chat to function. Sign up at
+  [cerebe.ai](https://cerebe.ai); free trial tier works. Keys look like `ck_live_...`
+  or `ck_test_...`.
+- *(Optional)* A **Clerk account** — for sign-in/auth gating. Create an app at
+  [clerk.com](https://clerk.com) to get `CLERK_SECRET_KEY` and
+  `VITE_CLERK_PUBLISHABLE_KEY`. Without these, the app runs open (unauthenticated)
+  — fine for local dev/prototyping, but recommended before sharing the dashboard.
+- *(Optional)* A **Doppler account** — for production secrets injection. Not needed
+  for local dev (`.env` handles it). Sign up at
+  [dashboard.doppler.com](https://dashboard.doppler.com) if you want Doppler to
+  manage secrets in staging/prod.
+- *(Optional)* A **Turso account** — only if you want a remote database for
+  horizontal scaling. The default is a local SQLite file (zero setup). Create a
+  database at [turso.tech](https://turso.tech) to get a `DATABASE_URL` and
+  `TURSO_AUTH_TOKEN`.
 
 ### Step 1 — Get a clean copy of the template
+
+Pick a **display name** for your product (e.g., "Acme Dashboard") and a **folder
+name** (default: kebab-case of the display name, e.g., `acme-dashboard`).
 
 Pull a **pure file copy** of the template — no git history, no `.git` at all —
 straight from GitHub via your `gh` auth (works on the private repo):
 
 ```bash
-mkdir my-product
+mkdir acme-dashboard
 gh api repos/SJBarras/taxgen-template/tarball/main \
-  | tar -xz --strip-components=1 -C my-product
-cd my-product
+  | tar -xz --strip-components=1 -C acme-dashboard
+cd acme-dashboard
 ```
 
 This replaces the Sage `copier copy` step: a fresh tree, no history, no Python,
@@ -125,8 +185,8 @@ repo during setup below (before the local gate can run).
 ### Step 2 — Name your product
 
 ```bash
-bun run init -- --dry-run --name "My Product"   # preview
-bun run init -- --name "My Product"             # apply (derives a slug)
+bun run init -- --dry-run --name "Acme Dashboard"   # preview
+bun run init -- --name "Acme Dashboard"             # apply (derives a slug)
 ```
 
 Pure text substitution of the template's slug/display name across the tree — the
@@ -151,28 +211,77 @@ hooks (`core.hooksPath` → `.husky/_`). The hooks were **dormant until now** �
 critic reviews from your **next commit onward** (so the initial commit above is
 intentionally un-gated). Commit the resulting `bun.lock`.
 
-### Step 4 — Native dev (no Docker, no k8s)
+### Step 4 — Configure your environment
 
 ```bash
 cp .env.example .env
+```
+
+Open `.env` and set the values based on your needs:
+
+**Required:**
+
+| Variable | Value | Notes |
+|---|---|---|
+| `CEREBE_API_KEY` | `ck_live_...` or `ck_test_...` | Get one at [cerebe.ai](https://cerebe.ai). **Chat will not work without this.** |
+
+**Database** (pick one):
+
+| Setup | What to set | When to use |
+|---|---|---|
+| Local SQLite (default) | Leave `DATABASE_URL=file:./taxgen.db` as-is | Getting started, single-instance deploys |
+| Remote Turso | `DATABASE_URL=libsql://your-db.turso.io` + `TURSO_AUTH_TOKEN=...` | Horizontal scaling, multi-replica prod |
+
+**Auth — Clerk** (optional, graceful):
+
+| Variable | Value | Notes |
+|---|---|---|
+| `CLERK_SECRET_KEY` | `sk_test_...` | Backend token verification |
+| `VITE_CLERK_PUBLISHABLE_KEY` | `pk_test_...` | Frontend sign-in UI |
+
+Leave **both** blank to run open (unauthenticated) — fine for local dev. Set
+**both** (from [clerk.com](https://clerk.com) dashboard) to gate behind sign-in.
+Recommended before exposing the dashboard to anyone outside your machine.
+
+**Secrets — Doppler** (optional, prod only):
+
+Doppler replaces `.env` in production by injecting secrets at runtime. Not needed
+for local dev. If you want it:
+
+```bash
+doppler login
+doppler setup --project acme-dashboard
+doppler run -- bun run dev             # injects all vars, no .env needed
+```
+
+### Step 5 — Native dev (no Docker, no k8s)
+
+```bash
 bun run dev          # backend :8787 + frontend :5173, both hot-reload
 ```
 
 Open <http://localhost:5173>. This is the whole inner loop — exactly the
 difference from the Sage path, which brings up a k3d cluster here.
 
-### Step 5 — First agent turn
+> **Workspace `.env` wiring.** Bun loads `.env` from the CWD, and `bun run
+> --filter '*' dev` runs each workspace from its own directory (`backend/`,
+> `frontend/`). The template handles this: the backend's dev script passes
+> `--env-file ../.env` so it inherits the root `.env`, and the Vite config sets
+> `envDir: ".."` so the frontend does the same. If you add a new workspace that
+> needs env vars, give it the same treatment — otherwise it won't see the root
+> `.env`.
 
-The agent is **already implemented** — a LangGraph.js `StateGraph` calling Cerebe,
-streamed to the chat UI over SSE. Get a Cerebe API key, set
-`CEREBE_API_KEY` in `.env`, and **send a message in the dashboard chat** — the
-reply streams in token by token. (No key yet? The chat shows a clear
-`authentication_error` — that's the wiring working; add the key.) Background on
-the LangGraph shape is in the template's
+### Step 6 — First agent turn
+
+The agent is **already implemented** — a LangGraph.js ReAct agent calling Cerebe,
+streamed to the chat UI over SSE. If you set `CEREBE_API_KEY` in Step 4, **send a
+message in the dashboard chat** — the reply streams in token by token. The agent
+has two memory tools: `search_memories` (cross-session recall) and `share_memory`
+(save facts for later). Background on the LangGraph shape is in the template's
 [`docs/getting-started.md`](https://github.com/SJBarras/taxgen-template/blob/main/docs/getting-started.md) Step 3.
 *(Prefer raw Anthropic instead? See the template's `docs/notes.md` §4.)*
 
-### Step 6 — First commit hits the local Dark Factory gate
+### Step 7 — First commit hits the local Dark Factory gate
 
 Authenticate at least one critic subscription (above), then:
 
@@ -192,7 +301,7 @@ artifact is bound to the original SHA). Then `git push`; the `pre-push` hook run
 `df gate-push` and lets an APPROVED HEAD through. This is the **same gate** the
 Sage path uses — identical CLI, config shape, and evidence format.
 
-### Step 7 — *(Opt-in)* hosted critic on pull requests
+### Step 8 — *(Opt-in)* hosted critic on pull requests
 
 The local gate is standalone. To add a hosted **Check Run** on PRs, install the
 **Dark Factory GitHub App** and the CI workflow per
@@ -200,7 +309,7 @@ The local gate is standalone. To add a hosted **Check Run** on PRs, install the
 workflow reference, cloud-critic API-key secrets, and a branch ruleset — so it's
 opt-in, not shipped in the template. Add it before multi-author merges.
 
-### Step 8 — *(Optional)* deploy
+### Step 9 — *(Optional)* deploy
 
 Everything container/k8s lives isolated in the template's `deploy/` with its own
 guide — Docker images + a kustomize k8s base, reached only when you choose to
@@ -209,11 +318,13 @@ ship. Nothing there is needed for, or touched by, dev.
 ## What you have now
 
 - A **lean TypeScript product** running natively, no infrastructure
-- A **first agent call** through Cerebe
+- A **first agent call** through Cerebe, with cross-session memory
 - A **first commit + push gated** by the Dark Factory local critic quorum, with
   evidence on disk — the **same gate** as the Sage path
 - An opt-in route to the **hosted critic** and to **deployment**, both isolated
   from your dev loop
+- *(If configured)* **Auth** via Clerk, **secrets** via Doppler, and/or a
+  **remote database** via Turso — all graceful-optional, all wired from the start
 
 ## Where to go next
 
