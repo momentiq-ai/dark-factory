@@ -95,7 +95,7 @@ When working on **any** branch (cycles, features, docs, fixes — everything), *
 
 ## No-human-review posture (mirrors sage3c)
 
-This repo runs under the same Dark Factory ruleset family as sage3c (ruleset `main1` shape — see `.github/rulesets/main.json`). Once applied:
+This repo runs under the same Dark Factory ruleset family as sage3c — the `main1` ruleset, committed at `.github/rulesets/main.json` and **active** on `main`. It enforces:
 
 - `required_approving_review_count: 0`
 - `require_code_owner_review: false`
@@ -110,7 +110,7 @@ gh pr merge --auto --squash
 
 Plan PRs (cycle docs) start as `--draft` and only get auto-merge after `gh pr ready` (so user architectural feedback happens before the queue can admit them). Code PRs enable auto-merge immediately.
 
-> **Note**: the ruleset is committed at `.github/rulesets/main.json` but is NOT yet applied to this repo. Application is a PJ-only org-write action. Until applied, branch protection is whatever the repo defaults to.
+> **Note**: the `main1` ruleset is **active** (`enforcement: active`; the committed `.github/rulesets/main.json` matches the live ruleset). The merge queue is gated on five **required status checks** — `pr-status-check`, `schema-check`, `agent-critic`, `cycle-doc-validation`, `branch-protection-audit` — plus required review-thread resolution and `copilot_code_review`. The hosted `dark-factory/critic` check is **not** required, so its failures do not block the queue. A required check that fails OR cancels (e.g. an `agent-critic` hang past the job timeout — issue #167) blocks the queue until it is re-run. Changing the live ruleset is a PJ-only org-write action.
 
 ## Iteration-trap — N=2 ceiling
 
