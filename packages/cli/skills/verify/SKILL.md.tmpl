@@ -1,0 +1,100 @@
+---
+name: verify
+description: Use to PRODUCE evidence-gated validation-route evidence for a change before pushing — run the change-appropriate verification route(s) (terraform validate, helm lint+template, docker build, the touched service's targeted tests, the UI/Playwright route) and write per-SHA, diffHash-bound QualityGateEvidence the local pre-push gate (df gate-push / enforceVerificationRoutes) asserts. Use when asked to "verify a change", "produce route evidence", a routed push is blocked with verification_route_missing / verification_route_failed, or before pushing a commit that touches a routed surface (infra/terraform, deploy/helm, a Dockerfile, services/*/src, web/** or *.tsx).
+---
+
+# /verify — evidence-gated validation routes
+
+Make "test everything; never assume code works" an **enforced gate**, not a
+prose habit. This skill drives `df verify` (the `@momentiq/dark-factory-cli`
+route-runner) over {{REPO_NAME}}'s armed verification routes: it classifies the
+change by path, runs the change-appropriate producer, and writes per-SHA
+`QualityGateEvidence` to `{{ARTIFACT_DIR}}/quality-gates/<sha>.json` (keyed by
+`routeId` under `gateResults`), stamped with the gated diff hash. The local
+pre-push gate (`df gate-push` → `enforceVerificationRoutes`) reads that artifact
+and **blocks** a routed push whose evidence is missing, failing, or bound to a
+different diff.
+
+## When this runs
+
+`df verify` keys evidence to a **committed** SHA (the gate binds evidence to
+`<sha>` over `parent..sha`), so produce evidence **after** the commit exists. If
+your repo wires `.husky/post-commit` to run `df verify`, evidence is produced
+automatically on every commit. Invoke explicitly when:
+
+- A push is **blocked** with `verification_route_missing` /
+  `verification_route_failed` and you want to (re-)produce evidence for HEAD.
+- You changed a routed path and want the route's verdict **before** committing
+  the final SHA (run it, read the result, fix, re-commit — never amend; evidence
+  binds to the original SHA + diff).
+- You're on a fresh checkout / cloud env and want to confirm the producers run.
+
+## How to run it
+
+```bash
+# Produce evidence for HEAD's armed routes (every route the diff triggers):
+df verify
+
+# Run ONE route's producer directly (filtered to the armed set — a route the
+# diff did not trigger is a no-op):
+df verify --route terraform
+df verify --route playwright
+```
+
+Exit-code contract (uniform across routes):
+
+- **0** — green: producer ran, evidence GREEN (route passes).
+- **1** — block: producer ran, evidence FAILED (a real, change-caused failure —
+  **fix it, do not bypass**), OR a config error (e.g. an un-overridden
+  placeholder command, see below).
+- **2** — soft-skip: a producer's tool is unreachable here (no docker daemon, no
+  browser, a missing storage-state). Recorded as `requiresHumanJudgment`, NOT a
+  pass. Use 2 ONLY for "can't verify on this host", never to wave through a real
+  failure.
+
+## ⚠️ Arm your routes — the default commands are placeholders
+
+`df verify` is the route **orchestrator**, not a per-route producer. The default
+route table ships each route's `command` as the **non-executable placeholder**
+`df verify --route <id>`. You **MUST override** each armed route's `command` in
+`.agent-review/config.json` with your toolchain's real producer — otherwise
+`df verify` fails fast (`route "<id>" still has the placeholder command …`)
+rather than recurse. For example:
+
+```jsonc
+// .agent-review/config.json → validation.verificationRoutes[]
+{ "id": "terraform",  "trigger": ["infra/terraform/**"], "command": "bash scripts/verify/terraform-route.sh", ... }
+{ "id": "playwright", "trigger": ["web/**", "**/*.tsx"],   "command": "bash scripts/verify/playwright-route.sh", ... }
+```
+
+## Reading / confirming the evidence
+
+```bash
+# The per-SHA artifact the gate reads:
+cat "{{ARTIFACT_DIR}}/quality-gates/$(git rev-parse HEAD).json"
+```
+
+`gateResults["<routeId>"].exitCode === 0` for every armed route ⇒ the route gate
+is green. The evidence also carries a `diffHash` bound to the gated diff; a
+later push that changes the diff invalidates stale evidence (the gate blocks
+until you re-run `df verify`).
+
+## Soft-skip vs bypass
+
+A soft-skip (exit 2) is the sanctioned path when a producer's tool is absent —
+it is recorded in the evidence, not a bypass. `AGENT_REVIEW_BYPASS` is a
+different, louder, audited thing reserved for the emergencies your `CLAUDE.md`
+enumerates; **a real route failure (exit 1) is never a bypass candidate** — it
+means the change broke something the route checks. Fix it and re-commit.
+
+## UI / Playwright route (web/** + *.tsx)
+
+A change touching `web/**` or any `*.tsx` arms the `playwright` route — UI-layer
+evidence (an ARIA snapshot + before/after screenshots, bound to the gated SHA).
+{{REPO_NAME}} does **not** hand-roll this: a **reusable producer** ships with the
+CLI. Copy the reference files from the `@momentiq/dark-factory-cli` package
+(`skills/verify/producer/`: `playwright-route.sh`, `playwright.ui-route.config.ts`,
+`ui-route.producer.spec.ts`, `coverage.ts`), edit `SURFACES[]` for your app
+(routes + required headings), wire an optional auth storage-state for protected
+surfaces, and arm the `playwright` route's `command`. The full walkthrough is in
+`docs/guides/ui-verification-route.md`.

@@ -1,0 +1,22 @@
+{
+  "$schema": "../skill-schema.json",
+  "name": "verify",
+  "version": "1.0.0",
+  "summary": "Produce evidence-gated validation-route evidence for a change before pushing — drive `df verify` over the armed verification routes (terraform/helm/docker/targeted-test/UI), writing per-SHA, diffHash-bound QualityGateEvidence the local pre-push gate asserts.",
+  "originatingRepo": "momentiq-ai/dark-factory-platform",
+  "files": [
+    { "template": "SKILL.md.tmpl", "target": "SKILL.md" }
+  ],
+  "variables": {
+    "REPO_NAME": {
+      "description": "Display name of the consumer repo (e.g. 'Dark Factory Platform').",
+      "source": "darkfactory.yaml: repo.displayName",
+      "default": "this repo"
+    },
+    "ARTIFACT_DIR": {
+      "description": "Display path to the per-SHA quality-gate artifact dir (where `<sha>.json` evidence lands), used in the skill's example commands. The real value is resolved at runtime from .agent-review/config.json:git.artifactDir under the git common dir; this is the default for the docs.",
+      "source": "fixed default (the canonical .agent-review/config.json: git.artifactDir resolution)",
+      "default": ".git/agent-reviews"
+    }
+  }
+}

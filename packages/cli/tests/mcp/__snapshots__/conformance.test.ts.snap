@@ -1512,7 +1512,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
         "openWorldHint": false,
         "readOnlyHint": false,
       },
-      "description": "Render + install one (or all) bundled skill(s) into the consumer repo's .claude/skills/<name>/ directory. The skill body templates are rendered against the consumer's darkfactory.yaml (with sensible defaults when keys are absent). The rendered files carry a GENERATED header — a re-install with the same inputs is a no-op; a re-install with different inputs overwrites; a re-install where the rendered file has been hand-edited is SKIPPED unless force=true. Bundled skills: chief-engineer-review, chief-engineer-blitz.",
+      "description": "Render + install one (or all) bundled skill(s) into the consumer repo's .claude/skills/<name>/ directory. The skill body templates are rendered against the consumer's darkfactory.yaml (with sensible defaults when keys are absent). The rendered files carry a GENERATED header — a re-install with the same inputs is a no-op; a re-install with different inputs overwrites; a re-install where the rendered file has been hand-edited is SKIPPED unless force=true. Bundled skills: chief-engineer-review, chief-engineer-blitz, verify.",
       "inputSchema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "additionalProperties": false,
@@ -1526,7 +1526,7 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
             "type": "boolean",
           },
           "skillName": {
-            "description": "Skill name to install. Required unless 'all' is true. One of: chief-engineer-review, chief-engineer-blitz.",
+            "description": "Skill name to install. Required unless 'all' is true. One of: chief-engineer-review, chief-engineer-blitz, verify.",
             "minLength": 1,
             "type": "string",
           },

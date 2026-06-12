@@ -1066,6 +1066,35 @@ sed -i 's/Your Repo/Production Repo/' darkfactory.yaml
 ./node_modules/.bin/df skills install --all     # action=updated
 ```
 
+## 13.6 The `verify` skill + the reusable UI (Playwright) route producer (dark-factory#193)
+
+`df skills install verify` adds the `/verify` skill — the agent-facing doctrine
+for driving `df verify` over your armed verification routes (see §5.6 for the
+routes + `df verify` themselves). It renders consumer-agnostic, so a fresh repo
+gets the orchestration playbook with no hand-rolling.
+
+The skill bundles a **reusable Playwright (UI) route producer** for the
+`web/**` / `*.tsx` → `playwright` route — the UI-layer half of evidence-gated
+validation (an ARIA snapshot + before/after screenshots bound to the gated SHA),
+generalized from the `dark-factory-dashboard` dogfood. Unlike the skill (which is
+render-and-marker, don't-hand-edit), the producer is **copy-once-and-own**: it
+ships as reference files at
+`node_modules/@momentiq/dark-factory-cli/skills/verify/producer/`
+(`playwright-route.sh`, `playwright.ui-route.config.ts`,
+`ui-route.producer.spec.ts`, `coverage.ts`) that you copy into your repo and own
+— `df skills install verify` never overwrites them, because you must edit the
+surface list (`SURFACES[]`) and wire your own auth.
+
+**Auth is consumer-supplied, not vendor-coupled.** Public surfaces need none; for
+protected surfaces, mint an authenticated Playwright `storageState` JSON with
+your own auth (Clerk/Auth0/bot login) and point `DF_UI_ROUTE_STORAGE_STATE` at
+it. The producer only consumes the storage-state.
+
+"No hand-rolled scripts" still holds — the harness ships; only the irreducible
+app-specific surface list + auth are yours. The full walkthrough (setup, the
+fail-closed coverage + SHA/clean-tree guards, the 0/1/2 contract, v1 limitations)
+is in [`docs/guides/ui-verification-route.md`](guides/ui-verification-route.md).
+
 ## 14. Session continuity — the agent handoff protocol (Cycle 12 Issue-anchor)
 
 `@momentiq/dark-factory-cli` ships four verbs that carry an

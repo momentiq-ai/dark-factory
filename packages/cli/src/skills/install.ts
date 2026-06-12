@@ -51,6 +51,7 @@ import {
 export const KNOWN_SKILLS: ReadonlyArray<string> = [
   "chief-engineer-review",
   "chief-engineer-blitz",
+  "verify",
 ];
 
 /**
