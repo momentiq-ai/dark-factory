@@ -1,6 +1,6 @@
 {
   "name": "@momentiq/dark-factory-cli",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "Dark Factory OSS CLI — multi-vendor adversarial critic orchestration (Cursor, Codex, Gemini, Grok) with min-complete-quorum aggregation and trusted-surface rebind",
   "license": "Apache-2.0",
   "homepage": "https://momentiq.ai/dark-factory",
@@ -98,7 +98,7 @@
     "@google/genai": "^2.2.0",
     "@iarna/toml": "2.2.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@momentiq/dark-factory-schemas": "0.7.0",
+    "@momentiq/dark-factory-schemas": "0.8.0",
     "@openai/codex-sdk": "^0.130.0",
     "@yarnpkg/lockfile": "1.1.0",
     "ajv": "^8.20.0",

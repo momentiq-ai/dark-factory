@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.6.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.5.0...dark-factory-cli-v2.6.0) (2026-06-12)
+
+
+### Features
+
+* **cli:** graduate verification-route runner to `df verify` + enforce diffHash content-binding ([#195](https://github.com/momentiq-ai/dark-factory/issues/195)) ([18a7990](https://github.com/momentiq-ai/dark-factory/commit/18a79901150f8b7143382cab6ee1b5fc7e5a7e77)), closes [#192](https://github.com/momentiq-ai/dark-factory/issues/192) [#194](https://github.com/momentiq-ai/dark-factory/issues/194)
+* **skills:** graduate the `verify` skill + reusable Playwright (UI) route producer ([#196](https://github.com/momentiq-ai/dark-factory/issues/196)) ([92ba7f6](https://github.com/momentiq-ai/dark-factory/commit/92ba7f6941af710a7210b06d182b9b25fcd564c6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.7.0 to 0.8.0
+
 ## [2.5.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.4.0...dark-factory-cli-v2.5.0) (2026-06-10)
 
 

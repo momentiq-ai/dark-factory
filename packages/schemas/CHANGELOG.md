@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.7.0...dark-factory-schemas-v0.8.0) (2026-06-12)
+
+
+### Features
+
+* **cli:** graduate verification-route runner to `df verify` + enforce diffHash content-binding ([#195](https://github.com/momentiq-ai/dark-factory/issues/195)) ([18a7990](https://github.com/momentiq-ai/dark-factory/commit/18a79901150f8b7143382cab6ee1b5fc7e5a7e77)), closes [#192](https://github.com/momentiq-ai/dark-factory/issues/192) [#194](https://github.com/momentiq-ai/dark-factory/issues/194)
+
 ## [0.7.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.6.1...dark-factory-schemas-v0.7.0) (2026-06-08)
 
 
