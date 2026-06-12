@@ -99,10 +99,11 @@ import {
   resolveCommit,
   commitParent,
   changedFiles,
+  commitDiff,
+  diffHash,
 } from "./git.js";
 import { runQualityGates } from "./evidence/quality-gates.js";
-import { matchAnyGlob } from "./glob.js";
-import { collectChangedPaths } from "./evidence/index.js";
+import { collectChangedPaths, runRoutes } from "./evidence/index.js";
 import { summarizeGate } from "./policy/gate.js";
 // Cycle 5 Phase 1 — `df mcp` stdio MCP server. The mcp/ module is kept
 // out of cli.ts because its lifecycle (long-running stdio transport,
@@ -119,6 +120,11 @@ import { cmdSkills } from "./commands/skills.js";
 import { cmdFlow } from "./commands/flow/index.js";
 import { cmdShow } from "./commands/show.js";
 import { cmdStatus } from "./commands/status.js";
+// Cycle 22 (momentiq-ai/dark-factory#192) — `df verify` graduates the
+// route-runner library (runRoutes) to a first-class subcommand: arm the
+// verification routes for a commit's diff, run each route's producer, and
+// write diffHash-bound per-SHA evidence the gate can re-validate (#194).
+import { cmdVerify } from "./commands/verify.js";
 // Cycle 13 (dark-factory-platform#149) — `df findings --range` surfaces
 // the per-commit iteration-receipt artifacts that the new (default)
 // final-commit-only `df gate-push` semantic leaves un-gated. See
@@ -201,6 +207,12 @@ function printHelp(meta: PackageMeta): void {
       "                              un-gated (Cycle 13). NOT a gate.",
       "  df gates                    Run configured quality gates and",
       "                              triggered verification routes.",
+      "  df verify                   Run the armed verification routes for a",
+      "                              commit's diff and write diffHash-bound",
+      "                              per-SHA evidence the gate re-validates.",
+      "                              --route <id> runs one route. The route",
+      "                              ORCHESTRATOR (wraps runRoutes); consumers",
+      "                              override each route's placeholder command.",
       "  df stats                    Pretty-print critic call stats + bypass",
       "                              audit (alias for `df audit stats`).",
       "  df doctor                   Verify env: node, hooks, artifact dir,",
@@ -419,6 +431,11 @@ const SKILLS_SUBCOMMANDS = new Set(["skills"]);
 // here so `df onboard --help` reaches cmdOnboardCli's per-subcommand help
 // printer instead of falling through to the top-level printHelp.
 const ONBOARD_SUBCOMMANDS = new Set(["onboard"]);
+
+// `df verify` — cycle 22 (#192) route-runner orchestrator. Registered here so
+// `df verify --help` reaches cmdVerify's own help printer instead of the
+// top-level printHelp.
+const VERIFY_SUBCOMMANDS = new Set(["verify"]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // pr-status-check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -1332,8 +1349,11 @@ async function cmdGates(rest: string[]): Promise<number> {
         "Usage:",
         "  df gates [--commit HEAD] [--route ROUTE_ID]",
         "",
-        "Runs static gates from .agent-review/config.json:validation. Writes",
-        "per-SHA evidence. No LLM calls — this subcommand is free.",
+        "Runs static gates from .agent-review/config.json:validation, then the",
+        "verification routes the commit's diff arms (via the same `runRoutes`",
+        "orchestrator as `df verify`). Writes per-SHA evidence stamped with the",
+        "gated diff hash so `df gate-push` re-validates it (#194). No LLM calls",
+        "— this subcommand is free.",
         "",
       ].join("\n"),
     );
@@ -1359,25 +1379,51 @@ async function cmdGates(rest: string[]): Promise<number> {
     }
   }
 
-  const triggered = await triggeredRoutesForCommit(loaded, sha);
+  // Verification routes — delegate to the same `runRoutes` orchestrator that
+  // backs `df verify` (#192). This gives `df gates` the SAME route semantics
+  // as the gate it feeds: the additive planner + exclusive-route suppression,
+  // the 0/1/2 outcome classification, AND — load-bearing after #194 — the
+  // diffHash stamp. Without the stamp, df gates' route evidence would be
+  // SHA-only and `df gate-push` would now reject it as unbound (the two
+  // surfaces must produce gate-compatible evidence). An un-overridden
+  // `df verify` placeholder command surfaces as a thrown recursion-guard
+  // error, caught here as a failure.
   let routeFailures = 0;
   let routeRun = 0;
-  for (const route of triggered) {
-    if (routeFilter && route.id !== routeFilter) continue;
-    if (!route.command) continue;
-    routeRun++;
-    const evidence = await runQualityGates({
+  try {
+    let parent = "";
+    try {
+      parent = await commitParent(sha);
+    } catch {
+      parent = "";
+    }
+    const files = await changedFiles(parent, sha, undefined, { readContent: false });
+    let gatedDiffHash: string | undefined;
+    try {
+      gatedDiffHash = diffHash(await commitDiff(parent, sha));
+    } catch {
+      gatedDiffHash = undefined;
+    }
+    const summary = await runRoutes({
       loaded,
       commit: sha,
-      commands: [route.command],
-      routeId: route.id,
+      changedPaths: collectChangedPaths(files),
+      ...(gatedDiffHash !== undefined ? { diffHash: gatedDiffHash } : {}),
+      ...(routeFilter !== null ? { routeFilter } : {}),
     });
-    const result = evidence.gateResults?.[route.id];
-    const exit = result?.exitCode ?? -1;
-    if (exit !== 0) routeFailures++;
-    process.stdout.write(
-      `  ${exit === 0 ? "PASS" : "FAIL"} route[${route.id}] (${route.command}) exit=${exit}\n`,
-    );
+    routeRun = summary.ran.length;
+    for (const r of summary.ran) {
+      // Preserve df gates' historical exit contract: any non-green ran route
+      // (block OR soft-skip) counts as a failure. (df verify maps soft-skip
+      // to exit 2; df gates keeps its simpler pass/fail tally.)
+      if (r.outcome !== "green") routeFailures++;
+      process.stdout.write(
+        `  ${r.outcome === "green" ? "PASS" : "FAIL"} route[${r.routeId}] (${r.command}) exit=${r.exitCode}\n`,
+      );
+    }
+  } catch (err) {
+    process.stderr.write(`df gates: ${(err as Error).message}\n`);
+    return 1;
   }
 
   const totalRun = requiredRun + routeRun;
@@ -1386,25 +1432,6 @@ async function cmdGates(rest: string[]): Promise<number> {
     `df gates: ${totalRun} run, ${totalFail} failed${routeFilter ? ` (filter=route:${routeFilter})` : ""}\n`,
   );
   return totalFail === 0 ? 0 : 1;
-}
-
-async function triggeredRoutesForCommit(
-  loaded: LoadedConfig,
-  sha: string,
-): Promise<ReadonlyArray<{ id: string; command: string | null }>> {
-  const routes = loaded.config.validation.verificationRoutes ?? [];
-  if (routes.length === 0) return [];
-  let parent = "";
-  try {
-    parent = await commitParent(sha);
-  } catch {
-    parent = "";
-  }
-  const files = await changedFiles(parent, sha, undefined, {
-    readContent: false,
-  });
-  const paths = collectChangedPaths(files);
-  return routes.filter((r) => paths.some((p) => matchAnyGlob(p, r.trigger)));
 }
 
 // ----- df stats -----
@@ -2078,7 +2105,8 @@ async function main(argv: string[]): Promise<number> {
       !CYCLE11_SUBCOMMANDS.has(sub0) &&
       !SHOW_STATUS_SUBCOMMANDS.has(sub0) &&
       !SKILLS_SUBCOMMANDS.has(sub0) &&
-      !ONBOARD_SUBCOMMANDS.has(sub0)
+      !ONBOARD_SUBCOMMANDS.has(sub0) &&
+      !VERIFY_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -2118,6 +2146,15 @@ async function main(argv: string[]): Promise<number> {
   }
   if (sub === "gates") {
     return await cmdGates(rest);
+  }
+  // Cycle 22 (#192) — `df verify` route-runner orchestrator. Wraps runRoutes:
+  // arms the routes for the commit's diff, runs each producer, writes
+  // diffHash-bound evidence, and maps the 0/1/2 route contract to its exit.
+  if (sub === "verify") {
+    return await cmdVerify(rest, {
+      stdout: (s) => process.stdout.write(s),
+      stderr: (s) => process.stderr.write(s),
+    });
   }
   if (sub === "stats") {
     return await cmdStats(rest);

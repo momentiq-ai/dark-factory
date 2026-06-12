@@ -1242,18 +1242,27 @@ export async function enforceVerificationRoutes(
   const evidence = await readPerShaEvidence(loaded, sha);
   const perRoute: RouteResult[] = [];
 
-  // Cycle 21 (momentiq-ai/dark-factory#186) — diff-hash content binding.
-  // When the caller supplies the gated diff hash AND the evidence carries
-  // its own `diffHash`, a mismatch means the evidence was produced for the
-  // same SHA under a DIFFERENT diff (re-staged stale evidence). Treat the
-  // whole evidence file as invalid for route enforcement — every active
-  // command route fails closed, like missing/failing evidence. SHA-only
-  // evidence (no `diffHash` on the file) preserves the pre-#186 binding so
-  // existing producers keep passing until they stamp the field.
-  const diffHashMismatch =
-    options.diffHash !== undefined &&
-    evidence?.diffHash !== undefined &&
-    evidence.diffHash !== options.diffHash;
+  // Cycle 21/22 (momentiq-ai/dark-factory#186 + #194) — diff-hash content
+  // binding. The binding is ACTIVE iff the caller supplies the gated
+  // `diffHash`. The push gate (runner.ts) always supplies it; a caller that
+  // wants SHA-only binding simply omits it. When active, the per-SHA evidence
+  // file MUST carry a `diffHash` that matches the gated diff:
+  //   - #186 shipped the STALE check  — evidence has a `diffHash` that differs
+  //     (same SHA, re-staged under a DIFFERENT diff).
+  //   - #194 adds the ABSENT check    — evidence has NO `diffHash` at all.
+  //     This closes the gaming hole where STRIPPING the field bypassed
+  //     content-binding, and is the residual teeth of Cycle 21 EC7. It
+  //     REVOKES the pre-#194 permissive behavior for SHA-only evidence: a
+  //     producer that does not stamp the field can no longer satisfy a
+  //     content-bound gate (adopt `df verify`, which stamps it).
+  // Both collapse to one "binding unsatisfied" condition, evaluated per active
+  // command route AFTER the missing-evidence check — so a route with no
+  // evidence at all surfaces the precise `missing` diagnostic ("run the
+  // route"), not a binding failure.
+  const bindingActive = options.diffHash !== undefined;
+  const diffHashUnsatisfied =
+    bindingActive &&
+    (evidence?.diffHash === undefined || evidence.diffHash !== options.diffHash);
 
   for (const route of active) {
     if (route.command === null) {
@@ -1267,20 +1276,24 @@ export async function enforceVerificationRoutes(
       });
       continue;
     }
-    if (diffHashMismatch) {
-      perRoute.push({
-        routeId: route.id,
-        status: "failed",
-        detail: `route "${route.id}" evidence is stale: evidence diffHash ${evidence?.diffHash} != gated diff ${options.diffHash} (same SHA, different diff — re-run the route against the current diff)`,
-      });
-      continue;
-    }
     const gateResult = evidence?.gateResults?.[route.id];
     if (!gateResult) {
       perRoute.push({
         routeId: route.id,
         status: "missing",
-        detail: `no evidence at agent-reviews/quality-gates/${sha}.json for route "${route.id}"; run \`agent-review gates --route ${route.id}\` or \`${route.command}\` followed by \`agent-review gates --commit ${sha.slice(0, 12)}\``,
+        detail: `no evidence at agent-reviews/quality-gates/${sha}.json for route "${route.id}"; run \`df verify --route ${route.id}\` (or the consumer's override of that command)`,
+      });
+      continue;
+    }
+    if (diffHashUnsatisfied) {
+      const why =
+        evidence?.diffHash === undefined
+          ? "evidence carries no diffHash (SHA-only) but content-binding is required"
+          : `evidence diffHash ${evidence.diffHash} != gated diff ${options.diffHash} (same SHA, different diff)`;
+      perRoute.push({
+        routeId: route.id,
+        status: "failed",
+        detail: `route "${route.id}" evidence is unbound/stale: ${why} — re-run \`df verify --route ${route.id}\` against the current diff`,
       });
       continue;
     }

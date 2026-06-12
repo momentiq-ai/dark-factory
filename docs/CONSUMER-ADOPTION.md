@@ -323,6 +323,44 @@ Critic adapter sandboxes (local + W3 hosted) cannot reach a Docker daemon socket
 
 The shim itself is consumer-side — the dark-factory CLI only consumes the evidence. The DFP-side shim spec (and a reference implementation) lives at `dark-factory-platform#141`.
 
+## 5.6 Verification routes + `df verify` — generalized per-change evidence gating (Cycle 21/22)
+
+§5.5's Docker shim is one instance of a general pattern: a change to a sensitive surface (a Dockerfile, a Terraform plan, a UI component, a DB migration) requires *out-of-band evidence* that the critic cannot produce itself. **Verification routes** generalize it. A route is `{ trigger (path globs), command (the producer), evidencePath }`; when a commit's diff matches a route's `trigger`, the gate requires per-SHA evidence that the route's producer ran cleanly.
+
+**`df verify` is the producer.** It graduated from a library (`runRoutes`) to a first-class subcommand in CLI 2.6.0 (`dark-factory#192`), so every consumer gets it for free instead of hand-rolling a runner:
+
+```bash
+# Run every route the commit's diff arms; write per-SHA evidence.
+df verify
+
+# Run one route (filtered to the armed set — an untriggered route is a no-op).
+df verify --route playwright
+
+# Exit codes: 0 = all green · 1 = a route blocked (or a config error) · 2 = a route soft-skipped (tool unreachable)
+```
+
+`df verify` arms the routes (the same set `df gate-push` enforces), runs each route's producer, and writes evidence to `<artifact-dir>/quality-gates/<sha>.json`. `df gates` produces the same evidence (plus the static `requiredQualityGates`); both share one orchestrator, so they cannot drift.
+
+**`df verify` is the ORCHESTRATOR, not a per-route producer — you MUST override each route's `command`.** The default route table (`DEFAULT_VERIFICATION_ROUTES`) ships each route's `command` as the **non-executable placeholder** `df verify --route <id>`. That string names the *intent* (which `evidenceKind` to produce), not a runnable command: if the orchestrator spawned it, `df verify` would re-invoke itself forever. So in your `.agent-review/config.json`, override each armed route's `command` with your toolchain's real producer:
+
+```jsonc
+// .agent-review/config.json → validation.verificationRoutes[]
+{
+  "id": "terraform",
+  "trigger": ["infra/terraform/**"],
+  "command": "bash scripts/verify/terraform-route.sh",  // ← YOUR producer, not the placeholder
+  "evidencePath": "agent-reviews/quality-gates/${sha}.json",
+  "category": "infra",
+  "evidenceKind": "terraform"
+}
+```
+
+Running an un-overridden placeholder fails fast with an actionable error (`route "<id>" still has the placeholder command …`) — `df verify` never recurses. (The reusable Playwright/UI-route producer is `dark-factory#193`; for other `evidenceKind`s you supply the producer.)
+
+**Content binding — evidence is bound to the diff, not just the SHA (`dark-factory#194`, Cycle 21 EC7).** `df verify` / `df gates` stamp the gated diff's hash onto the evidence, and `df gate-push` re-validates it: the same SHA re-staged under a *different* diff (or evidence with the diffHash stripped) no longer satisfies the gate.
+
+> ⚠️ **Breaking for SHA-only producers (CLI ≥ 2.6.0).** Before #194, route evidence that carried no `diffHash` was accepted (SHA-only binding). It is now **rejected** as unbound when the gate runs content-binding (which `df gate-push` always does). If you arm command routes with a hand-rolled producer, that producer **must stamp the gated `diffHash`** — the simplest fix is to drive routes through `df verify` (or `df gates`), which stamp it for you. Repos that arm only the `docs-only` suppression route (no command routes) are unaffected. (Limitation: a transient `git` error at gate time leaves the diff hash uncomputable, in which case binding falls back to SHA-only for that commit rather than failing the push.)
+
 ## 6. `.agent-review/config.json` — scope to your repo's source layout
 
 Copy the [dark-factory canonical config](../.agent-review/config.json) into your repo and adjust three things:

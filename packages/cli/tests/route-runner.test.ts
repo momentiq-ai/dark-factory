@@ -175,3 +175,82 @@ describe("runRoutes — generalized evidence producer (#185)", () => {
     expect(summary.suppressedBy).toBe("docs-only");
   });
 });
+
+// Cycle 22 (momentiq-ai/dark-factory#192) — the `df verify --route <id>`
+// filter + the recursion guard that graduates the producer to a first-class
+// subcommand. `routeFilter` narrows the ARMED set (not the raw table), so
+// `df verify --route X` stays consistent with the no-arg run + the gate.
+describe("runRoutes — --route filter + recursion guard (#192)", () => {
+  it("routeFilter narrows the armed set to the named route", async () => {
+    const repo = await setupRepo([
+      route("a", "true", ["a/**"]),
+      route("b", "true", ["b/**"]),
+    ]);
+    const summary = await runRoutes({
+      loaded: repo.loaded,
+      commit: repo.sha,
+      changedPaths: ["a/x", "b/y"], // arms a + b
+      routeFilter: "a",
+    });
+    expect(summary.ran.map((r) => r.routeId)).toEqual(["a"]);
+    const { evidence } = await readQualityGateEvidence(repo.loaded, repo.sha);
+    expect(evidence?.gateResults?.["a"]?.exitCode).toBe(0);
+    expect(evidence?.gateResults?.["b"]).toBeUndefined();
+  });
+
+  it("routeFilter for a route the diff did NOT trigger runs nothing (filter-the-armed-set)", async () => {
+    const repo = await setupRepo([
+      route("a", "true", ["a/**"]),
+      route("b", "true", ["b/**"]),
+    ]);
+    const summary = await runRoutes({
+      loaded: repo.loaded,
+      commit: repo.sha,
+      changedPaths: ["a/x"], // arms a only; b not triggered
+      routeFilter: "b",
+    });
+    expect(summary.ran).toHaveLength(0);
+  });
+
+  it("THROWS on an active route whose command is an un-overridden `df verify` placeholder", async () => {
+    const repo = await setupRepo([
+      route("playwright", "df verify --route playwright", ["**/*"]),
+    ]);
+    await expect(
+      runRoutes({
+        loaded: repo.loaded,
+        commit: repo.sha,
+        changedPaths: ["web/app.tsx"],
+      }),
+    ).rejects.toThrow(/placeholder command/i);
+  });
+
+  it("recursion guard also fires under a routeFilter targeting the placeholder route", async () => {
+    const repo = await setupRepo([
+      route("playwright", "df verify --route playwright", ["**/*"]),
+      route("ok", "true", ["**/*"]),
+    ]);
+    await expect(
+      runRoutes({
+        loaded: repo.loaded,
+        commit: repo.sha,
+        changedPaths: ["web/app.tsx"],
+        routeFilter: "playwright",
+      }),
+    ).rejects.toThrow(/playwright/);
+  });
+
+  it("recursion guard does NOT fire for an un-triggered placeholder route (nothing would run)", async () => {
+    const repo = await setupRepo([
+      route("playwright", "df verify --route playwright", ["web/**"]),
+      route("ok", "true", ["**/*"]),
+    ]);
+    // change does not touch web/** → playwright not armed → guard must not trip
+    const summary = await runRoutes({
+      loaded: repo.loaded,
+      commit: repo.sha,
+      changedPaths: ["src/x.ts"],
+    });
+    expect(summary.ran.map((r) => r.routeId)).toEqual(["ok"]);
+  });
+});

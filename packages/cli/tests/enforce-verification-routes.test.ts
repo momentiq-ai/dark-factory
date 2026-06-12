@@ -4,11 +4,14 @@
 //   - #184 — it enforces the PLANNED set (table floor ∪ additive planner),
 //     so a planner addition is gated even when the table did not arm it.
 //   - #186 — it rejects per-SHA evidence whose `diffHash` does not match
-//     the gated diff (stale-evidence binding), while preserving SHA-only
-//     binding for evidence that carries no `diffHash` (back-compat).
+//     the gated diff (stale-evidence binding).
+//   - #194 — once the gate runs content-binding (a `diffHash` is supplied),
+//     evidence that carries NO `diffHash` is ALSO rejected (the absent-field
+//     gaming hole is closed; Cycle 21 EC7 teeth). SHA-only binding survives
+//     only when the GATE supplies no `diffHash` (the caller opts out).
 //
 // These tests do NOT alter `enforceVerificationRoutes`' existing pass/fail
-// behavior for existing configs (no planner, no diffHash) — the existing
+// behavior for existing configs (no planner, no gate diffHash) — the existing
 // gate.test.ts suite still covers that path unchanged.
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
@@ -168,11 +171,15 @@ describe("enforceVerificationRoutes — diffHash content binding (#186)", () => 
     expect(result.perRoute.find((r) => r.routeId === "terraform")?.status).toBe("ok");
   });
 
-  it("BACK-COMPAT: SHA-only evidence (no diffHash) still passes when a diffHash is supplied", async () => {
+  it("#194: SHA-only evidence (no diffHash) is now FAILED when a gate diffHash is supplied (content-binding teeth)", async () => {
     const repo = await setupRepo([TF]);
-    // Evidence carries NO diffHash (the pre-#186 shape). Supplying a gate
-    // diffHash must NOT retroactively reject it — the binding is opt-in
-    // until the producer stamps the field.
+    // Evidence carries NO diffHash (the pre-#194 shape). #194 REVOKES the
+    // prior permissive behavior: once the gate runs content-binding (a
+    // diffHash is supplied — runner.ts always does), evidence that cannot
+    // prove it was produced for THIS diff can no longer satisfy the route.
+    // This closes the gaming hole where stripping the field bypassed the
+    // same-SHA/different-diff binding; SHA-only producers must adopt the
+    // diffHash-stamping producer (`df verify`).
     await writeEvidence(repo, { gateResults: { terraform: { exitCode: 0 } } });
     const result = await enforceVerificationRoutes({
       loaded: repo.loaded,
@@ -180,7 +187,31 @@ describe("enforceVerificationRoutes — diffHash content binding (#186)", () => 
       changedPaths: ["infra/terraform/main.tf"],
       diffHash: "sha256:FRESH",
     });
-    expect(result.perRoute.find((r) => r.routeId === "terraform")?.status).toBe("ok");
+    const tf = result.perRoute.find((r) => r.routeId === "terraform");
+    expect(tf?.status).toBe("failed");
+    expect(tf?.detail).toMatch(/diff/i);
+  });
+
+  it("#194: missing-before-diffHash — a no-evidence route is `missing`, a route WITH evidence on a SHA-only file is diffHash-`failed`", async () => {
+    const repo = await setupRepo([TF]);
+    // SHA-only evidence file (no diffHash). The planner adds a SECOND route
+    // (`generated-artifact`) whose evidence is absent. Under content-binding:
+    //   - terraform HAS evidence but the file is unbound  → failed (the teeth)
+    //   - generated-artifact has NO evidence              → missing wins, so
+    //     the operator is told to RUN the route (precise diagnostic), not
+    //     that its (absent) evidence is stale.
+    await writeEvidence(repo, { gateResults: { terraform: { exitCode: 0 } } });
+    const result = await enforceVerificationRoutes({
+      loaded: repo.loaded,
+      sha: repo.sha,
+      changedPaths: ["infra/terraform/main.tf"],
+      diffHash: "sha256:FRESH",
+      planner: () => [EXTRA],
+    });
+    expect(result.perRoute.find((r) => r.routeId === "terraform")?.status).toBe("failed");
+    expect(result.perRoute.find((r) => r.routeId === "generated-artifact")?.status).toBe(
+      "missing",
+    );
   });
 
   it("BACK-COMPAT: no gate diffHash supplied → diffHash on evidence is ignored (SHA-only binding)", async () => {

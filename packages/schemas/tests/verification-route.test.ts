@@ -10,6 +10,9 @@ import {
   DEFAULT_VERIFICATION_ROUTES,
   EVIDENCE_KINDS,
   SchemaError,
+  VERIFY_CLI_COMMAND,
+  defaultRouteVerifyCommand,
+  isVerifyRouteCommand,
   parseAgentReviewConfig,
   type EvidenceKind,
   type VerificationRoute,
@@ -182,5 +185,49 @@ describe("DEFAULT_VERIFICATION_ROUTES canonical table (#185)", () => {
     expect(pw).toBeDefined();
     expect(pw!.trigger).toContain("web/**");
     expect(pw!.trigger.some((t) => t.includes("*.tsx"))).toBe(true);
+  });
+});
+
+// Cycle 22 (momentiq-ai/dark-factory#192) — the default route table ships
+// each command route's `command` as the `df verify --route <id>`
+// placeholder, and the route-runner's recursion guard refuses to spawn a
+// command that re-invokes the `df verify` orchestrator. Both the table and
+// the guard reference the SAME helpers (`defaultRouteVerifyCommand` /
+// `isVerifyRouteCommand`); this drift test pins them so a rename of the
+// subcommand can't silently desync the shipped placeholders from the guard.
+describe("df verify command-string drift (#192)", () => {
+  const commandRoutes = DEFAULT_VERIFICATION_ROUTES.filter(
+    (r) => r.command !== null,
+  );
+
+  it("ships every command route as the canonical `df verify --route <id>` placeholder", () => {
+    expect(commandRoutes.length).toBeGreaterThan(0);
+    for (const route of commandRoutes) {
+      expect(route.command).toBe(defaultRouteVerifyCommand(route.id));
+    }
+  });
+
+  it("recognizes every shipped command route as a `df verify` invocation (the recursion-guard contract)", () => {
+    for (const route of commandRoutes) {
+      expect(isVerifyRouteCommand(route.command as string)).toBe(true);
+    }
+  });
+
+  it("defaultRouteVerifyCommand composes the constant + route id", () => {
+    expect(defaultRouteVerifyCommand("terraform")).toBe("df verify --route terraform");
+    expect(defaultRouteVerifyCommand("terraform").startsWith(VERIFY_CLI_COMMAND)).toBe(true);
+  });
+
+  it("isVerifyRouteCommand does NOT flag a real per-route producer (no false-positive guard trip)", () => {
+    // The documented consumer override shape (DFP's df-verify-route.sh) and
+    // other real producers must NOT be mistaken for the placeholder.
+    expect(isVerifyRouteCommand("bash scripts/df-verify-route.sh terraform")).toBe(false);
+    expect(isVerifyRouteCommand("terraform plan -no-color")).toBe(false);
+    expect(isVerifyRouteCommand("npm run verify:ui")).toBe(false);
+  });
+
+  it("isVerifyRouteCommand tolerates leading whitespace and the bare `df verify` form", () => {
+    expect(isVerifyRouteCommand("  df verify --route docker")).toBe(true);
+    expect(isVerifyRouteCommand("df verify")).toBe(true);
   });
 });

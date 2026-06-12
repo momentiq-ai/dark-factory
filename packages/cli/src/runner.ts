@@ -689,13 +689,18 @@ export async function runCommitGate(options: GateRunOptions): Promise<GateResult
     try {
       const parent = await safeParent(sha, cwd);
       const files = await changedFiles(parent, sha, cwd, { readContent: false });
-      // Cycle 21 (#186) — compute the gated diff hash over the same
+      // Cycle 21/22 (#186 + #194) — compute the gated diff hash over the same
       // parent..sha range the routes are evaluated against, and thread it
-      // into enforceVerificationRoutes. When the per-SHA evidence carries a
-      // matching `diffHash` the binding is satisfied; a mismatch (same SHA,
-      // different diff — re-staged stale evidence) fails the route closed.
-      // SHA-only evidence (no diffHash on the file) is unaffected, so this
-      // is a no-op for pre-#186 producers.
+      // into enforceVerificationRoutes. Supplying it activates content
+      // binding: a triggered command route's evidence must carry a `diffHash`
+      // matching the gated diff. #186 rejected a MISMATCH (same SHA, different
+      // diff — re-staged stale evidence); #194 ALSO rejects ABSENT diffHash
+      // (SHA-only evidence can no longer satisfy a content-bound route). The
+      // `df verify` / `df gates` producers stamp it; older SHA-only producers
+      // must upgrade. The catch below is the ONE escape: a transient git
+      // error leaves `gatedDiffHash` undefined → binding goes dormant for this
+      // commit (SHA-only fallback) rather than fail the whole route gate.
+      // Documented limitation: the teeth are not absolute when git errors.
       let gatedDiffHash: string | undefined;
       try {
         gatedDiffHash = diffHash(await commitDiff(parent, sha, cwd));

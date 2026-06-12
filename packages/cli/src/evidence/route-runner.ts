@@ -32,6 +32,7 @@ import { resolveArtifactRoot } from "../paths.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+  isVerifyRouteCommand,
   parseQualityGateEvidence,
   type QualityGateEvidence,
   type VerificationRoute,
@@ -75,6 +76,14 @@ export interface RunRoutesOptions {
   // evidence so `enforceVerificationRoutes` can reject the evidence if it is
   // later replayed under a different diff. The producer half of the binding.
   diffHash?: string;
+  // Cycle 22 (#192) — `df verify --route <id>`: narrow the run to a single
+  // route. Filters the ARMED set (table floor ∪ planner, post-suppression),
+  // NOT the raw table — so a route the diff did not trigger produces nothing
+  // even under an explicit `--route`, keeping the producer consistent with
+  // the no-arg run and with what `enforceVerificationRoutes` gates. An id
+  // that is not in the armed set simply runs nothing (the CLI command is
+  // responsible for the "unknown route" vs "not triggered" diagnostic).
+  routeFilter?: string;
 }
 
 /**
@@ -117,9 +126,34 @@ export async function runRoutes(options: RunRoutesOptions): Promise<RouteRunSumm
       break;
     }
   }
-  const active = suppressedBy
+  let active = suppressedBy
     ? armed.filter((r) => r === suppressedBy)
     : armed.filter((r) => !r.exclusive);
+
+  // Cycle 22 (#192) — `--route <id>` narrows the armed set. Applied AFTER
+  // suppression so a docs-only-suppressed run still produces nothing under an
+  // explicit `--route`, matching the gate.
+  if (options.routeFilter !== undefined) {
+    active = active.filter((r) => r.id === options.routeFilter);
+  }
+
+  // Cycle 22 (#192) — recursion guard. `df verify` is the route ORCHESTRATOR,
+  // not a per-route producer: spawning a route whose command is itself a
+  // `df verify` invocation (an un-overridden default placeholder) would
+  // re-enter `df verify` → runRoutes → spawn it again, forever. Fail fast with
+  // an actionable error BEFORE spawning anything, rather than recursing. Runs
+  // after the routeFilter so `df verify --route X` on an un-overridden X is
+  // caught too. Suppression-only routes (command null) are exempt.
+  for (const r of active) {
+    if (r.command !== null && isVerifyRouteCommand(r.command)) {
+      throw new Error(
+        `route "${r.id}" still has the placeholder command \`${r.command}\`; ` +
+          `override it in .agent-review/config.json with your toolchain's ` +
+          `producer (\`df verify\` is the route orchestrator, not a per-route ` +
+          `producer — see DEFAULT_VERIFICATION_ROUTES).`,
+      );
+    }
+  }
 
   const ran: RouteRunResult[] = [];
   for (const route of active) {
