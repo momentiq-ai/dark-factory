@@ -1,6 +1,6 @@
 # Get started — build a gated agentic product in minutes
 
-> **Scaffold a product, wire Cerebe, gate it with Dark Factory — from commit one.**
+> **Scaffold a product, wire Cerebe, gate it with Dark Factory — from your first real change.**
 > Two paths, one gate. Pick the one that fits your stack.
 
 ## Which path is for me?
@@ -103,7 +103,8 @@ diagnose and propose a fix.
    - DATABASE_URL + TURSO_AUTH_TOKEN (if Turso chosen in 0f).
    - If Doppler: also run doppler login && doppler setup, and note that
      doppler run -- bun run dev replaces bare bun run dev going forward.
-   - If local SQLite (default): leave DATABASE_URL=file:./taxgen.db as-is.
+   - If local SQLite (default): leave the DATABASE_URL from .env.example as-is
+     (bun run init renamed it to match your slug).
 
 6. Native dev: bun run dev. Surface http://localhost:5173 and the backend health
    check at http://localhost:8787/health. Confirm the chat works by sending a
@@ -509,6 +510,13 @@ my-product/
 └── Makefile                # quality-gates, k8s targets, df-doctor, df-stats
 ```
 
+Confirm by checking the CLI's banner:
+
+```bash
+sage --version
+# @momentiq/sage-cli 0.1.0 (bundled sage-blueprint@<commit> via ref <tag>)
+```
+
 Now cd into the product:
 
 ```bash
@@ -522,8 +530,12 @@ cd my-product
 ```bash
 doppler login                            # browser login if not already
 doppler setup --project my-product       # bind this directory to your Doppler project
-make doppler-seed-defaults               # seeds DATABASE_URL, REDIS_URL, CEREBE_API_URL, etc.
+make doppler-seed-defaults
 ```
+
+The seed step populates the in-cluster service DNS names so the backend can find
+its dependencies (`DATABASE_URL`, `REDIS_URL`, `CEREBE_API_URL`, `CEREBE_BASE_URL`
+for the `dev` config). You'll add the Cerebe API key itself in Step 3.
 
 #### k3d cluster + deploy
 
@@ -544,15 +556,36 @@ You should see the Next.js shell with the persona-aware navigation and the `assi
 
 The Cerebe SDK is already in `pyproject.toml` (Python) and `package.json` (TypeScript). The agent runtime imports it. All that's missing is the key.
 
+If you don't already have one, open [cerebe.ai](https://cerebe.ai) and grab a
+development key from the dashboard. Free tier is fine for the walkthrough.
+
 ```bash
 doppler secrets set CEREBE_API_KEY=ck_xxxxxxxxxxxxxxxxxxxx \
   --project my-product --config dev
 make k8s-build-deploy-smart              # restart pods so the key is picked up
 ```
 
-In the dashboard at `http://my-product.localhost:8082`, send a chat message.
-You should see the agent respond; inspect the trace and you'll see a
-`cerebe.chat.completion` span.
+Doppler injects secrets at runtime, but k3d pods need to restart to re-read them.
+The `smart` target only rebuilds what changed, so this run is fast.
+
+In the dashboard at `http://my-product.localhost:8082`, send a chat message:
+
+> Tell me one fact about the Pacific Ocean.
+
+You should see the agent respond. Inspect the trace (the deep-link icon next to
+the message) and you'll see a `cerebe.chat.completion` span — that's your
+scaffolded product calling Cerebe end to end.
+
+If the response says "Cerebe API key not configured" or similar:
+
+```bash
+make df-doctor                            # walks the configuration
+doppler secrets get CEREBE_API_KEY --plain --project my-product --config dev
+kubectl logs -n my-product deployment/my-product-backend --tail=50
+```
+
+`df doctor` covers the common Doppler + k3d misconfigurations and surfaces the
+exact fix.
 
 ### Step 4 — First commit hits the local Dark Factory gate (~5 min)
 
@@ -575,6 +608,13 @@ cat .git/agent-reviews/$(git rev-parse HEAD).md
 The verdict will be `APPROVED`, `CHANGES_REQUESTED`, or `BLOCKED`. On
 `CHANGES_REQUESTED`, address findings in a **new commit** — never amend, because
 the artifact is bound to the original SHA.
+
+If you're blocked by a vendor outage or an unverifiable check, Dark Factory has
+two structured carve-outs: the cloud-environment bypass (for devcontainer/sandbox
+flows where subscription critics can't reach a browser) and the
+critic-unverifiable-check bypass (for findings the critic itself flags as outside
+its sandbox). Both are loud and audited — see
+[`CONSUMER-ADOPTION.md`](CONSUMER-ADOPTION.md#cloud-env-exception) for details.
 
 ### Step 5 — Push + hosted critic Check Run (~3 min)
 
@@ -607,6 +647,7 @@ annotations.
 - A **first push gated** by the hosted critic quorum, with a Check Run on your pull request
 - An **audit trail** at `.git/agent-reviews/_runs.ndjson` (local) and in the Dark Factory hosted runtime (cloud)
 - A **forward-compatibility path** via `sage update`
+- Operational runbooks in the scaffold's own `docs/runbooks/` for the local critic, the deploy loop, and the cloud-env cooperation pattern
 
 ---
 
