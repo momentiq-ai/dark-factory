@@ -1,13 +1,363 @@
-# Get started — build a production agentic AI product in an afternoon
+# Get started — build a gated agentic product in minutes
 
-> **Scaffold with Sage → implement on Cerebe → ship through Dark Factory.**
-> Competitors sell pieces. Momentiq sells the closed loop, pre-wired on day one.
+> **Scaffold a product, wire Cerebe, gate it with Dark Factory — from commit one.**
+> Two paths, one gate. Pick the one that fits your stack.
 
-This walkthrough takes you from zero to a scaffolded, running, gate-protected agentic AI product. About **25 minutes of wall-clock time**, most of it Docker pulling images.
+## Which path is for me?
 
-## What you'll build
+| | **TypeScript quickstart** (recommended) | **Sage full platform** |
+|---|---|---|
+| Scaffolder | GitHub template repo + `bun run init` (no Python) | Copier template via `@momentiq/sage-cli` (needs Python) |
+| Stack | Hono + Vite/Svelte + LangGraph.js (one language: TypeScript) | FastAPI + Next.js + LangGraph (Python) |
+| Cognitive engine | Cerebe — chat via its OpenAI-compatible endpoint (deeper SDK features opt-in) | Cerebe — deep SDK integration (memory, KG, RAG) |
+| Local dev | native `bun run dev` — **no Docker/k8s** | k3d Kubernetes cluster |
+| Deploy | one container to a PaaS, or the bundled kustomize k8s base — opt-in | Helm + GKE, ArgoCD GitOps |
+| Dark Factory gate | commit + push | commit + push (identical CLI + contract) |
+| Best when | you want a small internal app/dashboard up in minutes, one mental model | you want the full platform, Python ecosystem, scale-out infra |
 
-By the end of this guide you have:
+The Dark Factory layer is **identical** on both paths — same
+`@momentiq/dark-factory-cli`, same `.agent-review/config.json`, same per-SHA
+evidence artifacts. You're choosing a scaffold, not a different gate.
+
+---
+
+## TypeScript quickstart (Cerebe template)
+
+A lean TypeScript product — Hono + LangGraph.js backend, Vite + Svelte frontend —
+running natively at `http://localhost:5173` with no containers.
+
+The reference template is **[`df-cerebe-template`](https://github.com/momentiq-ai/df-cerebe-template)**.
+
+### What you'll build
+
+- A **TypeScript product** sharing types through one package
+- Running **natively** at `http://localhost:5173` — no containers
+- A **first agent turn** answered by Cerebe
+- A **first commit reviewed** by the Dark Factory local critic quorum, with an
+  evidence-bound artifact at `.git/agent-reviews/<sha>.md`
+- *(Opt-in)* a **hosted critic** Check Run on your pull requests
+- A **deploy path that exists but never touches dev** (Docker + kustomize k8s)
+
+### Drive this with an AI agent (recommended)
+
+Paste this into Claude Code, Cursor, or any agentic surface; it will run the
+walkthrough interactively, confirm before anything destructive, and surface URLs:
+
+````
+You are helping me start a lean agentic product from the df-cerebe-template
+(TypeScript: Bun + Hono + LangGraph.js backend, Vite + Svelte frontend), gated by
+Dark Factory. Native dev must never require Docker or Kubernetes.
+
+Walk me through these steps interactively — show the command, ask before anything
+destructive, run it, verify the outcome, then continue. If something fails,
+diagnose and propose a fix.
+
+0. Project setup. Before anything else, ask me:
+   a. Display name of the product (e.g., "Acme Dashboard").
+   b. What folder to create it in (default: kebab-case slug of the display name,
+      in the current directory).
+   c. Do I already have a Cerebe API key? (required for chat to work — get one at
+      https://cerebe.ai if not). Have me provide the key now or note that we'll
+      set it during env configuration.
+   d. Do I want to use Clerk for authentication? (optional — the app runs open
+      without it; recommended before exposing to others). If yes, have me create
+      a Clerk app at https://clerk.com and provide the two keys:
+      CLERK_SECRET_KEY and VITE_CLERK_PUBLISHABLE_KEY.
+   e. Do I want to use Doppler for secrets management? (optional — only relevant
+      for production deploys; local dev uses .env). If yes, have me set up a
+      Doppler project.
+   f. Database: local SQLite file (default, zero setup) or remote Turso/libSQL
+      (for horizontal scaling)? If Turso, have me create a database at
+      https://turso.tech and provide the DATABASE_URL and TURSO_AUTH_TOKEN.
+
+1. Prereqs: bun (>=1.1), git, gh. On Windows confirm I'm in WSL2 with the repo on
+   the Linux filesystem. Authenticate at least one Dark Factory critic
+   subscription (Cursor and/or Codex) — the gate fails closed without one.
+
+2. Get a clean, history-free copy of the template (no .git), using the folder
+   from step 0b:
+     mkdir <folder> && gh api repos/momentiq-ai/df-cerebe-template/tarball/main \
+       | tar -xz --strip-components=1 -C <folder>
+   then cd into it.
+
+3. Name it using the display name from step 0a:
+     bun run init -- --dry-run --name "<Display Name>"  (preview), then apply.
+
+4. Make it a git repo (the tarball has no .git): git init -b main && git add -A &&
+   git commit -m "chore: init from df-cerebe-template". Then bun install. Confirm
+   ./node_modules/.bin/df --help works and the husky hooks armed (git config
+   core.hooksPath == .husky/_).
+
+5. Configure environment: cp .env.example .env, then set the values based on the
+   choices from step 0. For EVERY secret or key (Cerebe, Clerk, Turso token), ask
+   me: "Do you want to paste the key here so I can set it, or would you prefer a
+   command to run yourself in another terminal?" Then:
+   - If I choose to paste it: write it into .env (or run the doppler command).
+   - If I choose to set it myself: give me the exact command — which depends on
+     whether I chose Doppler:
+       Without Doppler:  echo 'VAR=value' >> .env  (or tell me to edit .env)
+       With Doppler:     doppler secrets set VAR=value --project <slug> --config dev
+   Apply this for each key:
+   - CEREBE_API_KEY (required).
+   - CLERK_SECRET_KEY + VITE_CLERK_PUBLISHABLE_KEY (if Clerk chosen in 0d).
+   - DATABASE_URL + TURSO_AUTH_TOKEN (if Turso chosen in 0f).
+   - If Doppler: also run doppler login && doppler setup, and note that
+     doppler run -- bun run dev replaces bare bun run dev going forward.
+   - If local SQLite (default): leave DATABASE_URL=file:./taxgen.db as-is.
+
+6. Native dev: bun run dev. Surface http://localhost:5173 and the backend health
+   check at http://localhost:8787/health. Confirm the chat works by sending a
+   message — the reply should stream back from Cerebe token by token.
+
+7. Dark Factory local gate: make a trivial change, commit, and confirm the
+   post-commit critic wrote .git/agent-reviews/<sha>.md with a verdict; then push
+   and confirm the pre-push gate passed.
+
+8. (Optional) Hosted gate: walk me through installing the Dark Factory GitHub App
+   and the CI workflow per CONSUMER-ADOPTION.md.
+
+Start at step 0. Ask before each shell command.
+````
+
+**Paste it where you already work:**
+
+- **Claude Code:** copy the block, paste into the prompt, hit Enter
+- **Cursor:** copy, open Composer (⌘I), paste, send
+- **Codex CLI:** `codex` → paste at the prompt → Enter
+- **claude.ai:** start a new chat, paste, send
+
+The agent drives steps 0–8; you answer the setup questions and confirm commands.
+
+### ...or follow the steps manually
+
+The rest of this section is the same walkthrough as text, in case you'd rather
+drive it yourself.
+
+### Prereqs
+
+| Tool | Version | Why | macOS one-liner |
+|---|---|---|---|
+| [Bun](https://bun.sh) | >= 1.1 | Runtime, installer, and script runner for the entire stack | `brew install oven-sh/bun/bun` |
+| Git | >= 2.40 | Source control + pre-push hook surface | (preinstalled) |
+| [`gh` CLI](https://cli.github.com) | latest | Pull the template copy (Step 1) and create your repo | `brew install gh && gh auth login` |
+
+**Windows:** use [WSL2](https://learn.microsoft.com/windows/wsl/install) — Bun
+inside the distro, repo on the Linux filesystem.
+
+**Before your first commit is gated:** at least one **Cursor and/or Codex
+subscription, authenticated** (`cursor-agent` sign-in / `codex login`). With zero
+critics authenticated the pre-push gate **fails closed**.
+
+You also need:
+
+- A **Cerebe API key** — **required** for the agent chat to function. Sign up at
+  [cerebe.ai](https://cerebe.ai); free trial tier works. Keys look like `ck_live_...`
+  or `ck_test_...`.
+- *(Optional)* A **Clerk account** — for sign-in/auth gating. Create an app at
+  [clerk.com](https://clerk.com) to get `CLERK_SECRET_KEY` and
+  `VITE_CLERK_PUBLISHABLE_KEY`. Without these, the app runs open (unauthenticated)
+  — fine for local dev/prototyping, but recommended before sharing the dashboard.
+- *(Optional)* A **Doppler account** — for production secrets injection. Not needed
+  for local dev (`.env` handles it). Sign up at
+  [dashboard.doppler.com](https://dashboard.doppler.com) if you want Doppler to
+  manage secrets in staging/prod.
+- *(Optional)* A **Turso account** — only if you want a remote database for
+  horizontal scaling. The default is a local SQLite file (zero setup). Create a
+  database at [turso.tech](https://turso.tech) to get a `DATABASE_URL` and
+  `TURSO_AUTH_TOKEN`.
+
+### Step 1 — Get a clean copy of the template
+
+Pick a **display name** for your product (e.g., "Acme Dashboard") and a **folder
+name** (default: kebab-case of the display name, e.g., `acme-dashboard`).
+
+Pull a **pure file copy** of the template — no git history, no `.git` at all —
+straight from GitHub via your `gh` auth:
+
+```bash
+mkdir acme-dashboard
+gh api repos/momentiq-ai/df-cerebe-template/tarball/main \
+  | tar -xz --strip-components=1 -C acme-dashboard
+cd acme-dashboard
+```
+
+`--strip-components=1` drops GitHub's wrapper directory. You can pin a tag or
+commit SHA instead of `main`: `.../tarball/<ref>`. You'll turn this into your own
+git repo during setup below (before the local gate can run).
+
+### Step 2 — Name your product
+
+```bash
+bun run init -- --dry-run --name "Acme Dashboard"   # preview
+bun run init -- --name "Acme Dashboard"             # apply (derives a slug)
+```
+
+Pure text substitution of the template's slug/display name across the tree — the
+lightweight replacement for Copier's variable rendering. See the template's
+[`docs/getting-started.md`](https://github.com/momentiq-ai/df-cerebe-template/blob/main/docs/getting-started.md) Step 0.
+
+### Step 3 — Initialize git + install (this turns the gate on)
+
+The tarball gave you a clean tree with **no `.git`**. Make it your own repo
+first — Husky needs a git repo to arm the hooks — then install:
+
+```bash
+git init -b main
+git add -A && git commit -m "chore: init from df-cerebe-template"
+bun install
+./node_modules/.bin/df --help        # confirm the Dark Factory CLI landed
+```
+
+`bun install` pulls every workspace **and** `@momentiq/dark-factory-cli` (pinned
+exactly, per the consumer contract), then runs `prepare`, which arms the Husky
+hooks (`core.hooksPath` -> `.husky/_`). The hooks were **dormant until now** — the
+critic reviews from your **next commit onward** (so the initial commit above is
+intentionally un-gated). Commit the resulting `bun.lock`.
+
+### Step 4 — Configure your environment
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and set the values based on your needs:
+
+**Required:**
+
+| Variable | Value | Notes |
+|---|---|---|
+| `CEREBE_API_KEY` | `ck_live_...` or `ck_test_...` | Get one at [cerebe.ai](https://cerebe.ai). **Chat will not work without this.** |
+
+**Database** (pick one):
+
+| Setup | What to set | When to use |
+|---|---|---|
+| Local SQLite (default) | Leave `DATABASE_URL=file:./<slug>.db` as-is | Getting started, single-instance deploys |
+| Remote Turso | `DATABASE_URL=libsql://your-db.turso.io` + `TURSO_AUTH_TOKEN=...` | Horizontal scaling, multi-replica prod |
+
+**Auth — Clerk** (optional, graceful):
+
+| Variable | Value | Notes |
+|---|---|---|
+| `CLERK_SECRET_KEY` | `sk_test_...` | Backend token verification |
+| `VITE_CLERK_PUBLISHABLE_KEY` | `pk_test_...` | Frontend sign-in UI |
+
+Leave **both** blank to run open (unauthenticated) — fine for local dev. Set
+**both** (from [clerk.com](https://clerk.com) dashboard) to gate behind sign-in.
+Recommended before exposing the dashboard to anyone outside your machine.
+
+**Secrets — Doppler** (optional, prod only):
+
+Doppler replaces `.env` in production by injecting secrets at runtime. Not needed
+for local dev. If you want it:
+
+```bash
+doppler login
+doppler setup --project acme-dashboard
+doppler run -- bun run dev             # injects all vars, no .env needed
+```
+
+### Step 5 — Native dev (no Docker, no k8s)
+
+```bash
+bun run dev          # backend :8787 + frontend :5173, both hot-reload
+```
+
+Open <http://localhost:5173>. This is the whole inner loop — no containers, no
+cluster, just native Bun.
+
+**Dev server commands:**
+
+| Command | What it does |
+|---|---|
+| `bun run dev` | Start both backend and frontend (hot-reload) |
+| `bun run dev:backend` | Start only the backend on `:8787` |
+| `bun run dev:frontend` | Start only the frontend on `:5173` |
+| `Ctrl+C` | Stop all running servers |
+
+Both servers hot-reload on file changes — no restart needed after editing code or
+`.env`. `Ctrl+C` in the terminal where you ran `bun run dev` stops everything
+cleanly (both processes are children of the Bun workspace runner).
+
+> **Workspace `.env` wiring.** Bun loads `.env` from the CWD, and `bun run
+> --filter '*' dev` runs each workspace from its own directory (`backend/`,
+> `frontend/`). The template handles this: the backend's dev script passes
+> `--env-file ../.env` so it inherits the root `.env`, and the Vite config sets
+> `envDir: ".."` so the frontend does the same. If you add a new workspace that
+> needs env vars, give it the same treatment — otherwise it won't see the root
+> `.env`.
+
+### Step 6 — First agent turn
+
+The agent is **already implemented** — a LangGraph.js ReAct agent calling Cerebe,
+streamed to the chat UI over SSE. If you set `CEREBE_API_KEY` in Step 4, **send a
+message in the dashboard chat** — the reply streams in token by token. The agent
+has two memory tools: `search_memories` (cross-session recall) and `share_memory`
+(save facts for later). Background on the LangGraph shape is in the template's
+[`docs/getting-started.md`](https://github.com/momentiq-ai/df-cerebe-template/blob/main/docs/getting-started.md) Step 3.
+*(Prefer raw Anthropic instead? See the template's `docs/notes.md` §4.)*
+
+### Step 7 — First commit hits the local Dark Factory gate
+
+Authenticate at least one critic subscription (above), then:
+
+```bash
+# edit something
+git add -A && git commit -m "feat: first change"
+```
+
+The `post-commit` hook fires `df review` in the background. After ~30-90s:
+
+```bash
+cat .git/agent-reviews/$(git rev-parse HEAD).md     # APPROVED / CHANGES_REQUESTED / BLOCKED
+```
+
+On `CHANGES_REQUESTED`, address findings in a **new commit** (never amend — the
+artifact is bound to the original SHA). Then `git push`; the `pre-push` hook runs
+`df gate-push` and lets an APPROVED HEAD through. This is the **same gate** the
+Sage path uses — identical CLI, config shape, and evidence format.
+
+### Step 8 — *(Opt-in)* hosted critic on pull requests
+
+The local gate is standalone. To add a hosted **Check Run** on PRs, install the
+**Dark Factory GitHub App** and the CI workflow per
+[`CONSUMER-ADOPTION.md`](CONSUMER-ADOPTION.md) (§6+). This needs a reusable
+workflow reference, cloud-critic API-key secrets, and a branch ruleset — so it's
+opt-in, not shipped in the template. Add it before multi-author merges.
+
+### Step 9 — *(Optional)* deploy
+
+Everything container/k8s lives isolated in the template's `deploy/` with its own
+guide — Docker images + a kustomize k8s base, reached only when you choose to
+ship. Nothing there is needed for, or touched by, dev.
+
+### What you have now
+
+- A **lean TypeScript product** running natively, no infrastructure
+- A **first agent call** through Cerebe, with cross-session memory
+- A **first commit + push gated** by the Dark Factory local critic quorum, with
+  evidence on disk
+- An opt-in route to the **hosted critic** and to **deployment**, both isolated
+  from your dev loop
+- *(If configured)* **Auth** via Clerk, **secrets** via Doppler, and/or a
+  **remote database** via Turso — all graceful-optional, all wired from the start
+
+### Where to go next
+
+- Template walkthrough + open decisions:
+  [`df-cerebe-template/docs/getting-started.md`](https://github.com/momentiq-ai/df-cerebe-template/blob/main/docs/getting-started.md)
+  and [`docs/notes.md`](https://github.com/momentiq-ai/df-cerebe-template/blob/main/docs/notes.md)
+- Retrofit Dark Factory into an existing repo: [`CONSUMER-ADOPTION.md`](CONSUMER-ADOPTION.md)
+
+---
+
+## Sage full platform (Python + k8s)
+
+> **The full Momentiq stack: Sage scaffold, Cerebe deep integration, k8s local
+> cluster, Helm deploy, ArgoCD GitOps.** Use this path when you want the Python
+> ecosystem, scale-out infrastructure, and the complete platform from day one.
+
+### What you'll build
 
 - A real product repository — FastAPI backend, Next.js 14 frontend, LangGraph agent runtime, Helm charts, the works
 - A local Kubernetes cluster running it (k3d) with a dashboard at `http://<your-slug>.localhost:8082`
@@ -15,11 +365,9 @@ By the end of this guide you have:
 - A first commit reviewed by the Dark Factory critic quorum and gated by an evidence-bound artifact at `.git/agent-reviews/<sha>.md`
 - A first push that fires the hosted W3 critic and posts a Check Run on your pull request
 
-No vendor stitching. No "we'll add the gate later." The composition is the product.
+### Drive this with an AI agent (recommended)
 
-## Drive this with an AI agent (recommended)
-
-Paste this prompt into [Claude Code](https://claude.com/claude-code), Cursor, the Codex command-line interface (CLI), or [claude.ai](https://claude.ai) — whichever agentic surface you're already using — and the agent will run the whole walkthrough interactively. Asks before destructive actions, diagnoses failures with `make df-doctor`, surfaces URLs.
+Paste this into Claude Code, Cursor, or any agentic surface:
 
 ````
 You are helping me start a new agentic AI product on the Momentiq platform.
@@ -98,34 +446,32 @@ Start at step 1. Ask for confirmation before each shell command.
 - **Codex CLI:** `codex` → paste at the prompt → Enter
 - **claude.ai:** start a new chat, paste, send
 
-The agent drives steps 1–6; you confirm and answer the four scaffold prompts.
+The agent drives steps 1-6; you confirm and answer the four scaffold prompts.
 
-## …or follow the steps manually
+### ...or follow the steps manually
 
-The rest of this page is the same walkthrough as text, in case you'd rather drive it yourself.
-
-## Prereqs (one screen)
+### Prereqs
 
 | Tool | Version | Why | macOS one-liner |
 |---|---|---|---|
-| [Node.js](https://nodejs.org) | ≥ 20 | Runs the Sage CLI, the Dark Factory CLI, and the scaffolded frontend | `brew install node` |
-| [Python](https://www.python.org) | ≥ 3.11 | Runs `copier` (the templating engine the Sage CLI wraps) | `brew install python@3.11` |
+| [Node.js](https://nodejs.org) | >= 20 | Runs the Sage CLI, the Dark Factory CLI, and the scaffolded frontend | `brew install node` |
+| [Python](https://www.python.org) | >= 3.11 | Runs `copier` (the templating engine the Sage CLI wraps) | `brew install python@3.11` |
 | [pipx](https://pipx.pypa.io) | latest | Installs `copier` in an isolated env | `brew install pipx && pipx ensurepath` |
 | [Copier](https://copier.readthedocs.io) | latest | Renders the bundled Sage template | `pipx install copier` |
-| [Docker Desktop](https://www.docker.com/products/docker-desktop) | latest | Hosts the local k3d cluster (allocate ≥ 8GB RAM) | `brew install --cask docker` |
+| [Docker Desktop](https://www.docker.com/products/docker-desktop) | latest | Hosts the local k3d cluster (allocate >= 8GB RAM) | `brew install --cask docker` |
 | [k3d](https://k3d.io) | latest | Lightweight Kubernetes for the local loop | `brew install k3d` |
 | [Doppler CLI](https://docs.doppler.com/docs/cli) | latest | Secrets injection at runtime | `brew install dopplerhq/cli/doppler` |
 | [gh CLI](https://cli.github.com) | latest | Talks to GitHub for the hosted gate's pull request and Check Run surfaces | `brew install gh && gh auth login` |
-| Git | ≥ 2.40 | Source control + pre-push hook surface | (preinstalled) |
+| Git | >= 2.40 | Source control + pre-push hook surface | (preinstalled) |
 
 You also need:
 - A **Doppler account** (free) — sign up at [dashboard.doppler.com](https://dashboard.doppler.com)
 - A **Cerebe API key** — sign up at [cerebe.ai](https://cerebe.ai); free trial tier works
 - A **GitHub account** with permission to push to a fresh repository under your user or organization
 
-Total install time on a fresh macOS workstation: 10–20 minutes.
+Total install time on a fresh macOS workstation: 10-20 minutes.
 
-## Step 1 — Scaffold with Sage (~5 min)
+### Step 1 — Scaffold with Sage (~5 min)
 
 The Sage CLI is one npm command that bundles the Sage template inside the published package. No GitHub access needed.
 
@@ -143,7 +489,7 @@ Four interactive prompts will fill in what you skipped on the command line:
 3. **Secondary persona** — optional second role (leave blank to skip)
 4. **Production domain** — production hostname (e.g., `my-product.example`)
 
-Everything else (Doppler project, Google Cloud Platform (GCP) project, Temporal namespace, ArgoCD domain, k3d ports, etc.) is pre-filled from sensible defaults derived from your slug. The CLI hands those off to Copier with `--defaults`, so you do **not** see the other ~15 advanced prompts unless you opt in.
+Everything else (Doppler project, GCP project, Temporal namespace, ArgoCD domain, k3d ports, etc.) is pre-filled from sensible defaults derived from your slug.
 
 When the scaffold finishes, you have a full product tree:
 
@@ -163,39 +509,23 @@ my-product/
 └── Makefile                # quality-gates, k8s targets, df-doctor, df-stats
 ```
 
-Confirm by checking the CLI's banner:
-
-```bash
-sage --version
-# @momentiq/sage-cli 0.1.0 (bundled sage-blueprint@<commit> via ref <tag>)
-```
-
 Now cd into the product:
 
 ```bash
 cd my-product
 ```
 
-## Step 2 — Start the local cluster (~2 min)
+### Step 2 — Start the local cluster (~2 min)
 
-Two parts: Doppler secrets bootstrap, then k3d cluster up + deploy.
-
-### Doppler
+#### Doppler
 
 ```bash
 doppler login                            # browser login if not already
 doppler setup --project my-product       # bind this directory to your Doppler project
+make doppler-seed-defaults               # seeds DATABASE_URL, REDIS_URL, CEREBE_API_URL, etc.
 ```
 
-The scaffolded `Makefile` will seed Doppler with the in-cluster service DNS names so the backend can find its dependencies:
-
-```bash
-make doppler-seed-defaults
-```
-
-This populates `DATABASE_URL`, `REDIS_URL`, `CEREBE_API_URL`, `CEREBE_BASE_URL` for the `dev` config. You'll add the Cerebe API key itself in Step 3.
-
-### k3d cluster + deploy
+#### k3d cluster + deploy
 
 ```bash
 make k8s-up                              # creates the k3d cluster (~30s)
@@ -208,113 +538,52 @@ Once both finish, your dashboard is live:
 open http://my-product.localhost:8082
 ```
 
-(Substitute your slug for `my-product` if you picked a different one. The k3d port routing is configured at scaffold time.)
-
 You should see the Next.js shell with the persona-aware navigation and the `assistant-ui` chat surface. The chat will say something like "Cerebe API key not configured" — that's Step 3.
 
-## Step 3 — Wire Cerebe + first agent call (~5 min)
+### Step 3 — Wire Cerebe + first agent call (~5 min)
 
 The Cerebe SDK is already in `pyproject.toml` (Python) and `package.json` (TypeScript). The agent runtime imports it. All that's missing is the key.
-
-### Grab a key
-
-If you don't already have one, open [cerebe.ai](https://cerebe.ai) → sign up → grab a development key from the dashboard. Free tier is fine for the walkthrough.
-
-### Put it in Doppler
 
 ```bash
 doppler secrets set CEREBE_API_KEY=ck_xxxxxxxxxxxxxxxxxxxx \
   --project my-product --config dev
+make k8s-build-deploy-smart              # restart pods so the key is picked up
 ```
 
-### Restart so pods pick up the new secret
+In the dashboard at `http://my-product.localhost:8082`, send a chat message.
+You should see the agent respond; inspect the trace and you'll see a
+`cerebe.chat.completion` span.
 
-```bash
-make k8s-build-deploy-smart
-```
+### Step 4 — First commit hits the local Dark Factory gate (~5 min)
 
-(Doppler injects secrets at runtime, but k3d pods need to restart to re-read them. The `smart` target only rebuilds what changed; this run is fast.)
-
-### Send the first chat message
-
-In the dashboard at `http://my-product.localhost:8082`, click into the chat surface and send a message:
-
-> Tell me one fact about the Pacific Ocean.
-
-You should see the agent respond. Inspect the trace (the deep-link icon next to the message in the dashboard) and you'll see a `cerebe.chat.completion` span — that's your scaffolded product calling Cerebe end to end.
-
-If the response says "Cerebe API key not configured" or similar:
-
-```bash
-make df-doctor                            # walks the configuration
-doppler secrets get CEREBE_API_KEY --plain --project my-product --config dev
-kubectl logs -n my-product deployment/my-product-backend --tail=50
-```
-
-`df doctor` covers the common Doppler + k3d misconfigurations and surfaces the exact fix.
-
-## Step 4 — First commit hits the local Dark Factory gate (~5 min)
-
-The repository is already a git repository (Sage initializes it at scaffold time). The Husky hooks are installed. The `.agent-review/config.json` is in place. All you need is a change.
-
-### Make a trivial change
-
-Open `README.md`, edit the product description (whatever you want), save.
-
-### Commit
+Make a trivial change, commit:
 
 ```bash
 git add README.md
 git commit -m "feat(readme): tighten the product description"
 ```
 
-The pre-commit hook flips `gc.auto=0` on the shared `.git/config` (the parallel-prune race fix) and runs the per-service type-check if you touched any service code. Then the commit lands and the post-commit hook fires `df review` in the background.
-
-### Wait for the verdict
-
-`df review` runs your local critic quorum — two critics, Cursor and Codex, both authenticated through your subscription sessions. About 30–90 seconds depending on the diff.
-
-When it finishes, the artifact lands at `.git/agent-reviews/<sha>.md` (and a structured `.json` sibling). Read it:
+The post-commit hook fires `df review` in the background. About 30-90 seconds
+later the artifact lands:
 
 ```bash
 make df-show COMMIT=HEAD
-# or, if you prefer the structured artifact:
+# or:
 cat .git/agent-reviews/$(git rev-parse HEAD).md
 ```
 
-The verdict will be `APPROVED` (a trivial doc change), `CHANGES_REQUESTED` (the critics flagged something), or `BLOCKED` (a structural issue with the diff). The artifact lists each critic's findings inline.
+The verdict will be `APPROVED`, `CHANGES_REQUESTED`, or `BLOCKED`. On
+`CHANGES_REQUESTED`, address findings in a **new commit** — never amend, because
+the artifact is bound to the original SHA.
 
-### If APPROVED
-
-You're ready to push.
-
-### If CHANGES_REQUESTED
-
-Read the findings. Address them in a **new commit** — never amend, because the artifact is bound to the original commit hash and the diff hash. When you address the finding and commit, the post-commit hook reruns `df review` against the new commit; if the critics agree the finding is closed, the new artifact lands `APPROVED`.
-
-### If you're blocked by a vendor outage or an unverifiable check
-
-Dark Factory has two structured carve-outs documented in [`CONSUMER-ADOPTION.md`](CONSUMER-ADOPTION.md#cloud-env-exception): the cloud-environment bypass (for devcontainer / sandbox flows where the subscription critics cannot reach a browser) and the critic-unverifiable-check bypass (for findings the critic itself flags as outside its sandbox). Both are loud and audited — the bypass record lands in `.git/agent-reviews/_runs.ndjson` and surfaces in `make df-stats`. Every other bypass is an escalation.
-
-## Step 5 — Push → hosted Dark Factory gate posts a Check Run (~3 min)
-
-### Create a GitHub repository for your scaffold
-
-Easiest path:
+### Step 5 — Push + hosted critic Check Run (~3 min)
 
 ```bash
 gh repo create my-product --private --source=. --remote=origin --push
 ```
 
-That creates the GitHub repository, adds it as `origin`, and pushes `main`. The pre-push hook runs `df gate-push` against your local artifact; if the local verdict is APPROVED, the push goes through.
-
-### Install the Dark Factory GitHub App
-
-Visit [github.com/apps/momentiq-dark-factory](https://github.com/apps/momentiq-dark-factory) → install on the new repository.
-
-### Open a pull request to fire the hosted critic
-
-Make another small change on a feature branch and open a pull request:
+The pre-push hook runs `df gate-push` against your local artifact; if APPROVED,
+the push goes through. Then open a pull request on a feature branch:
 
 ```bash
 git checkout -b feat/another-tweak
@@ -324,33 +593,28 @@ git push -u origin feat/another-tweak
 gh pr create --fill
 ```
 
-When the pull request opens, the webhook fires the hosted W3 critic. About 1–3 minutes later the Check Run posts on the pull request:
+Install the [Dark Factory GitHub App](https://github.com/apps/momentiq-dark-factory)
+on the repo. The webhook fires the hosted W3 critic; about 1-3 minutes later the
+Check Run posts on the pull request with the aggregated verdict and inline
+annotations.
 
-- **`dark-factory/critic`** — the aggregated verdict, listing per-critic outcomes (Cursor, Codex, Gemini, Grok in the cloud profile)
-- **Inline annotations** — each critic posts its findings as pull-request review comments at the exact line
-
-Both gates agree on the diff because they consume the same binary (`@momentiq/dark-factory-cli`) pinned to the same version. The local profile is two critics with subscription auth (cheap, fast); the cloud profile is four critics with vendor application programming interface (API) keys (slower, more authoritative). The verdict shape is identical.
-
-## What you have now
-
-In roughly twenty-five minutes, with zero vendor stitching:
+### What you have now
 
 - A **scaffolded product** with backend, frontend, agent runtime, telemetry, authentication, and secrets all wired
 - A **running local cluster** at `http://my-product.localhost:8082`
 - A **first agent call** end-to-end through Cerebe
 - A **first commit gated** by the local critic quorum, with an evidence-bound artifact on disk
 - A **first push gated** by the hosted critic quorum, with a Check Run on your pull request
-- An **audit trail** at `.git/agent-reviews/_runs.ndjson` (local) and in the Dark Factory hosted runtime (cloud) of every verdict and every bypass
-- A **forward-compatibility path** via `sage update` — when the Sage template advances, pull the change into this product with one command
+- An **audit trail** at `.git/agent-reviews/_runs.ndjson` (local) and in the Dark Factory hosted runtime (cloud)
+- A **forward-compatibility path** via `sage update`
 
-The composition is the moat. You're not stitching three vendors together; you're shipping a product on a platform that pre-wired the integrations on day one.
+---
 
-## Where to go next
+## Common to both paths
 
-### Day-2 operations
+### Retrofit Dark Factory into an existing repo
 
-- [`CONSUMER-ADOPTION.md`](CONSUMER-ADOPTION.md) — retrofitting Dark Factory into an existing repository (use this if you have one already)
-- The scaffold's own `docs/runbooks/` — operational runbooks land at scaffold time for the local critic, the deploy loop, and the cloud-env cooperation pattern
+Already have a codebase? See [`CONSUMER-ADOPTION.md`](CONSUMER-ADOPTION.md).
 
 ### Deep dives
 
@@ -366,4 +630,3 @@ Momentiq operates the hosted Dark Factory runtime — the W3 GitHub App `momenti
 
 - [`momentiq-ai/dark-factory`](https://github.com/momentiq-ai/dark-factory/issues) — Dark Factory CLI, Sage CLI, reusable workflows, hosted critic
 - Cerebe — file via the dashboard at [cerebe.ai](https://cerebe.ai), or contact [support@momentiq.ai](mailto:support@momentiq.ai)
-- Sage template — surface bugs via the [`momentiq-ai/dark-factory` issues](https://github.com/momentiq-ai/dark-factory/issues) and we'll route
