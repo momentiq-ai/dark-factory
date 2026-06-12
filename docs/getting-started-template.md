@@ -61,18 +61,17 @@ diagnose and propose a fix.
    b. What folder to create it in (default: kebab-case slug of the display name,
       in the current directory).
    c. Do I already have a Cerebe API key? (required for chat to work — get one at
-      https://cerebe.ai if not). Have me provide the key now or note that we'll
-      set it during env configuration.
+      https://cerebe.ai if not).
    d. Do I want to use Clerk for authentication? (optional — the app runs open
       without it; recommended before exposing to others). If yes, have me create
-      a Clerk app at https://clerk.com and provide the two keys:
+      a Clerk app at https://clerk.com and get the two keys:
       CLERK_SECRET_KEY and VITE_CLERK_PUBLISHABLE_KEY.
    e. Do I want to use Doppler for secrets management? (optional — only relevant
       for production deploys; local dev uses .env). If yes, have me set up a
       Doppler project.
    f. Database: local SQLite file (default, zero setup) or remote Turso/libSQL
       (for horizontal scaling)? If Turso, have me create a database at
-      https://turso.tech and provide the DATABASE_URL and TURSO_AUTH_TOKEN.
+      https://turso.tech and get the DATABASE_URL and TURSO_AUTH_TOKEN.
 
 1. Prereqs: bun (>=1.1), git, gh. On Windows confirm I'm in WSL2 with the repo on
    the Linux filesystem. Authenticate at least one Dark Factory critic
@@ -93,13 +92,21 @@ diagnose and propose a fix.
    core.hooksPath == .husky/_).
 
 5. Configure environment: cp .env.example .env, then set the values based on the
-   choices from step 0:
-   - Always: set CEREBE_API_KEY to the key from step 0c.
-   - If Clerk: set CLERK_SECRET_KEY and VITE_CLERK_PUBLISHABLE_KEY from step 0d.
-   - If Doppler: run doppler login && doppler setup, then
-     doppler run -- bun run dev (instead of bare bun run dev) going forward.
-   - If Turso: set DATABASE_URL=libsql://... and TURSO_AUTH_TOKEN=... from step 0f.
-     If local SQLite (default): leave DATABASE_URL=file:./taxgen.db as-is.
+   choices from step 0. For EVERY secret or key (Cerebe, Clerk, Turso token), ask
+   me: "Do you want to paste the key here so I can set it, or would you prefer a
+   command to run yourself in another terminal?" Then:
+   - If I choose to paste it: write it into .env (or run the doppler command).
+   - If I choose to set it myself: give me the exact command — which depends on
+     whether I chose Doppler:
+       Without Doppler:  echo 'VAR=value' >> .env  (or tell me to edit .env)
+       With Doppler:     doppler secrets set VAR=value --project <slug> --config dev
+   Apply this for each key:
+   - CEREBE_API_KEY (required).
+   - CLERK_SECRET_KEY + VITE_CLERK_PUBLISHABLE_KEY (if Clerk chosen in 0d).
+   - DATABASE_URL + TURSO_AUTH_TOKEN (if Turso chosen in 0f).
+   - If Doppler: also run doppler login && doppler setup, and note that
+     doppler run -- bun run dev replaces bare bun run dev going forward.
+   - If local SQLite (default): leave DATABASE_URL=file:./taxgen.db as-is.
 
 6. Native dev: bun run dev. Surface http://localhost:5173 and the backend health
    check at http://localhost:8787/health. Confirm the chat works by sending a
