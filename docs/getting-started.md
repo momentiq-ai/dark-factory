@@ -513,7 +513,7 @@ my-product/
 Confirm by checking the CLI's banner:
 
 ```bash
-sage --version
+npx @momentiq/sage-cli --version
 # @momentiq/sage-cli 0.1.0 (bundled sage-blueprint@<commit> via ref <tag>)
 ```
 
@@ -580,7 +580,7 @@ If the response says "Cerebe API key not configured" or similar:
 
 ```bash
 make df-doctor                            # walks the configuration
-doppler secrets get CEREBE_API_KEY --plain --project my-product --config dev
+doppler run -- sh -c 'test -n "$CEREBE_API_KEY" && echo "CEREBE_API_KEY: configured" || echo "CEREBE_API_KEY: missing"'
 kubectl logs -n my-product deployment/my-product-backend --tail=50
 ```
 
@@ -609,12 +609,11 @@ The verdict will be `APPROVED`, `CHANGES_REQUESTED`, or `BLOCKED`. On
 `CHANGES_REQUESTED`, address findings in a **new commit** — never amend, because
 the artifact is bound to the original SHA.
 
-If you're blocked by a vendor outage or an unverifiable check, Dark Factory has
-two structured carve-outs: the cloud-environment bypass (for devcontainer/sandbox
-flows where subscription critics can't reach a browser) and the
-critic-unverifiable-check bypass (for findings the critic itself flags as outside
-its sandbox). Both are loud and audited — see
-[`CONSUMER-ADOPTION.md`](CONSUMER-ADOPTION.md#cloud-env-exception) for details.
+If you're blocked because subscription critics can't authenticate in a cloud
+sandbox (Codespaces, `claude.ai/code`, etc.), Dark Factory has a structured
+cloud-environment bypass — loud and audited. See
+[`CONSUMER-ADOPTION.md` §15](CONSUMER-ADOPTION.md#15-cloud-environments--running-claude-code-from-a-sandbox-or-codespace)
+for the cooperation pattern.
 
 ### Step 5 — Push + hosted critic Check Run (~3 min)
 
