@@ -580,7 +580,7 @@ If the response says "Cerebe API key not configured" or similar:
 
 ```bash
 make df-doctor                            # walks the configuration
-doppler run -- sh -c 'test -n "$CEREBE_API_KEY" && echo "CEREBE_API_KEY: configured" || echo "CEREBE_API_KEY: missing"'
+doppler run --project my-product --config dev -- sh -c 'test -n "$CEREBE_API_KEY" && echo "CEREBE_API_KEY: configured" || echo "CEREBE_API_KEY: missing"'
 kubectl logs -n my-product deployment/my-product-backend --tail=50
 ```
 
