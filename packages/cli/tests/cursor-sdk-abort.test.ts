@@ -35,7 +35,14 @@ const { cancelSpy, openGate, gate, entered, markEntered } = vi.hoisted(() => {
     resolveEntered = r;
   });
   return {
-    cancelSpy: vi.fn(() => resolveGate()),
+    // `cancel()` releases the gate AND returns a REJECTING promise — the
+    // worst case the Copilot review flagged: an async rejection fired from an
+    // event listener. The adapter's `Promise.resolve(...).catch()` wrapper
+    // must swallow it so no unhandledRejection ever surfaces (asserted below).
+    cancelSpy: vi.fn(() => {
+      resolveGate();
+      return Promise.reject(new Error("cancel rejected (simulated SDK error)"));
+    }),
     openGate: () => resolveGate(),
     gate,
     entered,
@@ -140,6 +147,15 @@ describe("cursor-sdk — abort terminates a stalled run via run.cancel() (issue 
     const adapter = new CursorSdkAdapter({ apiKey: "test-key" });
     const controller = new AbortController();
 
+    // Copilot-review regression: `cancel()` returns a rejecting promise (set
+    // up in the mock above). The adapter must swallow that async rejection so
+    // it never surfaces as an unhandledRejection from the abort listener.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
     // Kick off the review. Attempt 0 is in-flight: the retry loop's loop-top
     // `if (signal.aborted) break` already ran (signal not yet aborted), so
     // the adapter runs `Agent.create()` → `send()` → registers the abort
@@ -164,6 +180,15 @@ describe("cursor-sdk — abort terminates a stalled run via run.cancel() (issue 
     expect(cancelSpy).toHaveBeenCalledTimes(1);
     expect(result.status).toBe("error");
     expect(result.criticId).toBe("cursor");
+
+    // Let any microtasks (the swallowed cancel rejection) drain, then assert
+    // no unhandled rejection escaped the abort listener.
+    await new Promise<void>((r) => setImmediate(r));
+    expect(
+      unhandled,
+      `cancel()'s rejection must be swallowed; saw: ${unhandled.map(String).join(", ")}`,
+    ).toHaveLength(0);
+    process.off("unhandledRejection", onUnhandled);
 
     // Defensive: ensure the gate is released even if an assertion path above
     // changed (so the test process never leaks a hung promise).

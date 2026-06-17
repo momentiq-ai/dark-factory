@@ -227,11 +227,17 @@ export class CursorSdkAdapter implements CriticAdapter {
       // resolving and this line, cancel immediately so we don't enter a
       // doomed stream.
       onAbort = (): void => {
+        // Swallow BOTH a synchronous throw AND an async rejection: `cancel()`
+        // may return a rejecting Promise, and an unhandled rejection fired
+        // from an event listener could destabilize the process. Wrapping in
+        // `Promise.resolve(...).catch()` makes the best-effort cancel total.
+        // A failed cancel falls through to the stream/wait loop, which the
+        // runner's per-critic deadline (#180) still bounds.
         try {
-          void run.cancel?.();
+          void Promise.resolve(run.cancel?.()).catch(() => {});
         } catch {
-          // best-effort — a failed cancel falls through to the stream/wait
-          // loop, which the runner's per-critic deadline (#180) still bounds.
+          // Defensive: `cancel` throwing synchronously (before returning a
+          // promise) is also swallowed.
         }
       };
       if (options.signal?.aborted) {
