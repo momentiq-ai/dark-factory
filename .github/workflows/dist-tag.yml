@@ -41,6 +41,11 @@ jobs:
   dist-tag:
     name: Set dist-tag
     runs-on: ubuntu-latest
+    # Bind to a GitHub Environment so repo admins can attach protection rules
+    # (required reviewers, deployment-branch restrictions) to gate use of the
+    # npm publish token. Auto-created with no rules on first run, so this does
+    # not block until an admin configures it in repo settings.
+    environment: npm-publish
     steps:
       - name: Preflight (MOMENTIQ_NPM_PUBLISH_TOKEN must be set)
         env:
@@ -70,7 +75,16 @@ jobs:
             @momentiq/*) ;;
             *) echo "::error::package must be in the @momentiq scope; got '$PKG'"; exit 1 ;;
           esac
+          # Fail fast on a typo'd version (manual-dispatch inputs are error-prone):
+          # the target version must already be published before we tag it.
+          if [[ -z "$(npm view "${PKG}@${VERSION}" version 2>/dev/null)" ]]; then
+            echo "::error::${PKG}@${VERSION} is not published to the registry — refusing to point a dist-tag at a non-existent version (likely a typo)."
+            exit 1
+          fi
+          # Log the BEFORE state for auditability.
+          echo "=== dist-tags for ${PKG} (before) ==="
+          npm dist-tag ls "$PKG" || true
           echo "Pointing dist-tag '$TAG' -> ${PKG}@${VERSION}"
           npm dist-tag add "${PKG}@${VERSION}" "$TAG"
-          echo "=== resulting dist-tags for ${PKG} ==="
+          echo "=== dist-tags for ${PKG} (after) ==="
           npm dist-tag ls "$PKG"
