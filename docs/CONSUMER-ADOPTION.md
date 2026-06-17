@@ -118,7 +118,7 @@ Dark Factory runs the **same** multi-vendor adversarial critic fleet against you
 | Item | Where | Notes |
 |---|---|---|
 | Node.js >= 20 | `node --version` | The CLI's `engines.node` is `>=20`. |
-| `momentiq-ai/dark-factory` Actions access set to `organization` | `gh api -X PUT repos/momentiq-ai/dark-factory/actions/permissions/access -f access_level=organization` (org admin only) | Without this, your `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@<sha>` calls fail at startup with "workflow file issue". Apply it once per consumer org; an early pilot consumer discovered this the hard way. |
+| `momentiq-ai/dark-factory` Actions access set to `organization` | `gh api -X PUT repos/momentiq-ai/dark-factory/actions/permissions/access -f access_level=organization` (org admin only) | Without this, your `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@<sha>` calls fail at startup with "workflow file issue". This is a **one-time setting on the provider repo** (`momentiq-ai/dark-factory`), applied once by a `momentiq-ai` org admin — it grants org repos access to the reusable workflows; individual consumer repos do not run it themselves. An early pilot consumer discovered this the hard way. |
 
 ## 4. Install the CLI
 
