@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.6.0...dark-factory-cli-v2.7.0) (2026-06-17)
+
+
+### Features
+
+* **critic:** fail loud on shallow-clone boundary + codex char preflight ([#182](https://github.com/momentiq-ai/dark-factory/issues/182)/[#181](https://github.com/momentiq-ai/dark-factory/issues/181)) ([#203](https://github.com/momentiq-ai/dark-factory/issues/203)) ([e58fe1a](https://github.com/momentiq-ai/dark-factory/commit/e58fe1a37720b003a678caa94677111c94f70062))
+
 ## [2.6.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.5.0...dark-factory-cli-v2.6.0) (2026-06-12)
 
 
