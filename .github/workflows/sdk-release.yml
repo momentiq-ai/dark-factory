@@ -9,17 +9,20 @@ name: SDK Release
 #   1. Local package.json bumps get reverted post-publish, so the source
 #      drifts from the registry (local says alpha.7 while registry latest
 #      is alpha.9). No git tag, no audit trail.
-#   2. The 0.x `--tag alpha`-only gate (removed in #162) treated stable
-#      0.x releases as if they were pre-releases and never advanced
-#      `latest`, so unpinned installs (`npx @momentiq/sage-cli`, bare
-#      `npm install`) resolved a stale `latest`. A 0.x version is a STABLE
-#      npm release, not a pre-release, and must be installable by default.
+#   2. The 0.x `--tag alpha`-only gate (removed in #162) treated 0.x
+#      releases as if they were pre-releases and never advanced `latest`,
+#      so unpinned installs (`npx @momentiq/sage-cli`, bare `npm install`)
+#      resolved a stale `latest`. The operative distinction is NOT
+#      stability — `0.y.z` is SemVer "initial development" (the API may
+#      change) — but whether the version is a PRERELEASE: `0.2.2` has no
+#      `-` suffix, so npm assigns it `latest` by default; only a real
+#      pre-release (e.g. `1.0.0-rc.1`) is withheld from `latest`.
 #
 # The flow this PR establishes:
 #   conventional commits -> release-please opens "Release PR" with
 #   version bumps + CHANGELOG -> human merges -> tag pushed -> this
-#   workflow publishes to npm: stable releases -> `latest` (npm's default),
-#   semver prereleases (a `-` suffix, e.g. 1.0.0-rc.1) -> the `next` tag.
+#   workflow publishes to npm: non-prerelease versions -> `latest` (npm's
+#   default), semver prereleases (a `-` suffix, e.g. 1.0.0-rc.1) -> `next`.
 #
 # Prerequisites (one-time):
 #   - Repository secret `MOMENTIQ_NPM_PUBLISH_TOKEN`: an automation token for
