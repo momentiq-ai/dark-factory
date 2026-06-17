@@ -81,6 +81,8 @@ import { CRITIC_RESULT_JSON_SCHEMA } from "./critic-result-schema.js";
 import type { CriticAdapter, CriticReviewOptions } from "./critic.js";
 import {
   buildErrorResult,
+  CONTEXT_WINDOW_ERROR_CODE,
+  isContextLengthError,
   mergeAdapterMetadata,
   normalizeCriticEcho,
   parseAssistantJson,
@@ -101,6 +103,19 @@ const execFileAsync = promisify(execFile);
 export const CODEX_SDK_ADAPTER_ID = "codex-sdk";
 export const CODEX_API_KEY_ENV = "CODEX_API_KEY";
 export const CODEX_HOME_ENV = "CODEX_HOME";
+
+// Issues #181 / #182 (defense-in-depth) — Codex's input limit is measured in
+// CHARACTERS (1,048,576), NOT tokens. The shared `checkContextWindow`
+// (gemini/grok) compares a bytes/4 TOKEN estimate against a token window; that
+// is the wrong unit for codex, so this adapter runs its own char-length
+// pre-flight against this constant. A masked shallow-clone diff (#182) produced
+// a ~5.8M-char prompt that codex's SDK rejected with an `input exceeds the
+// maximum length` error which `extractCodexErrorCode` could not classify — so
+// the run burned all 3 retries on a doomed input. This pre-flight short-circuits
+// that before the first (paid, doomed) `thread.run`, and the catch-block
+// reclassification (see `isContextLengthError` usage below) makes the
+// server-side variant permanent too.
+export const CODEX_INPUT_CHAR_LIMIT = 1_048_576;
 
 // Issue #2103 — auth-mode vocabulary the codex-sdk adapter accepts on
 // `critic.auth` (set by `applyProfileAuth()` from
@@ -985,6 +1000,49 @@ export class CodexSdkAdapter implements CriticAdapter {
       }
     }
 
+    // Issues #181 / #182 — PRE-FLIGHT char-length gate. Codex's input limit is
+    // a CHARACTER count (1,048,576), so compare the prompt's character length
+    // (NOT byteLength, NOT the bytes/4 token estimate the shared
+    // `checkContextWindow` uses). When over, short-circuit to a clean,
+    // PERMANENT (non-retryable) `context_window_exceeded` error BEFORE the
+    // first paid `thread.run` — a too-large prompt re-trips identically on
+    // retry, so the 3 retries the old `transport_error` path burned were pure
+    // waste. Returning a `permanent_failure` AttemptOutcome makes
+    // `runRetryLoop` stop at 0 retries (mirrors grok's preflight + the
+    // sandbox-init-failure path below).
+    const promptChars = prompt.text.length;
+    if (promptChars > CODEX_INPUT_CHAR_LIMIT) {
+      const message =
+        `codex prompt exceeds the input character limit ` +
+        `(${promptChars} chars > ${CODEX_INPUT_CHAR_LIMIT} limit). The diff is ` +
+        `too large to review in a single request.`;
+      options.emit?.({
+        ts: new Date().toISOString(),
+        event: "critic_run_error",
+        commit: packet.commit.sha,
+        criticId: critic.id,
+        adapter: this.id,
+        model: critic.model.id,
+        durationMs: Date.now() - startMs,
+        error: message,
+        status: "run_failure_permanent",
+        retryCount: attemptIdx,
+        errorCode: CONTEXT_WINDOW_ERROR_CODE,
+      });
+      return {
+        kind: "permanent_failure",
+        errorCode: CONTEXT_WINDOW_ERROR_CODE,
+        statusMessage: null,
+        result: buildErrorResult({
+          critic,
+          message,
+          retryable: false,
+          code: CONTEXT_WINDOW_ERROR_CODE,
+          retryCount: attemptIdx,
+        }),
+      };
+    }
+
     let codex: CodexClient;
     try {
       codex = this.createCodex({
@@ -1116,6 +1174,45 @@ export class CodexSdkAdapter implements CriticAdapter {
               `codex SDK sandbox-init failure (${SANDBOX_INIT_FAILURE_CODE}): ${sandboxCitation}`,
             retryable: false,
             code: SANDBOX_INIT_FAILURE_CODE,
+            retryCount: attemptIdx,
+            ...(thread.id !== null ? { runId: thread.id } : {}),
+          }),
+        };
+      }
+      // Issues #181 / #182 — server-side over-limit reclassification. When the
+      // char-length pre-flight above let a prompt through (e.g. an estimate
+      // boundary) but codex's SDK still rejects it for length, the thrown
+      // Error carries an over-limit message (`input exceeds the maximum
+      // length` / `input_too_large`, surfaced as a `-32602` invalid-params).
+      // `extractCodexErrorCode` returns null for those (and would miss a
+      // NUMERIC `-32602` even if present, since it only reads string codes),
+      // so without this check the run falls through to `transport_error` and
+      // retries 3x into the same doomed input. Classify as PERMANENT
+      // (non-retryable) `context_window_exceeded` via the message signature.
+      if (isContextLengthError(e.message)) {
+        options.emit?.({
+          ts: new Date().toISOString(),
+          event: "critic_run_error",
+          commit: packet.commit.sha,
+          criticId: critic.id,
+          adapter: this.id,
+          model: critic.model.id,
+          durationMs: Date.now() - startMs,
+          error: e.message,
+          status: "run_failure_permanent",
+          retryCount: attemptIdx,
+          errorCode: CONTEXT_WINDOW_ERROR_CODE,
+          ...(thread.id !== null ? { runId: thread.id } : {}),
+        });
+        return {
+          kind: "permanent_failure",
+          errorCode: CONTEXT_WINDOW_ERROR_CODE,
+          statusMessage: null,
+          result: buildErrorResult({
+            critic,
+            message: `codex SDK run failed (permanent, ${CONTEXT_WINDOW_ERROR_CODE}): ${e.message}`,
+            retryable: false,
+            code: CONTEXT_WINDOW_ERROR_CODE,
             retryCount: attemptIdx,
             ...(thread.id !== null ? { runId: thread.id } : {}),
           }),

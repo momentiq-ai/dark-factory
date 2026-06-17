@@ -7,12 +7,12 @@ import {
   changedFiles,
   commitDiff,
   commitMetadata,
-  commitParent,
   commitStat,
   currentBranch,
   diffHash as diffHashFn,
   gitShowFile,
   resolveCommit,
+  safeParentOrThrow,
 } from "../git.js";
 import { readDockerBuildEvidence, readQualityGateEvidence } from "../evidence/index.js";
 import {
@@ -55,7 +55,11 @@ export async function buildReviewPacket(
   const ref = options.ref ?? "HEAD";
 
   const sha = await resolveCommit(ref, cwd);
-  const parent = await safeParent(sha, cwd);
+  // Issues #181 / #182 — fail loud on a shallow-clone boundary instead of
+  // masking it as a root commit (which would diff the whole repo against the
+  // empty tree and overflow every critic's context window). True root commits
+  // still resolve to "" here.
+  const parent = await safeParentOrThrow(sha, cwd);
   const branch = await currentBranch(cwd);
   const metadata = await commitMetadata(sha, cwd);
   const range = parent ? `${parent}..${sha}` : sha;
@@ -297,14 +301,6 @@ function extractPackagesAfter(
   }
   flush();
   return out;
-}
-
-async function safeParent(sha: string, cwd: string): Promise<string> {
-  try {
-    return await commitParent(sha, cwd);
-  } catch {
-    return "";
-  }
 }
 
 function readGuidanceFiles(repoRoot: string, paths: string[]): GuidanceFile[] {

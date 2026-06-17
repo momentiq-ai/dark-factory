@@ -85,6 +85,102 @@ export async function commitParent(sha: string, cwd: string = process.cwd()): Pr
   return parts[1] ?? "";
 }
 
+// Issues #181 / #182 — count the parent pointers recorded INSIDE the commit
+// object, independent of graft/shallow state. `git cat-file -p <sha>` prints
+// the raw object: a header block (`tree`, zero-or-more `parent`, `author`,
+// `committer`, optional `gpgsig` continuation lines) terminated by a blank
+// line, then the free-form commit message. We count `parent ` lines in the
+// HEADER ONLY.
+//
+// Why this is the discriminator a shallow checkout needs: `git rev-list
+// --parents` (used by `commitParent`) and `%P` (used by `commitMetadata`)
+// both RESPECT the shallow graft — on a `fetch-depth: 1` merge commit they
+// report zero parents because the graft severs the history at that boundary.
+// `cat-file -p` reads the object's literal bytes and bypasses the graft, so
+// it sees the TRUE in-object parent count. A genuine root commit records 0
+// in-object parents; a shallow-boundary commit records ≥1 but those parents
+// are not reachable in the partial clone. That gap is exactly what
+// `safeParentOrThrow` keys on to distinguish a legit root from a masked
+// shallow boundary.
+//
+// Two load-bearing parsing properties (see the column-0 + blank-line guards):
+//   1. Stop at the first blank line — the message body is rendered at column
+//      0, so a body line like "parent commit was reverted" must NOT count.
+//   2. Anchor on start-of-line — gpgsig continuation lines are space-indented
+//      (" wsFcB...") and so already safe, but the anchor makes the intent
+//      explicit and robust to other indented header continuations.
+export async function parentsInObject(
+  sha: string,
+  cwd: string = process.cwd(),
+): Promise<number> {
+  const out = await git(["cat-file", "-p", sha], { cwd });
+  let count = 0;
+  for (const line of out.split("\n")) {
+    if (line === "") break; // end of header block; message body follows
+    if (line.startsWith("parent ")) count++;
+  }
+  return count;
+}
+
+// Issues #181 / #182 — fail-loud parent resolver shared by every packet /
+// verify call site (`rebind.ts`, `commands/verify.ts`). Replaces the old
+// blanket `try { commitParent } catch { return "" }` that masked a shallow-
+// clone boundary as a true root commit:
+//
+//   - True root (`parentsInObject === 0`): the commit genuinely has no
+//     parent. Return "" so `commitDiff` / `changedFiles` take the
+//     `git show <sha>` path (commit-introduces-everything). This is the
+//     ONE legitimate empty-parent case.
+//
+//   - Shallow boundary (`parentsInObject > 0` but `commitParent` couldn't
+//     reach the parent): the clone is too shallow. THROW with a "deepen the
+//     clone (fetch-depth: 0)" remediation. Returning "" here is the #182 bug:
+//     it makes the packet diff against the empty tree = the WHOLE repo, which
+//     blows past every vendor's context window and silently shrinks the
+//     critic quorum to whichever adapter has the largest window.
+//
+// We do NOT key on `git rev-parse --is-shallow-repository` (it reports `true`
+// even at `fetch-depth: 2`, where the parent IS reachable and the diff is
+// correct) — the in-object-parent-count vs. reachable-parent gap is the
+// precise signal.
+export class ShallowParentError extends Error {
+  constructor(public readonly sha: string) {
+    super(
+      `commit ${sha} records a parent in its object but the parent is not ` +
+        `present in this clone (shallow boundary). The review packet would ` +
+        `otherwise diff against the empty tree and send the ENTIRE repository ` +
+        `to the critics, overflowing their context windows. Deepen the clone ` +
+        `(set \`fetch-depth: 0\` on actions/checkout, or run ` +
+        `\`git fetch --unshallow\`) so the parent commit is reachable.`,
+    );
+    this.name = "ShallowParentError";
+  }
+}
+
+export async function safeParentOrThrow(
+  sha: string,
+  cwd: string = process.cwd(),
+): Promise<string> {
+  try {
+    return await commitParent(sha, cwd);
+  } catch (err) {
+    // commitParent threw — either a true root (0 in-object parents, legit) or
+    // a shallow boundary (≥1 in-object parent, not reachable). Disambiguate
+    // via the graft-independent in-object count.
+    let inObject: number;
+    try {
+      inObject = await parentsInObject(sha, cwd);
+    } catch {
+      // cat-file itself failed (e.g. the object is genuinely missing) — that
+      // is a different fault than a shallow boundary; surface the original
+      // commitParent error rather than mislabeling it "deepen the clone".
+      throw err;
+    }
+    if (inObject === 0) return ""; // true root commit
+    throw new ShallowParentError(sha);
+  }
+}
+
 export async function commitMetadata(sha: string, cwd: string = process.cwd()): Promise<CommitMetadata> {
   // ASCII Unit Separator (0x1F) is reserved as a delimiter in git pretty-format output.
   const sep = "\x1f";

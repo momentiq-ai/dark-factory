@@ -144,6 +144,20 @@ jobs:
       DF_CRITIC_TIMEOUT_MS: '900000'
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Issues #181 / #182 — full history (NOT the default shallow
+          # `fetch-depth: 1`). `df critic` → `buildReviewPacket` resolves the
+          # commit's parent to diff `parent..HEAD`. On a shallow merge commit
+          # the parent is severed by the shallow graft, so the parent lookup
+          # finds nothing; the packet would then diff against the empty tree =
+          # the ENTIRE repo, overflowing codex/gemini/grok context windows and
+          # silently shrinking the critic quorum to whichever adapter has the
+          # largest window. `fetch-depth: 0` makes the parent reachable. The
+          # `safeParentOrThrow` guard in the CLI now also fails LOUD on a
+          # shallow boundary (rather than masking it), so this setting is the
+          # paired fix that keeps the gate green — and it auto-fixes
+          # `workflow_call:` consumers without a contract change on their side.
+          fetch-depth: 0
 
       - name: Setup Node 20
         uses: actions/setup-node@v6
