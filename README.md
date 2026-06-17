@@ -17,7 +17,8 @@ this is a gate, not a vibe.
 
 | Starting from | Time | Walkthrough |
 |---|---|---|
-| **A blank slate** | ~25 min | [`docs/getting-started.md`](docs/getting-started.md) — scaffold with `npx @momentiq/sage-cli` → first agent call → first commit reviewed → first push gated |
+| **A blank slate (TypeScript)** | ~10 min | [`docs/getting-started.md`](docs/getting-started.md) — lean Cerebe template (Bun + Hono + Svelte), native dev, no containers **(recommended)** |
+| **A blank slate (full platform)** | ~25 min | [`docs/getting-started.md`](docs/getting-started.md#sage-full-platform-python--k8s) — Sage scaffold (Python + k8s + Helm + ArgoCD) |
 | **An existing repo** | ~30 min | [`docs/CONSUMER-ADOPTION.md`](docs/CONSUMER-ADOPTION.md) — retrofit Dark Factory into a repo you already have |
 
 ## What's in this repo
