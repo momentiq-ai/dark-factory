@@ -1,0 +1,90 @@
+name: npm dist-tag
+
+# Manually re-point an npm dist-tag for a published @momentiq package.
+#
+# Why this exists: `npm dist-tag` requires the @momentiq publish token, which
+# lives only in CI (repo secret MOMENTIQ_NPM_PUBLISH_TOKEN) — it is not
+# available on contributor machines. This workflow is the sanctioned way to
+# correct a dist-tag from the trusted CI surface.
+#
+# Primary motivating use (#162 follow-up): a pre-1.0 package published
+# `--tag alpha`-only never advanced `latest`, leaving e.g.
+# `@momentiq/dark-factory-schemas@latest` stale. sdk-release.yml now publishes
+# non-prerelease versions to `latest` going forward; this fixes the existing
+# stale pointer once.
+#
+# Security: all `${{ inputs.* }}` values are routed through `env:` and
+# dereferenced as `$VAR` (never interpolated into a `run:` line) to prevent
+# shell injection.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "npm package name (e.g. @momentiq/dark-factory-schemas)"
+        required: true
+        type: string
+      version:
+        description: "already-published version to point the tag at (e.g. 0.8.0)"
+        required: true
+        type: string
+      tag:
+        description: "dist-tag to set (e.g. latest)"
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dist-tag:
+    name: Set dist-tag
+    runs-on: ubuntu-latest
+    # Bind to a GitHub Environment so repo admins can attach protection rules
+    # (required reviewers, deployment-branch restrictions) to gate use of the
+    # npm publish token. Auto-created with no rules on first run, so this does
+    # not block until an admin configures it in repo settings.
+    environment: npm-publish
+    steps:
+      - name: Preflight (MOMENTIQ_NPM_PUBLISH_TOKEN must be set)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.MOMENTIQ_NPM_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::MOMENTIQ_NPM_PUBLISH_TOKEN repo secret is unset. Generate an @momentiq automation token at npmjs.com and set it via: gh secret set MOMENTIQ_NPM_PUBLISH_TOKEN --repo momentiq-ai/dark-factory"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Add dist-tag
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.MOMENTIQ_NPM_PUBLISH_TOKEN }}
+          PKG: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Guard the @momentiq scope so this tool can only touch our packages.
+          case "$PKG" in
+            @momentiq/*) ;;
+            *) echo "::error::package must be in the @momentiq scope; got '$PKG'"; exit 1 ;;
+          esac
+          # Fail fast on a typo'd version (manual-dispatch inputs are error-prone):
+          # the target version must already be published before we tag it.
+          if [[ -z "$(npm view "${PKG}@${VERSION}" version 2>/dev/null)" ]]; then
+            echo "::error::${PKG}@${VERSION} is not published to the registry — refusing to point a dist-tag at a non-existent version (likely a typo)."
+            exit 1
+          fi
+          # Log the BEFORE state for auditability.
+          echo "=== dist-tags for ${PKG} (before) ==="
+          npm dist-tag ls "$PKG" || true
+          echo "Pointing dist-tag '$TAG' -> ${PKG}@${VERSION}"
+          npm dist-tag add "${PKG}@${VERSION}" "$TAG"
+          echo "=== dist-tags for ${PKG} (after) ==="
+          npm dist-tag ls "$PKG"
