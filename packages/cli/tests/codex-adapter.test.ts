@@ -30,6 +30,7 @@ import { CRITIC_RESULT_JSON_SCHEMA } from "../src/adapters/critic-result-schema.
 import {
   CODEX_API_KEY_ENV,
   CODEX_HOME_ENV,
+  CODEX_INPUT_CHAR_LIMIT,
   CODEX_SANDBOX_MODES,
   CODEX_SDK_ADAPTER_ID,
   CodexSdkAdapter,
@@ -44,6 +45,7 @@ import {
   type CodexThread,
   type CodexTurnResult,
 } from "../src/adapters/codex-sdk.js";
+import { CONTEXT_WINDOW_ERROR_CODE } from "../src/adapters/_shared.js";
 import {
   buildErrorResult as _buildErrorResult,
 } from "../src/adapters/_shared.js";
@@ -601,6 +603,115 @@ test("review: SDK throws exhausting all retries → exhausted error result with 
   expect_eq(result.status, "error");
   expect_eq(attemptCount, 3);
   expect_eq(result.error?.retryCount, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Issues #181 / #182 — codex char-length pre-flight + over-limit
+// reclassification (defense-in-depth against the shallow-clone prompt bloat).
+
+test("review: prompt over CODEX_INPUT_CHAR_LIMIT → context_window_exceeded with 0 retries; SDK never invoked (#181/#182)", async () => {
+  // The bug it guards: a masked shallow-clone diff produced a ~5.8M-char
+  // prompt; codex's SDK rejected it as too large, but `extractCodexErrorCode`
+  // returned null → `transport_error` → 3 wasted retries. The char-length
+  // pre-flight short-circuits to a PERMANENT error BEFORE the first (paid,
+  // doomed) `thread.run`, so the mock `run` must never be called and the
+  // retry count must be 0.
+  let runCalls = 0;
+  let startThreadCalls = 0;
+  const events: TelemetryEvent[] = [];
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    sleep: async () => {},
+    createCodex: () => ({
+      startThread: () => {
+        startThreadCalls++;
+        return {
+          get id() {
+            return "thread_test_1";
+          },
+          run: async () => {
+            runCalls++;
+            return makeTurn();
+          },
+        } as CodexThread;
+      },
+    }),
+  });
+  // packet.diff is embedded verbatim into the compiled prompt, so a diff
+  // longer than the char limit guarantees an over-limit prompt.
+  const hugePacket: ReviewPacket = {
+    ...PACKET,
+    diff: "+".repeat(CODEX_INPUT_CHAR_LIMIT + 1),
+  };
+  const result = await adapter.review(hugePacket, CRITIC, {
+    blockingSeverities: ["blocker"],
+    emit: (e) => events.push(e),
+  });
+
+  expect_eq(result.status, "error");
+  expect_eq(result.error?.code, CONTEXT_WINDOW_ERROR_CODE);
+  expect_eq(result.error?.retryable, false);
+  expect_eq(result.error?.retryCount, 0, "over-limit prompt must NOT retry");
+  expect_eq(runCalls, 0, "the SDK thread.run must never be invoked for a doomed prompt");
+  expect_eq(startThreadCalls, 0, "the SDK must not even start a thread");
+  expect_match(result.error?.message ?? "", /character limit|input character/i);
+  const errEvent = events.find((e) => e.event === "critic_run_error");
+  expect_eq(errEvent?.errorCode, CONTEXT_WINDOW_ERROR_CODE);
+});
+
+test("review: a prompt that fits the char limit dispatches normally (pre-flight is not over-eager)", async () => {
+  // Guard against the pre-flight false-positive direction: a small prompt
+  // (the default PACKET) must NOT be short-circuited — the SDK runs and the
+  // normal APPROVED result comes back.
+  let runCalls = 0;
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    createCodex: () =>
+      makeMockClient({
+        run: async () => {
+          runCalls++;
+          return makeTurn({ finalResponse: APPROVED_RESPONSE_JSON });
+        },
+      }),
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker"],
+  });
+  expect_eq(result.status, "complete");
+  expect_eq(result.verdict, "APPROVED");
+  expect_eq(runCalls, 1, "a fitting prompt must dispatch exactly one SDK run");
+});
+
+test("review: SDK throws an over-limit (input_too_large) error → permanent context_window_exceeded, no retry (#181/#182)", async () => {
+  // Server-side variant: the pre-flight let it through (e.g. boundary), but
+  // codex's SDK still rejects for length. The thrown Error carries an
+  // over-limit message that `isContextLengthError` matches; the adapter must
+  // classify it PERMANENT (not retry it 3x as transport_error).
+  let attemptCount = 0;
+  const events: TelemetryEvent[] = [];
+  const adapter = new CodexSdkAdapter({
+    apiKey: "k",
+    sleep: async () => {},
+    createCodex: () =>
+      makeMockClient({
+        run: async () => {
+          attemptCount++;
+          // Mirror the codex SDK's -32602 over-limit shape (message-based;
+          // extractCodexErrorCode returns null for this).
+          throw new Error("input exceeds the maximum length of 1048576 characters");
+        },
+      }),
+  });
+  const result = await adapter.review(PACKET, CRITIC, {
+    blockingSeverities: ["blocker"],
+    emit: (e) => events.push(e),
+  });
+  expect_eq(result.status, "error");
+  expect_eq(result.error?.code, CONTEXT_WINDOW_ERROR_CODE);
+  expect_eq(result.error?.retryable, false);
+  expect_eq(attemptCount, 1, "over-limit SDK error must NOT retry");
+  const errEvent = events.find((e) => e.event === "critic_run_error");
+  expect_eq(errEvent?.errorCode, CONTEXT_WINDOW_ERROR_CODE);
 });
 
 test("review: thrown Error without SDK 'code' field → transient (retried) — transport_error code in telemetry", async () => {

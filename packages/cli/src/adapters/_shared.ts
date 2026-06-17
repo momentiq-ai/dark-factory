@@ -253,6 +253,15 @@ export function isContextLengthError(message: string | undefined | null): boolea
   if (m.includes("maximum prompt length") && m.includes("tokens")) return true;
   // OpenAI-family canonical "maximum context length is N tokens ... your messages resulted in M tokens"
   if (m.includes("maximum context length") && m.includes("tokens")) return true;
+  // Issues #181 / #182 — codex SDK over-limit shapes. Codex measures input in
+  // CHARACTERS, not tokens, so its over-limit copy phrases differently than
+  // the token-based vendors above: a `-32602` invalid-params error whose
+  // message is `input exceeds the maximum length` / `input_too_large`. Both
+  // are precise, stable substrings of the SDK's over-limit message; matching
+  // them lets the codex adapter classify the server-side over-limit as
+  // PERMANENT (non-retryable) instead of burning 3 retries on a doomed input.
+  if (m.includes("input exceeds the maximum length")) return true;
+  if (m.includes("input_too_large")) return true;
   // Defensive generic: any "context length" / "context window" phrasing paired
   // with an over-limit verb. Keeps the classifier resilient to minor copy
   // drift without matching unrelated 400s.

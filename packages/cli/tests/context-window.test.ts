@@ -96,6 +96,19 @@ test("isContextLengthError: matches the OpenAI-family 'maximum context length' p
   );
 });
 
+test("isContextLengthError: matches the codex over-limit shapes (#181/#182)", () => {
+  // Codex measures input in CHARACTERS, so its over-limit copy phrases
+  // differently than the token-based vendors. Both substrings are stable
+  // pieces of the SDK's -32602 over-limit message.
+  expect_eq(
+    isContextLengthError("input exceeds the maximum length of 1048576 characters"),
+    true,
+  );
+  expect_eq(isContextLengthError("Error: input_too_large"), true);
+  // Case-insensitive (the classifier lowercases first).
+  expect_eq(isContextLengthError("Input Exceeds The Maximum Length"), true);
+});
+
 test("isContextLengthError: does NOT match unrelated 400s (bad model id, malformed request)", () => {
   expect_eq(isContextLengthError("model 'grok-99' not found"), false);
   expect_eq(isContextLengthError("Invalid value for 'temperature': must be <= 2"), false);

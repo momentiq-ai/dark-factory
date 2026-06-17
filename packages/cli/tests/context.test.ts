@@ -17,8 +17,9 @@ import { join } from "node:path";
 import { loadAgentReviewConfig } from "../src/policy/config.js";
 import { buildReviewPacket } from "../src/trusted-surface/rebind.js";
 import { perShaQualityGatePath } from "../src/evidence/index.js";
-import { gitCommonDir, repoRoot } from "../src/git.js";
+import { gitCommonDir, parentsInObject, repoRoot, safeParentOrThrow } from "../src/git.js";
 import { resolveArtifactRoot, resolveValidationResultPath } from "../src/paths.js";
+import { compileCriticPrompt } from "../src/prompt.js";
 
 const CONFIG = {
   version: 1,
@@ -310,4 +311,170 @@ test("buildReviewPacket falls back to latest.json when per-SHA is absent and SHA
   expect_eq(packet.validation.evidence[0]?.command, "make test");
   expect_deep(packet.validation.missing, []);
   expect_eq(packet.validation.stale, false);
+});
+
+// ----------------------------------------------------------------------------
+// Issues #181 / #182 — shallow-clone boundary guard.
+//
+// The bug: the old `safeParent` did `try { commitParent } catch { return "" }`.
+// On a `fetch-depth: 1` (shallow) checkout the parent lookup throws because the
+// shallow graft severs the parent, so `safeParent` returned "" — masking the
+// boundary as a true ROOT commit. With `parent === ""`, `commitDiff` /
+// `changedFiles` diff against the EMPTY TREE = the whole repo, producing a
+// multi-megabyte prompt that overflows codex/gemini/grok context windows and
+// silently shrinks the critic quorum.
+//
+// The fix (`safeParentOrThrow` + `parentsInObject`): use `git cat-file -p` —
+// which bypasses the graft and sees the TRUE in-object parent count — to
+// disambiguate. 0 in-object parents = legit root (return ""); ≥1 in-object
+// parent but unreachable = shallow boundary (THROW with a deepen-the-clone
+// hint). These tests build a REAL shallow clone (the suite has no git mock
+// seam; every packet test spins a real repo) to exercise both halves.
+// ----------------------------------------------------------------------------
+
+function runGitOut(args: string[], cwd: string): string {
+  const r = spawnSync("git", args, { cwd, env: process.env, encoding: "utf8" });
+  if (r.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
+  }
+  return r.stdout.trim();
+}
+
+// Build a source repo with ≥2 commits, then a depth-1 clone of it (so the
+// clone's HEAD is a shallow boundary: it records a parent in-object but the
+// parent object is absent). Returns the shallow clone dir + its HEAD sha.
+async function setupShallowClone(): Promise<{
+  source: string;
+  shallow: string;
+  headSha: string;
+}> {
+  const source = mkdtempSync(join(tmpdir(), "agent-review-shallow-src-"));
+  runGit(["init", "-q", "-b", "main", source], process.cwd());
+  runGit(["config", "user.email", "test@example.com"], source);
+  runGit(["config", "user.name", "Test"], source);
+  runGit(["config", "commit.gpgsign", "false"], source);
+  writeFileSync(join(source, "README.md"), "# repo\n");
+  runGit(["add", "."], source);
+  runGit(["commit", "-q", "-m", "initial"], source);
+  writeFileSync(join(source, "second.txt"), "second commit content\n");
+  runGit(["add", "."], source);
+  runGit(["commit", "-q", "-m", "feat: second"], source);
+
+  const shallow = mkdtempSync(join(tmpdir(), "agent-review-shallow-clone-"));
+  // `file://` is load-bearing: a plain local-path clone IGNORES `--depth`
+  // (git hardlinks the whole object store). Only a `file://` URL produces a
+  // genuine shallow clone with an unreachable parent at the boundary.
+  runGit(["clone", "-q", "--depth=1", `file://${source}`, shallow], process.cwd());
+  const headSha = runGitOut(["rev-parse", "HEAD"], shallow);
+  return { source, shallow, headSha };
+}
+
+test("safeParentOrThrow: throws the deepen-the-clone hint at a shallow boundary (#181/#182)", async () => {
+  const { shallow, headSha } = await setupShallowClone();
+  // Sanity: the clone really is shallow AND the in-object parent count is ≥1
+  // (the graft-independent signal the fix keys on).
+  expect_eq(
+    runGitOut(["rev-parse", "--is-shallow-repository"], shallow),
+    "true",
+    "expected a genuinely shallow clone",
+  );
+  expect_truthy(
+    (await parentsInObject(headSha, shallow)) >= 1,
+    "shallow HEAD must record ≥1 in-object parent (else the test isn't exercising the boundary)",
+  );
+  await expect_rejects(
+    () => safeParentOrThrow(headSha, shallow),
+    /shallow boundary|fetch-depth: 0|unshallow/,
+  );
+});
+
+test("buildReviewPacket: throws (not whole-repo diff) on a shallow boundary (#181/#182)", async () => {
+  const { shallow } = await setupShallowClone();
+  // The clone has no .agent-review/config.json; write one so loadConfig
+  // succeeds and we reach the parent-resolution step inside buildReviewPacket.
+  mkdirSync(join(shallow, ".agent-review"), { recursive: true });
+  writeFileSync(join(shallow, ".agent-review/config.json"), JSON.stringify(CONFIG));
+  const loaded = await loadAgentReviewConfig({ cwd: shallow, validateGuidanceFiles: false });
+  await expect_rejects(
+    () => buildReviewPacket(loaded, { cwd: shallow }),
+    /shallow boundary|fetch-depth: 0|unshallow/,
+  );
+});
+
+test("safeParentOrThrow: a TRUE root commit still resolves to '' (0 in-object parents)", async () => {
+  // Regression guard: the fix must NOT break the legitimate empty-parent case.
+  // The very first commit of a full repo has 0 in-object parents → "".
+  const dir = mkdtempSync(join(tmpdir(), "agent-review-root-"));
+  runGit(["init", "-q", "-b", "main", dir], process.cwd());
+  runGit(["config", "user.email", "test@example.com"], dir);
+  runGit(["config", "user.name", "Test"], dir);
+  runGit(["config", "commit.gpgsign", "false"], dir);
+  writeFileSync(join(dir, "README.md"), "# repo\n");
+  runGit(["add", "."], dir);
+  runGit(["commit", "-q", "-m", "initial"], dir);
+  const rootSha = runGitOut(["rev-parse", "HEAD"], dir);
+  expect_eq(await parentsInObject(rootSha, dir), 0, "root commit has 0 in-object parents");
+  expect_eq(await safeParentOrThrow(rootSha, dir), "", "true root must resolve to empty parent");
+});
+
+test("buildReviewPacket: a true root commit builds with range === sha (commit-introduces-everything)", async () => {
+  // The single-commit repo's HEAD is a true root. The packet must build (no
+  // throw) and `range` must be the bare sha, not `<empty-tree>..sha`.
+  const dir = mkdtempSync(join(tmpdir(), "agent-review-root-packet-"));
+  runGit(["init", "-q", "-b", "main", dir], process.cwd());
+  runGit(["config", "user.email", "test@example.com"], dir);
+  runGit(["config", "user.name", "Test"], dir);
+  runGit(["config", "commit.gpgsign", "false"], dir);
+  writeFileSync(join(dir, "README.md"), "# repo\n");
+  runGit(["add", "."], dir);
+  runGit(["commit", "-q", "-m", "initial"], dir);
+  mkdirSync(join(dir, ".agent-review"), { recursive: true });
+  writeFileSync(join(dir, ".agent-review/config.json"), JSON.stringify(CONFIG));
+  const sha = runGitOut(["rev-parse", "HEAD"], dir);
+
+  const loaded = await loadAgentReviewConfig({ cwd: dir, validateGuidanceFiles: false });
+  const packet = await buildReviewPacket(loaded, { cwd: dir });
+  expect_eq(packet.range, sha, "true root packet range must be the bare sha");
+  expect_eq(packet.commit.subject, "initial");
+});
+
+// ----------------------------------------------------------------------------
+// Issues #181 / #182 — prompt-size bound. The whole point of the guard: a
+// SMALL, normal commit must produce a SMALL prompt. Before the fix, a masked
+// shallow boundary turned a one-file change into a whole-repo diff and a
+// multi-megabyte prompt. This asserts the assembled critic prompt for a tiny
+// diff stays well under a generous bound (512 KB), so a future regression that
+// re-introduces whole-repo diffing fails here loudly.
+// ----------------------------------------------------------------------------
+
+test("compileCriticPrompt: a small one-file commit yields a prompt well under 512KB (#181/#182)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agent-review-promptsize-"));
+  runGit(["init", "-q", "-b", "main", dir], process.cwd());
+  runGit(["config", "user.email", "test@example.com"], dir);
+  runGit(["config", "user.name", "Test"], dir);
+  runGit(["config", "commit.gpgsign", "false"], dir);
+  writeFileSync(join(dir, "README.md"), "# repo\n");
+  runGit(["add", "."], dir);
+  runGit(["commit", "-q", "-m", "initial"], dir);
+  writeFileSync(join(dir, "small.py"), "def small():\n    return 42\n");
+  runGit(["add", "."], dir);
+  runGit(["commit", "-q", "-m", "feat: add small"], dir);
+  mkdirSync(join(dir, ".agent-review"), { recursive: true });
+  writeFileSync(join(dir, ".agent-review/config.json"), JSON.stringify(CONFIG));
+
+  const loaded = await loadAgentReviewConfig({ cwd: dir, validateGuidanceFiles: false });
+  const packet = await buildReviewPacket(loaded, { cwd: dir });
+  const prompt = compileCriticPrompt({
+    packet,
+    critic: loaded.config.critics[0]!,
+    blockingSeverities: ["blocker", "high"],
+    treatDiffAsUntrusted: true,
+  });
+  const HALF_MB = 512 * 1024;
+  expect_truthy(
+    prompt.byteLength < HALF_MB,
+    `small-diff prompt should be < ${HALF_MB} bytes; got ${prompt.byteLength}`,
+  );
+  // Cross-check the byteLength field matches the actual text encoding.
+  expect_eq(prompt.byteLength, Buffer.byteLength(prompt.text, "utf8"));
 });
