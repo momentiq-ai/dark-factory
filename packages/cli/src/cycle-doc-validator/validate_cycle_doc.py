@@ -1036,7 +1036,7 @@ def terminal_status_error(cycle_id: str, doc: CycleDoc, pr_type: str, source: st
     return None
 
 
-OBJECTIVE_ID_RE = re.compile(r"^(cycle|issue)\d+#(ec|ac)\d+$")
+OBJECTIVE_ID_RE = re.compile(r"^(cycle\d+(\.\d+)*#ec\d+|issue\d+#ac\d+)$")
 OBJECTIVES_MANIFEST_PATH = ".darkfactory/objectives.yaml"
 
 
@@ -1049,17 +1049,20 @@ def _route_ids(repo_root: Path) -> set[str]:
     except json.JSONDecodeError:
         return set()
     routes = (data.get("validation") or {}).get("verificationRoutes") or []
-    return {r.get("id") for r in routes if isinstance(r, dict) and r.get("id")}
+    return {r.get("id") for r in routes if isinstance(r, dict) and isinstance(r.get("id"), str)}
 
 
 def _declared_refs(trailers: "Trailers") -> set[str]:
     # The PR's declared sources of intent, keyed "<kind>:<ref>" to match an
-    # objective's source. Cycle trailer ref is bare ("21"); issue ref is
-    # normalized to strip a leading "#" so "1234" and "#1234" compare equal
+    # objective's source. Cycle trailer ref is normalized via normalize_cycle_id
+    # so dotted ids like "318.4" and trailer values like "Cycle 318.4" compare
+    # equal. Issue ref strips a leading "#" so "1234" and "#1234" both match
     # (mirroring the TS parseObjective's `ref.replace(/^#/, "")`).
     refs: set[str] = set()
     if trailers.cycle:
-        refs.add(f"cycle:{trailers.cycle.strip()}")
+        cycle_id = normalize_cycle_id(trailers.cycle)
+        if cycle_id:
+            refs.add(f"cycle:{cycle_id}")
     if trailers.issue:
         refs.add(f"issue:{re.sub(r'^#', '', trailers.issue).strip()}")
     return refs
@@ -1091,6 +1094,8 @@ def validate_objectives(repo_root: Path, trailers: "Trailers") -> list[str]:
         ]
     except yaml.YAMLError as exc:
         return [f"{OBJECTIVES_MANIFEST_PATH}: invalid YAML — {exc}"]
+    if not isinstance(data, dict):
+        return [f"{OBJECTIVES_MANIFEST_PATH}: top-level must be a mapping"]
     objectives = data.get("objectives")
     if not isinstance(objectives, list):
         return [f"{OBJECTIVES_MANIFEST_PATH}: 'objectives' must be a list"]
@@ -1108,11 +1113,20 @@ def validate_objectives(repo_root: Path, trailers: "Trailers") -> list[str]:
             errors.append(
                 f"{loc}.id: expected 'cycle<N>#ec<k>' or 'issue<N>#ac<k>', got {oid!r}"
             )
-        source = obj.get("source") or {}
+        source = obj.get("source")
+        if not isinstance(source, dict):
+            errors.append(f"{loc}.source: expected a mapping, got {source!r}")
+            continue
         kind, ref = source.get("kind"), source.get("ref")
-        # Normalize a leading "#" on issue refs so "1234" and "#1234" both match,
-        # consistent with _declared_refs and the TS parseObjective contract.
-        normalized_ref = re.sub(r'^#', '', ref) if kind == "issue" and isinstance(ref, str) else ref
+        # Normalize refs to match _declared_refs: cycle ids go through
+        # normalize_cycle_id (handles dotted ids and "Cycle N.N" prefixes);
+        # issue refs strip a leading "#" so "1234" and "#1234" compare equal.
+        if kind == "cycle" and isinstance(ref, str):
+            normalized_ref = normalize_cycle_id(ref)
+        elif kind == "issue" and isinstance(ref, str):
+            normalized_ref = re.sub(r'^#', '', ref)
+        else:
+            normalized_ref = ref
         if f"{kind}:{normalized_ref}" not in declared:
             errors.append(
                 f"{loc}.source: {kind} {ref!r} is not linked by any Cycle:/Closes #N trailer on this PR"

@@ -1102,3 +1102,52 @@ def test_objectives_issue_unmatched_ref(tmp_path):
     trailers = parse_trailers("Closes #1234\n")
     errors = validate_objectives(tmp_path, trailers)
     assert any("not linked" in e for e in errors)
+
+
+def test_objectives_dotted_cycle_linked(tmp_path):
+    """Dotted cycle objective (cycle318.4#ec1) links to 'Cycle: 318.4' trailer → no error.
+
+    This is the regression the dotted-cycle support fixes: OBJECTIVE_ID_RE previously
+    rejected ids containing a dot, and _declared_refs / validate_objectives previously
+    did not normalize the cycle id through normalize_cycle_id.
+    """
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle318.4#ec1
+            source: { kind: cycle, ref: "318.4" }
+            text: "Dotted sub-cycle objective."
+            attestedBy:
+              - { kind: critic, criticId: codex }
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 318.4\n")
+    assert validate_objectives(tmp_path, trailers) == []
+
+
+def test_objectives_malformed_manifest_top_level_list(tmp_path):
+    """A top-level YAML list (not a mapping) returns an error and does NOT raise."""
+    manifest = tmp_path / ".darkfactory" / "objectives.yaml"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("- item1\n- item2\n")
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers)
+    assert len(errors) == 1
+    assert "top-level must be a mapping" in errors[0]
+
+
+def test_objectives_non_dict_source(tmp_path):
+    """An objective with a non-dict source field returns an error and does NOT raise."""
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: "not-a-dict"
+            text: "Bad source."
+            attestedBy:
+              - { kind: critic, criticId: codex }
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers)
+    assert any("expected a mapping" in e for e in errors)

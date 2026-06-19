@@ -64,4 +64,41 @@ describe("parseObjectivesManifest", () => {
     expect(OBJECTIVE_ID_RE.test("issue9#ac1")).toBe(true);
     expect(OBJECTIVE_ID_RE.test("cycle3#xx1")).toBe(false);
   });
+
+  it("rejects cross-kind id pairings", () => {
+    // cycle kind must use #ec suffix; issue kind must use #ac suffix
+    expect(OBJECTIVE_ID_RE.test("cycle3#ac1")).toBe(false);
+    expect(OBJECTIVE_ID_RE.test("issue3#ec1")).toBe(false);
+  });
+
+  it("accepts dotted cycle ids", () => {
+    expect(OBJECTIVE_ID_RE.test("cycle318.4#ec1")).toBe(true);
+    expect(OBJECTIVE_ID_RE.test("cycle331.1#ec2")).toBe(true);
+    const m1 = parseObjectivesManifest({
+      schemaVersion: 1,
+      objectives: [
+        {
+          id: "cycle318.4#ec1",
+          source: { kind: "cycle", ref: "318.4" },
+          text: "Dotted cycle objective.",
+          attestedBy: [{ kind: "critic", criticId: "codex" }],
+          enforced: false,
+        },
+      ],
+    });
+    expect(m1.objectives[0].id).toBe("cycle318.4#ec1");
+    const m2 = parseObjectivesManifest({
+      schemaVersion: 1,
+      objectives: [
+        {
+          id: "cycle331.1#ec2",
+          source: { kind: "cycle", ref: "331.1" },
+          text: "Sub-cycle objective.",
+          attestedBy: [{ kind: "critic", criticId: "cursor" }],
+          enforced: false,
+        },
+      ],
+    });
+    expect(m2.objectives[0].id).toBe("cycle331.1#ec2");
+  });
 });
