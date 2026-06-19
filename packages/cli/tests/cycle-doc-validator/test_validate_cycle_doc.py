@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import textwrap
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -35,6 +37,7 @@ from validate_cycle_doc import (  # noqa: E402
     read_cycle_frontmatter_from_text,
     status_completion_in_diff,
     validate,
+    validate_objectives,
 )
 
 
@@ -966,3 +969,136 @@ def test_is_gh_not_found_error_distinguishes_404_from_other_errors():
     assert validator._is_gh_not_found_error(err_404_lower) is True
     assert validator._is_gh_not_found_error(err_403) is False
     assert validator._is_gh_not_found_error(err_500) is False
+
+
+# ---------------------------------------------------------------------------
+# validate_objectives
+# ---------------------------------------------------------------------------
+
+
+def _write_manifest(repo_root, body: str):
+    d = repo_root / ".darkfactory"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "objectives.yaml").write_text(textwrap.dedent(body))
+
+
+def _write_config(repo_root, route_ids):
+    routes = ",".join(
+        f'{{"id":"{r}","trigger":["x/**"],"command":null,"evidencePath":null,"category":"c"}}'
+        for r in route_ids
+    )
+    cfg = repo_root / ".agent-review"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "config.json").write_text(
+        '{"version":1,"validation":{"verificationRoutes":[' + routes + "]}}"
+    )
+
+
+def test_objectives_ok(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Route table populated."
+            attestedBy:
+              - { kind: route, routeId: targeted-test }
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\nCloses #1234\n")
+    assert validate_objectives(tmp_path, trailers) == []
+
+
+def test_objectives_unlinked_source(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle99#ec1
+            source: { kind: cycle, ref: "99" }
+            text: "Orphan."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers)
+    assert any("not linked" in e for e in errors)
+
+
+def test_objectives_unknown_route(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: nope }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers)
+    assert any("verificationRoute" in e for e in errors)
+
+
+def test_no_manifest_is_noop(tmp_path):
+    trailers = parse_trailers("Cycle: 21\n")
+    assert validate_objectives(tmp_path, trailers) == []
+
+
+def test_objectives_issue_bare_ref_linked(tmp_path):
+    """Issue objective with bare ref ('1234') + 'Closes #1234' trailer → no error.
+
+    This is the key regression the #-prefix normalization fix addresses: the TS
+    parseObjective accepts ref: '1234' (bare), parse_trailers stores '#1234' from
+    the autoclose keyword. Without normalization they never match.
+    """
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: issue1234#ac1
+            source: { kind: issue, ref: "1234" }
+            text: "Bare ref links correctly."
+            attestedBy:
+              - { kind: route, routeId: targeted-test }
+            enforced: false
+    """)
+    trailers = parse_trailers("Closes #1234\n")
+    assert validate_objectives(tmp_path, trailers) == []
+
+
+def test_objectives_issue_hash_ref_linked(tmp_path):
+    """Issue objective with hash-prefixed ref ('#1234') + 'Issue: #1234' trailer → no error."""
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: issue1234#ac1
+            source: { kind: issue, ref: "#1234" }
+            text: "Hash-prefixed ref links correctly."
+            attestedBy:
+              - { kind: route, routeId: targeted-test }
+            enforced: false
+    """)
+    trailers = parse_trailers("Issue: #1234\n")
+    assert validate_objectives(tmp_path, trailers) == []
+
+
+def test_objectives_issue_unmatched_ref(tmp_path):
+    """Issue objective whose ref matches no trailer → 'not linked' error."""
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: issue9999#ac1
+            source: { kind: issue, ref: "9999" }
+            text: "Unlinked issue objective."
+            attestedBy:
+              - { kind: route, routeId: targeted-test }
+            enforced: false
+    """)
+    trailers = parse_trailers("Closes #1234\n")
+    errors = validate_objectives(tmp_path, trailers)
+    assert any("not linked" in e for e in errors)

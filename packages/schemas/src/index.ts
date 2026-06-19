@@ -331,6 +331,34 @@ export interface VerificationRoute {
   evidenceKind?: EvidenceKind;
 }
 
+export type ObjectiveSource = { kind: "cycle" | "issue"; ref: string };
+
+export type EvidenceBinding =
+  | { kind: "route"; routeId: string }
+  | { kind: "critic"; criticId: string }
+  | { kind: "test"; ref: string };
+
+export interface Objective {
+  // Stable, PR-independent id. Namespaced by source so the same objective can
+  // later be promoted into a cycle-level registry with zero id churn.
+  id: string; // "cycle<N>#ec<k>" | "issue<N>#ac<k>"
+  source: ObjectiveSource;
+  text: string;
+  // The binding: which evidence attests this objective. The manifest is the
+  // single source of truth — evidence itself carries no objectiveId.
+  attestedBy: EvidenceBinding[];
+  // Ratchet hook. v1 always false (informational); flipping to true later
+  // turns on per-objective coverage enforcement.
+  enforced: boolean;
+}
+
+export interface ObjectivesManifest {
+  schemaVersion: 1;
+  objectives: Objective[];
+}
+
+export const OBJECTIVE_ID_RE = /^(cycle|issue)\d+#(ec|ac)\d+$/;
+
 // Cycle 21 (momentiq-ai/dark-factory#185) — the canonical default
 // verification-route table. This is the deterministic floor every consumer
 // with the corresponding change classes inherits (ADR 2026-06 § Decision 1
@@ -2184,6 +2212,65 @@ function parseVerificationRoute(raw: unknown, path: string): VerificationRoute {
     ...(exclusive !== undefined ? { exclusive } : {}),
     ...(evidenceKind !== undefined ? { evidenceKind } : {}),
   };
+}
+
+function parseObjectiveSource(raw: unknown, path: string): ObjectiveSource {
+  const obj = need(isObject, raw, path, "object");
+  return {
+    kind: needEnum(["cycle", "issue"] as const, obj["kind"], `${path}.kind`),
+    ref: need(isNonEmptyString, obj["ref"], `${path}.ref`, "non-empty string"),
+  };
+}
+
+function parseEvidenceBinding(raw: unknown, path: string): EvidenceBinding {
+  const obj = need(isObject, raw, path, "object");
+  const kind = needEnum(["route", "critic", "test"] as const, obj["kind"], `${path}.kind`);
+  switch (kind) {
+    case "route":
+      return { kind, routeId: need(isNonEmptyString, obj["routeId"], `${path}.routeId`, "non-empty string") };
+    case "critic":
+      return { kind, criticId: need(isNonEmptyString, obj["criticId"], `${path}.criticId`, "non-empty string") };
+    case "test":
+      return { kind, ref: need(isNonEmptyString, obj["ref"], `${path}.ref`, "non-empty string") };
+  }
+}
+
+function parseObjective(raw: unknown, path: string): Objective {
+  const obj = need(isObject, raw, path, "object");
+  const id = need(isNonEmptyString, obj["id"], `${path}.id`, "non-empty string");
+  if (!OBJECTIVE_ID_RE.test(id)) {
+    throw new SchemaError(`${path}.id`, `expected "cycle<N>#ec<k>" or "issue<N>#ac<k>", got ${JSON.stringify(id)}`);
+  }
+  const source = parseObjectiveSource(obj["source"], `${path}.source`);
+  const refNum = source.ref.replace(/^#/, "");
+  if (!id.startsWith(`${source.kind}${refNum}#`)) {
+    throw new SchemaError(
+      `${path}.id`,
+      `id ${JSON.stringify(id)} is inconsistent with source { kind: ${source.kind}, ref: ${JSON.stringify(source.ref)} }`,
+    );
+  }
+  const rawBindings = need(isArray, obj["attestedBy"], `${path}.attestedBy`, "array");
+  const attestedBy = rawBindings.map((b, i) => parseEvidenceBinding(b, `${path}.attestedBy[${i}]`));
+  return {
+    id,
+    source,
+    text: need(isNonEmptyString, obj["text"], `${path}.text`, "non-empty string"),
+    attestedBy,
+    enforced: need(isBoolean, obj["enforced"], `${path}.enforced`, "boolean"),
+  };
+}
+
+export function parseObjectivesManifest(raw: unknown, path = "objectives-manifest"): ObjectivesManifest {
+  const obj = need(isObject, raw, path, "object");
+  const schemaVersion = need(
+    (v: unknown): v is 1 => v === 1,
+    obj["schemaVersion"],
+    `${path}.schemaVersion`,
+    "1",
+  );
+  const rawObjectives = need(isArray, obj["objectives"], `${path}.objectives`, "array");
+  const objectives = rawObjectives.map((o, i) => parseObjective(o, `${path}.objectives[${i}]`));
+  return { schemaVersion, objectives };
 }
 
 function parseTddConfig(raw: unknown, path: string): TddConfig {
