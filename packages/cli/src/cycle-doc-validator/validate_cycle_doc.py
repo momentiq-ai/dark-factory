@@ -1036,6 +1036,97 @@ def terminal_status_error(cycle_id: str, doc: CycleDoc, pr_type: str, source: st
     return None
 
 
+OBJECTIVE_ID_RE = re.compile(r"^(cycle|issue)\d+#(ec|ac)\d+$")
+OBJECTIVES_MANIFEST_PATH = ".darkfactory/objectives.yaml"
+
+
+def _route_ids(repo_root: Path) -> set[str]:
+    cfg = repo_root / ".agent-review" / "config.json"
+    if not cfg.exists():
+        return set()
+    try:
+        data = json.loads(cfg.read_text())
+    except json.JSONDecodeError:
+        return set()
+    routes = (data.get("validation") or {}).get("verificationRoutes") or []
+    return {r.get("id") for r in routes if isinstance(r, dict) and r.get("id")}
+
+
+def _declared_refs(trailers: "Trailers") -> set[str]:
+    # The PR's declared sources of intent, keyed "<kind>:<ref>" to match an
+    # objective's source. Cycle trailer ref is bare ("21"); issue ref is
+    # normalized to strip a leading "#" so "1234" and "#1234" compare equal
+    # (mirroring the TS parseObjective's `ref.replace(/^#/, "")`).
+    refs: set[str] = set()
+    if trailers.cycle:
+        refs.add(f"cycle:{trailers.cycle.strip()}")
+    if trailers.issue:
+        refs.add(f"issue:{re.sub(r'^#', '', trailers.issue).strip()}")
+    return refs
+
+
+def validate_objectives(repo_root: Path, trailers: "Trailers") -> list[str]:
+    """Validate .darkfactory/objectives.yaml against PR context. Empty list = ok.
+
+    v1 checks: id format, source linked by a PR trailer, attestedBy route exists.
+    NO coverage check (the `enforced` flag is the future ratchet). Absent manifest
+    is a no-op — objectives are optional in v1.
+
+    Uses a deferred ``import yaml`` so that a missing pyyaml installation only
+    errors when a repo actually ships ``.darkfactory/objectives.yaml`` (the
+    absent-manifest path is a no-op and never imports yaml). This preserves the
+    validator's dependency-light boot on CI environments that have not installed
+    pyyaml.
+    """
+    manifest_path = repo_root / OBJECTIVES_MANIFEST_PATH
+    if not manifest_path.exists():
+        return []
+    try:
+        import yaml  # deferred: pyyaml not guaranteed in all CI environments
+        data = yaml.safe_load(manifest_path.read_text()) or {}
+    except ImportError:
+        return [
+            f"{OBJECTIVES_MANIFEST_PATH}: pyyaml is required to validate objectives "
+            "(pip install pyyaml)"
+        ]
+    except yaml.YAMLError as exc:
+        return [f"{OBJECTIVES_MANIFEST_PATH}: invalid YAML — {exc}"]
+    objectives = data.get("objectives")
+    if not isinstance(objectives, list):
+        return [f"{OBJECTIVES_MANIFEST_PATH}: 'objectives' must be a list"]
+
+    route_ids = _route_ids(repo_root)
+    declared = _declared_refs(trailers)
+    errors: list[str] = []
+    for idx, obj in enumerate(objectives):
+        loc = f"{OBJECTIVES_MANIFEST_PATH} objectives[{idx}]"
+        if not isinstance(obj, dict):
+            errors.append(f"{loc}: expected a mapping")
+            continue
+        oid = obj.get("id")
+        if not isinstance(oid, str) or not OBJECTIVE_ID_RE.match(oid):
+            errors.append(
+                f"{loc}.id: expected 'cycle<N>#ec<k>' or 'issue<N>#ac<k>', got {oid!r}"
+            )
+        source = obj.get("source") or {}
+        kind, ref = source.get("kind"), source.get("ref")
+        # Normalize a leading "#" on issue refs so "1234" and "#1234" both match,
+        # consistent with _declared_refs and the TS parseObjective contract.
+        normalized_ref = re.sub(r'^#', '', ref) if kind == "issue" and isinstance(ref, str) else ref
+        if f"{kind}:{normalized_ref}" not in declared:
+            errors.append(
+                f"{loc}.source: {kind} {ref!r} is not linked by any Cycle:/Closes #N trailer on this PR"
+            )
+        for j, binding in enumerate(obj.get("attestedBy") or []):
+            if isinstance(binding, dict) and binding.get("kind") == "route":
+                rid = binding.get("routeId")
+                if rid not in route_ids:
+                    errors.append(
+                        f"{loc}.attestedBy[{j}].routeId: {rid!r} is not a verificationRoute in .agent-review/config.json"
+                    )
+    return errors
+
+
 def validate(
     title: str,
     body: str,
@@ -1057,6 +1148,7 @@ def validate(
         return errors
 
     trailers = parse_trailers(body)
+    errors.extend(validate_objectives(REPO_ROOT, trailers))
     plan = is_plan_pr(title, labels_list, changed_files)
     pr_type = "plan-pr" if plan else "code-pr"
 
