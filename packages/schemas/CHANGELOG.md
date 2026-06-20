@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.10.0...dark-factory-schemas-v0.11.0) (2026-06-20)
+
+
+### Features
+
+* df prove — closeout proof readout (CLI + df_prove MCP) ([#215](https://github.com/momentiq-ai/dark-factory/issues/215)) ([cdff677](https://github.com/momentiq-ai/dark-factory/commit/cdff67776cb2b3b91ceb3393d4c41c07c02dcbd0))
+
 ## [0.10.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.9.0...dark-factory-schemas-v0.10.0) (2026-06-20)
 
 

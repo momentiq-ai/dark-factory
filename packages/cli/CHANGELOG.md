@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.10.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.9.0...dark-factory-cli-v2.10.0) (2026-06-20)
+
+
+### Features
+
+* df prove — closeout proof readout (CLI + df_prove MCP) ([#215](https://github.com/momentiq-ai/dark-factory/issues/215)) ([cdff677](https://github.com/momentiq-ai/dark-factory/commit/cdff67776cb2b3b91ceb3393d4c41c07c02dcbd0))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.10.0 to 0.11.0
+
 ## [2.9.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.8.0...dark-factory-cli-v2.9.0) (2026-06-20)
 
 
