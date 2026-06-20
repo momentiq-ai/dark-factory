@@ -68,6 +68,20 @@ describe("parsePublishedEvidence", () => {
     expect(Object.keys(m.routes)).toHaveLength(0);
   });
 
+  it("rejects a route whose embedded routeId disagrees with its map key", () => {
+    const bad = {
+      ...(complete as any),
+      routes: { playwright: { ...(complete as any).routes.playwright, routeId: "other" } },
+    };
+    expect(() => parsePublishedEvidence(bad)).toThrow(/must match its map key/);
+  });
+
+  it("rejects degradedReason on a complete manifest", () => {
+    expect(() =>
+      parsePublishedEvidence({ ...(complete as object), degradedReason: "should not be here" }),
+    ).toThrow(/must be omitted when status is "complete"/);
+  });
+
   it("requires degradedReason when status is degraded", () => {
     expect(() =>
       parsePublishedEvidence({

@@ -62,6 +62,8 @@ const HELP = [
   "  CEREBE_API_URL   Base URL of the Cerebe storage API (required to publish).",
   "  CEREBE_API_KEY   API key sent as the `X-API-Key` header (required).",
   "  CEREBE_PROJECT   Optional project scope (`X-Cerebe-Project` header).",
+  "  CEREBE_USER_ID   Optional upload identity (multipart `user_id`; default",
+  "                   `dark-factory`). Set it to your CI service identity.",
   "",
   "When Cerebe is not configured, or an upload fails, publish emits a",
   '`status: "degraded"` manifest and still exits 0 (degrade-and-pass) — the',

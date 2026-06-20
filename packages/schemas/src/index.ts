@@ -2592,7 +2592,17 @@ export function parsePublishedEvidence(raw: unknown, path = "$"): PublishedEvide
   const routesObj = need(isObject, obj["routes"], `${path}.routes`, "object");
   const routes: Record<string, RouteEvidencePointer> = {};
   for (const [key, value] of Object.entries(routesObj)) {
-    routes[key] = parseRouteEvidencePointer(value, `${path}.routes["${key}"]`);
+    const route = parseRouteEvidencePointer(value, `${path}.routes["${key}"]`);
+    // The map key IS the routeId; reject a manifest where the embedded
+    // `routeId` disagrees, so a consumer that indexes by key and one that
+    // reads the field can never see different ids for the same entry.
+    if (route.routeId !== key) {
+      throw new SchemaError(
+        `${path}.routes["${key}"].routeId`,
+        `must match its map key, got ${JSON.stringify(route.routeId)}`,
+      );
+    }
+    routes[key] = route;
   }
   const degradedReason = optional(
     isNonEmptyString,
@@ -2600,8 +2610,13 @@ export function parsePublishedEvidence(raw: unknown, path = "$"): PublishedEvide
     `${path}.degradedReason`,
     "non-empty string",
   );
+  // A degraded proof must say why; a complete one must not carry a reason —
+  // the two-way invariant keeps `status` and `degradedReason` from contradicting.
   if (status === "degraded" && degradedReason === undefined) {
     throw new SchemaError(`${path}.degradedReason`, 'required when status is "degraded"');
+  }
+  if (status === "complete" && degradedReason !== undefined) {
+    throw new SchemaError(`${path}.degradedReason`, 'must be omitted when status is "complete"');
   }
   return {
     schemaVersion: 1,
