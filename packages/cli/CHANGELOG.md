@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.9.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.8.0...dark-factory-cli-v2.9.0) (2026-06-20)
+
+
+### Features
+
+* verifiable-objectives Phase 2a — df publish + Cerebe storage facade ([#212](https://github.com/momentiq-ai/dark-factory/issues/212)) ([e2f3c13](https://github.com/momentiq-ai/dark-factory/commit/e2f3c13b8af8024f357b5d1b4bc93d814ea91c2d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.9.0 to 0.10.0
+
 ## [2.8.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.7.0...dark-factory-cli-v2.8.0) (2026-06-20)
 
 
