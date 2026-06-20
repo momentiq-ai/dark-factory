@@ -1068,19 +1068,33 @@ def _declared_refs(trailers: "Trailers") -> set[str]:
     return refs
 
 
-def validate_objectives(repo_root: Path, trailers: "Trailers") -> list[str]:
+def validate_objectives(
+    repo_root: Path, trailers: "Trailers", changed_files: Iterable[str]
+) -> list[str]:
     """Validate .darkfactory/objectives.yaml against PR context. Empty list = ok.
 
-    v1 checks: id format, source linked by a PR trailer, attestedBy route exists.
-    NO coverage check (the `enforced` flag is the future ratchet). Absent manifest
-    is a no-op — objectives are optional in v1.
+    **Validated ONLY when this PR authors/edits the manifest** (it appears in the
+    PR's changed files). A committed manifest from an earlier PR must NOT be
+    re-validated against an unrelated later PR's trailers — that was the
+    stale-manifest gate-break (momentiq-ai/dark-factory#207). Combined with
+    per-PR authoring (the agent drafts the manifest at PR-open), each PR's
+    objectives are checked against that PR's own trailers and nothing else.
 
-    Uses a deferred ``import yaml`` so that a missing pyyaml installation only
-    errors when a repo actually ships ``.darkfactory/objectives.yaml`` (the
-    absent-manifest path is a no-op and never imports yaml). This preserves the
-    validator's dependency-light boot on CI environments that have not installed
-    pyyaml.
+    Structural checks mirror the TS ``parseObjectivesManifest`` contract (id
+    format, id↔source consistency, non-empty text, ``enforced`` boolean, and the
+    ``attestedBy`` binding shapes) so the Python gate is not a looser subset that
+    can silently drift from the TS parser. The PR-context checks (source linked
+    by a trailer, ``route`` binding exists in config) are gate-only — they need
+    PR state the pure parser doesn't have. NO coverage check (the ``enforced``
+    flag is the future ratchet).
+
+    Uses a deferred ``import yaml`` so a missing pyyaml installation only errors
+    when a repo actually ships the manifest (the skip/absent paths never import
+    yaml), preserving the validator's dependency-light boot.
     """
+    # Gate: only author-time validation. PRs that don't touch the manifest skip.
+    if OBJECTIVES_MANIFEST_PATH not in set(changed_files):
+        return []
     manifest_path = repo_root / OBJECTIVES_MANIFEST_PATH
     if not manifest_path.exists():
         return []
@@ -1096,6 +1110,11 @@ def validate_objectives(repo_root: Path, trailers: "Trailers") -> list[str]:
         return [f"{OBJECTIVES_MANIFEST_PATH}: invalid YAML — {exc}"]
     if not isinstance(data, dict):
         return [f"{OBJECTIVES_MANIFEST_PATH}: top-level must be a mapping"]
+    if data.get("schemaVersion") != 1:
+        return [
+            f"{OBJECTIVES_MANIFEST_PATH}: schemaVersion must be 1, got "
+            f"{data.get('schemaVersion')!r}"
+        ]
     objectives = data.get("objectives")
     if not isinstance(objectives, list):
         return [f"{OBJECTIVES_MANIFEST_PATH}: 'objectives' must be a list"]
@@ -1113,31 +1132,72 @@ def validate_objectives(repo_root: Path, trailers: "Trailers") -> list[str]:
             errors.append(
                 f"{loc}.id: expected 'cycle<N>#ec<k>' or 'issue<N>#ac<k>', got {oid!r}"
             )
+        text = obj.get("text")
+        if not isinstance(text, str) or not text:
+            errors.append(f"{loc}.text: expected a non-empty string")
+        if not isinstance(obj.get("enforced"), bool):
+            errors.append(f"{loc}.enforced: expected a boolean")
         source = obj.get("source")
         if not isinstance(source, dict):
             errors.append(f"{loc}.source: expected a mapping, got {source!r}")
             continue
         kind, ref = source.get("kind"), source.get("ref")
-        # Normalize refs to match _declared_refs: cycle ids go through
-        # normalize_cycle_id (handles dotted ids and "Cycle N.N" prefixes);
-        # issue refs strip a leading "#" so "1234" and "#1234" compare equal.
-        if kind == "cycle" and isinstance(ref, str):
-            normalized_ref = normalize_cycle_id(ref)
-        elif kind == "issue" and isinstance(ref, str):
-            normalized_ref = re.sub(r'^#', '', ref)
-        else:
-            normalized_ref = ref
-        if f"{kind}:{normalized_ref}" not in declared:
-            errors.append(
-                f"{loc}.source: {kind} {ref!r} is not linked by any Cycle:/Closes #N trailer on this PR"
-            )
-        for j, binding in enumerate(obj.get("attestedBy") or []):
-            if isinstance(binding, dict) and binding.get("kind") == "route":
+        if kind not in ("cycle", "issue"):
+            errors.append(f"{loc}.source.kind: expected 'cycle' | 'issue', got {kind!r}")
+        if not isinstance(ref, str) or not ref:
+            errors.append(f"{loc}.source.ref: expected a non-empty string")
+        # id↔source consistency (mirrors the TS parseObjective invariant): the id
+        # must be namespaced by its source, e.g. cycle21#ec1 ↔ {cycle, "21"}.
+        if isinstance(oid, str) and isinstance(kind, str) and isinstance(ref, str):
+            ref_num = re.sub(r"^#", "", ref) if kind == "issue" else ref
+            if not oid.startswith(f"{kind}{ref_num}#"):
+                errors.append(
+                    f"{loc}.id: {oid!r} is inconsistent with source "
+                    f"{{kind: {kind}, ref: {ref!r}}}"
+                )
+        # PR-context: the source must be linked by one of this PR's trailers.
+        # Only run when kind/ref are themselves valid — otherwise their own
+        # errors above already fired, and a "not linked" message here would be
+        # misleading noise the TS parser wouldn't surface. Normalize to match
+        # _declared_refs (cycle via normalize_cycle_id; issue strips a leading "#").
+        if kind in ("cycle", "issue") and isinstance(ref, str):
+            normalized_ref = normalize_cycle_id(ref) if kind == "cycle" else re.sub(r'^#', '', ref)
+            if f"{kind}:{normalized_ref}" not in declared:
+                errors.append(
+                    f"{loc}.source: {kind} {ref!r} is not linked by any Cycle:/Closes #N trailer on this PR"
+                )
+        # attestedBy: structural validation of each binding (kind + required
+        # field), plus route-existence (PR context) for route bindings.
+        bindings = obj.get("attestedBy")
+        if not isinstance(bindings, list):
+            errors.append(f"{loc}.attestedBy: expected a list")
+            continue
+        for j, binding in enumerate(bindings):
+            bloc = f"{loc}.attestedBy[{j}]"
+            if not isinstance(binding, dict):
+                errors.append(f"{bloc}: expected a mapping")
+                continue
+            bkind = binding.get("kind")
+            if bkind == "route":
                 rid = binding.get("routeId")
-                if rid not in route_ids:
+                if not isinstance(rid, str) or not rid:
+                    errors.append(f"{bloc}.routeId: expected a non-empty string")
+                elif rid not in route_ids:
                     errors.append(
-                        f"{loc}.attestedBy[{j}].routeId: {rid!r} is not a verificationRoute in .agent-review/config.json"
+                        f"{bloc}.routeId: {rid!r} is not a verificationRoute in .agent-review/config.json"
                     )
+            elif bkind == "critic":
+                cid = binding.get("criticId")
+                if not isinstance(cid, str) or not cid:
+                    errors.append(f"{bloc}.criticId: expected a non-empty string")
+            elif bkind == "test":
+                tref = binding.get("ref")
+                if not isinstance(tref, str) or not tref:
+                    errors.append(f"{bloc}.ref: expected a non-empty string")
+            else:
+                errors.append(
+                    f"{bloc}.kind: expected 'route' | 'critic' | 'test', got {bkind!r}"
+                )
     return errors
 
 
@@ -1162,7 +1222,8 @@ def validate(
         return errors
 
     trailers = parse_trailers(body)
-    errors.extend(validate_objectives(REPO_ROOT, trailers))
+    changed_files = list(changed_files)
+    errors.extend(validate_objectives(REPO_ROOT, trailers, changed_files))
     plan = is_plan_pr(title, labels_list, changed_files)
     pr_type = "plan-pr" if plan else "code-pr"
 
