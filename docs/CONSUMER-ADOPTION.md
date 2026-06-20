@@ -245,6 +245,25 @@ fi
 printf '%s' "${STDIN_BUF}" | "${CLI}" gate-push
 ```
 
+**Closeout proof gate (verifiable objectives).** When your repo declares objectives in `.darkfactory/objectives.yaml`, add a closeout proof step so a push surfaces — and optionally gates on — whether the change's evidence proves its objectives:
+
+```bash
+# Append to .husky/pre-push (after gate-push). Informational by default —
+# `|| true` applies to `df prove` itself, so a non-zero exit never blocks the
+# push (with `set -euo pipefail` earlier in the hook):
+"${CLI}" prove || true   # prints per-objective proven/pending/failed; never blocks
+
+# To make it a HARD gate (block the push on any unproven objective):
+#   "${CLI}" prove --strict
+```
+
+`df prove` joins each objective against local evidence (`df verify` route exit codes + `df review` critic verdicts) and prints a per-objective **proven / pending / failed** readout — the "declare victory with proof" closeout (see the `/verify` skill). How (and where) to gate depends on the binding kind:
+
+- **`route` / `test` bindings** are satisfiable *locally* — `df verify` produces their evidence before the push. Gate these at pre-push with `df prove --strict`, or flip `enforced: true` per objective.
+- **`critic` bindings** are `pending` pre-push *by design* — the critic fleet runs in CI / post-commit, not before the push. Keep pre-push **informational** for them (the `|| true` form above) and run the strict gate **in CI**, after the fleet. `enforced: true` does NOT make a critic binding provable pre-push — it would just block every push.
+
+v1 ships informational; the strict/enforced ratchet is opt-in.
+
 **Audit the un-gated intermediates.** When you want to see what the
 critic said about every commit in the iteration trail — not just the
 HEAD that was actually gated — run:
