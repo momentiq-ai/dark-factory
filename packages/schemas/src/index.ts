@@ -2725,6 +2725,23 @@ export function parseBoundProofRecord(raw: unknown, path = "$"): BoundProofRecor
     total: need(isInteger, summaryRaw["total"], `${path}.summary.total`, "integer"),
   };
   const objectivesRaw = need(isArray, obj["objectives"], `${path}.objectives`, "array");
+  const objectives = objectivesRaw.map((o, i) => parseObjectiveProof(o, `${path}.objectives[${i}]`));
+  // The summary must match the parsed objectives — an inconsistent rollup is a
+  // corrupt record (the design spec pins summary-count consistency); a
+  // downstream consumer must not trust a wrong count.
+  const expected: ProofSummary = { proven: 0, pending: 0, failed: 0, total: objectives.length };
+  for (const o of objectives) expected[o.status] += 1;
+  if (
+    summary.proven !== expected.proven ||
+    summary.pending !== expected.pending ||
+    summary.failed !== expected.failed ||
+    summary.total !== expected.total
+  ) {
+    throw new SchemaError(
+      `${path}.summary`,
+      `inconsistent with objectives — expected ${JSON.stringify(expected)}, got ${JSON.stringify(summary)}`,
+    );
+  }
   const diffHash = optional(isString, obj["diffHash"], `${path}.diffHash`, "string");
   return {
     schemaVersion: 1,
@@ -2732,7 +2749,7 @@ export function parseBoundProofRecord(raw: unknown, path = "$"): BoundProofRecor
     ...(diffHash !== undefined ? { diffHash } : {}),
     provenance: needEnum(EVIDENCE_PROVENANCES, obj["provenance"], `${path}.provenance`),
     generatedAt: need(isNonEmptyString, obj["generatedAt"], `${path}.generatedAt`, "ISO timestamp"),
-    objectives: objectivesRaw.map((o, i) => parseObjectiveProof(o, `${path}.objectives[${i}]`)),
+    objectives,
     summary,
   };
 }

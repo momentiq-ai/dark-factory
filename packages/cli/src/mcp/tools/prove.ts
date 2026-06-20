@@ -17,6 +17,7 @@ import { z } from "zod";
 import type { BoundProofRecord } from "@momentiq/dark-factory-schemas";
 
 import { buildProofRecord, collectProofInputs } from "../../evidence/prove.js";
+import { resolveCommit } from "../../git.js";
 
 export interface RegisterProveToolOptions {
   // Test override; production defaults to process.cwd() (where `df mcp` launched).
@@ -103,10 +104,15 @@ export function registerProveTool(server: McpServer, opts: RegisterProveToolOpti
       let record: BoundProofRecord;
       try {
         const collected = await collectProofInputs(cwd, commit);
-        record = collected
-          ? buildProofRecord(collected.inputs, now())
-          : // No manifest → an empty record (the "no objectives declared" signal).
-            buildProofRecord({ commit, objectives: [], gateResults: {}, criticResults: {} }, now());
+        if (collected) {
+          record = buildProofRecord(collected.inputs, now());
+        } else {
+          // No manifest → an empty record (the "no objectives declared" signal).
+          // Still resolve the ref to a SHA so `commit` matches the contract (a
+          // resolved SHA) regardless of whether a manifest exists.
+          const sha = await resolveCommit(commit, cwd);
+          record = buildProofRecord({ commit: sha, objectives: [], gateResults: {}, criticResults: {} }, now());
+        }
       } catch (err) {
         return {
           isError: true,

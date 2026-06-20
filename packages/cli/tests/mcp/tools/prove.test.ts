@@ -113,8 +113,11 @@ describe("df_prove MCP tool", () => {
     const sha = await resolveCommit("HEAD", root);
 
     const client = await connectClient(root);
-    const result = await client.callTool({ name: "df_prove", arguments: { commit: sha } });
+    // Pass "HEAD" — the empty record must still resolve commit to a SHA.
+    const result = await client.callTool({ name: "df_prove", arguments: { commit: "HEAD" } });
     const rec = result.structuredContent as unknown as BoundProofRecord;
+    expect(rec.commit).toBe(sha);
+    expect(rec.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(rec.summary.total).toBe(0);
     expect(rec.objectives).toHaveLength(0);
   });

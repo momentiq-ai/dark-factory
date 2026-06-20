@@ -250,6 +250,15 @@ describe("collectProofInputs", () => {
     expect(await collectProofInputs(dir, sha)).toBeNull();
   });
 
+  it("resolves the manifest from the repo root even when invoked from a subdirectory", async () => {
+    const { dir, sha } = await setupRepo(OBJECTIVES_YAML);
+    const sub = join(dir, "packages", "deep");
+    mkdirSync(sub, { recursive: true });
+    const collected = await collectProofInputs(sub, sha);
+    expect(collected).not.toBeNull();
+    expect(collected!.inputs.objectives).toHaveLength(1);
+  });
+
   it("reads objectives + gate evidence; critic with no artifact stays pending", async () => {
     const { dir, loaded, sha } = await setupRepo(OBJECTIVES_YAML);
     const gp = perShaQualityGatePath(await resolveArtifactRoot(loaded), loaded.config.git.artifactDir, sha);

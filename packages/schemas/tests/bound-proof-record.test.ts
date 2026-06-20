@@ -53,6 +53,11 @@ describe("parseBoundProofRecord", () => {
     expect(r.summary).toEqual({ proven: 1, pending: 1, failed: 0, total: 2 });
   });
 
+  it("rejects a summary inconsistent with the objectives", () => {
+    const bad = { ...(valid as any), summary: { proven: 5, pending: 0, failed: 0, total: 5 } };
+    expect(() => parseBoundProofRecord(bad)).toThrow(/inconsistent with objectives/);
+  });
+
   it("rejects an unknown ProofStatus", () => {
     const bad = {
       ...(valid as any),

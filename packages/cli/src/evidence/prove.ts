@@ -34,7 +34,7 @@ import {
 } from "@momentiq/dark-factory-schemas";
 
 import { loadAgentReviewConfig } from "../policy/config.js";
-import { commitDiff, diffHash, resolveCommit, safeParentOrThrow } from "../git.js";
+import { commitDiff, diffHash, repoRoot, resolveCommit, safeParentOrThrow } from "../git.js";
 import { readQualityGateEvidence } from "./quality-gates.js";
 import { loadForCommit } from "../lib/show-status-core.js";
 
@@ -171,7 +171,15 @@ export async function collectProofInputs(
   cwd: string,
   commit: string,
 ): Promise<CollectedProofInputs | null> {
-  const manifestPath = resolve(cwd, OBJECTIVES_MANIFEST_REL);
+  // Resolve the manifest against the git repo root, not cwd, so `df prove` works
+  // from a subdirectory (the common case). Fall back to cwd outside a git repo.
+  let root = cwd;
+  try {
+    root = await repoRoot(cwd);
+  } catch {
+    root = cwd;
+  }
+  const manifestPath = resolve(root, OBJECTIVES_MANIFEST_REL);
   if (!existsSync(manifestPath)) return null;
   const manifest = parseObjectivesManifest(
     parseYaml(readFileSync(manifestPath, "utf8")),
