@@ -1199,6 +1199,151 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
     },
     {
       "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+      },
+      "description": "Join \`.darkfactory/objectives.yaml\` against the local evidence for a commit (route exit codes from \`df verify\`, critic verdicts from \`df review\`) and return a BoundProofRecord — each objective resolved to proven / pending / failed. A \`pending\` binding awaits evidence (e.g. the critic fleet has not run on HEAD yet), distinct from \`failed\`. Use this at closeout to cite proof instead of asserting completion. Agent-attested, evidence-backed — not independent verification.",
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "description": "Commit reference accepted by \`git rev-parse\` (SHA, 'HEAD', branch).",
+            "minLength": 1,
+            "type": "string",
+          },
+        },
+        "required": [
+          "commit",
+        ],
+        "type": "object",
+      },
+      "name": "df_prove",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "description": "Resolved commit SHA.",
+            "type": "string",
+          },
+          "diffHash": {
+            "description": "The gated diff hash evidence binds to.",
+            "type": "string",
+          },
+          "generatedAt": {
+            "type": "string",
+          },
+          "objectives": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "bindings": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "detail": {
+                        "description": "Short human derivation of the status.",
+                        "type": "string",
+                      },
+                      "kind": {
+                        "description": "'route' | 'critic' | 'test' (mirrors the EvidenceBinding kind).",
+                        "type": "string",
+                      },
+                      "ref": {
+                        "description": "routeId | criticId | test ref.",
+                        "type": "string",
+                      },
+                      "status": {
+                        "description": "'proven' | 'pending' | 'failed'.",
+                        "type": "string",
+                      },
+                      "uploadId": {
+                        "description": "Cerebe object id, present once df publish has run.",
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "kind",
+                      "ref",
+                      "status",
+                      "detail",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+                "enforced": {
+                  "type": "boolean",
+                },
+                "id": {
+                  "type": "string",
+                },
+                "status": {
+                  "description": "'proven' | 'pending' | 'failed' — worst-of its bindings.",
+                  "type": "string",
+                },
+                "text": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "id",
+                "text",
+                "enforced",
+                "status",
+                "bindings",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "provenance": {
+            "description": "'consumer-attested' for the local readout.",
+            "type": "string",
+          },
+          "schemaVersion": {
+            "type": "number",
+          },
+          "summary": {
+            "additionalProperties": false,
+            "properties": {
+              "failed": {
+                "type": "number",
+              },
+              "pending": {
+                "type": "number",
+              },
+              "proven": {
+                "type": "number",
+              },
+              "total": {
+                "type": "number",
+              },
+            },
+            "required": [
+              "proven",
+              "pending",
+              "failed",
+              "total",
+            ],
+            "type": "object",
+          },
+        },
+        "required": [
+          "schemaVersion",
+          "commit",
+          "provenance",
+          "generatedAt",
+          "objectives",
+          "summary",
+        ],
+        "type": "object",
+      },
+      "title": "Closeout proof readout: which objectives are proven by their evidence",
+    },
+    {
+      "annotations": {
         "openWorldHint": true,
         "readOnlyHint": true,
       },

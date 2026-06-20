@@ -148,6 +148,7 @@ describe("df CLI — Phase G (cycle5 MCP) subcommand wiring", () => {
       "df_handoff",
       "df_handoffs",
       "df_onboard",
+      "df_prove",
       "df_rehydrate",
       "df_review",
       "df_review_status",

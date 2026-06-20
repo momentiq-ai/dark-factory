@@ -89,7 +89,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
     await server.close();
   });
 
-  it("tools/list pins the catalog (21 tools: 15 cycle5 + cycle12 handoff/handoffs/accept/rehydrate + DFP#192 skills_install/skills_list)", async () => {
+  it("tools/list pins the catalog (23 tools: 15 cycle5 + cycle12 handoff/handoffs/accept/rehydrate + DFP#192 skills_install/skills_list + cycle331.1 prove)", async () => {
     const server = createMcpServer();
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -121,6 +121,7 @@ describe("MCP server (cycle5 Phase 1)", () => {
       "df_handoff",
       "df_handoffs",
       "df_onboard",
+      "df_prove",
       "df_rehydrate",
       "df_review",
       "df_review_status",
@@ -189,6 +190,17 @@ describe("MCP server (cycle5 Phase 1)", () => {
     expect(
       (dfShowRun?.outputSchema as { properties?: Record<string, unknown> })?.properties,
     ).toHaveProperty("artifact");
+
+    const dfProve = byName.get("df_prove");
+    expect(dfProve?.annotations?.readOnlyHint).toBe(true);
+    expect(
+      ((dfProve?.inputSchema?.properties ?? {}) as Record<string, unknown>),
+    ).toHaveProperty("commit");
+    expect(
+      (dfProve?.outputSchema as { properties?: Record<string, unknown> })?.properties,
+    ).toEqual(
+      expect.objectContaining({ objectives: expect.anything(), summary: expect.anything() }),
+    );
 
     const dfAdrList = byName.get("df_adr_list");
     expect(dfAdrList?.annotations?.readOnlyHint).toBe(true);
