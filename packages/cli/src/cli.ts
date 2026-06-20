@@ -125,6 +125,10 @@ import { cmdStatus } from "./commands/status.js";
 // verification routes for a commit's diff, run each route's producer, and
 // write diffHash-bound per-SHA evidence the gate can re-validate (#194).
 import { cmdVerify } from "./commands/verify.js";
+// Cycle 331.1 verifiable-objectives Phase 2 (momentiq-ai/dark-factory#207) —
+// `df publish` uploads the `df verify` evidence bundle to Cerebe + emits the
+// PublishedEvidence pointer manifest the hosted worker joins (Phase 3).
+import { cmdPublish } from "./commands/publish.js";
 // Cycle 13 (dark-factory-platform#149) — `df findings --range` surfaces
 // the per-commit iteration-receipt artifacts that the new (default)
 // final-commit-only `df gate-push` semantic leaves un-gated. See
@@ -213,6 +217,10 @@ function printHelp(meta: PackageMeta): void {
       "                              --route <id> runs one route. The route",
       "                              ORCHESTRATOR (wraps runRoutes); consumers",
       "                              override each route's placeholder command.",
+      "  df publish                  Upload the `df verify` evidence bundle to",
+      "                              Cerebe + emit the PublishedEvidence pointer",
+      "                              manifest. Degrades-and-passes when Cerebe",
+      "                              is unconfigured or an upload fails.",
       "  df stats                    Pretty-print critic call stats + bypass",
       "                              audit (alias for `df audit stats`).",
       "  df doctor                   Verify env: node, hooks, artifact dir,",
@@ -436,6 +444,11 @@ const ONBOARD_SUBCOMMANDS = new Set(["onboard"]);
 // `df verify --help` reaches cmdVerify's own help printer instead of the
 // top-level printHelp.
 const VERIFY_SUBCOMMANDS = new Set(["verify"]);
+
+// `df publish` — cycle 331.1 verifiable-objectives Phase 2 (#207). Registered
+// here so `df publish --help` reaches cmdPublish's own help printer instead of
+// the top-level printHelp.
+const PUBLISH_SUBCOMMANDS = new Set(["publish"]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // pr-status-check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -2106,7 +2119,8 @@ async function main(argv: string[]): Promise<number> {
       !SHOW_STATUS_SUBCOMMANDS.has(sub0) &&
       !SKILLS_SUBCOMMANDS.has(sub0) &&
       !ONBOARD_SUBCOMMANDS.has(sub0) &&
-      !VERIFY_SUBCOMMANDS.has(sub0)
+      !VERIFY_SUBCOMMANDS.has(sub0) &&
+      !PUBLISH_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -2152,6 +2166,15 @@ async function main(argv: string[]): Promise<number> {
   // diffHash-bound evidence, and maps the 0/1/2 route contract to its exit.
   if (sub === "verify") {
     return await cmdVerify(rest, {
+      stdout: (s) => process.stdout.write(s),
+      stderr: (s) => process.stderr.write(s),
+    });
+  }
+  // Cycle 331.1 verifiable-objectives Phase 2 (#207) — `df publish` uploads the
+  // `df verify` evidence bundle to Cerebe and emits the PublishedEvidence
+  // pointer manifest (degrade-and-pass when Cerebe is unconfigured).
+  if (sub === "publish") {
+    return await cmdPublish(rest, {
       stdout: (s) => process.stdout.write(s),
       stderr: (s) => process.stderr.write(s),
     });

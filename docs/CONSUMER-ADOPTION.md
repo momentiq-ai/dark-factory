@@ -357,6 +357,10 @@ Running an un-overridden placeholder fails fast with an actionable error (`route
 
 > ⚠️ **Breaking for SHA-only producers (CLI ≥ 2.6.0).** Before #194, route evidence that carried no `diffHash` was accepted (SHA-only binding). It is now **rejected** as unbound when the gate runs content-binding (which `df gate-push` always does). If you arm command routes with a hand-rolled producer, that producer **must stamp the gated `diffHash`** — the simplest fix is to drive routes through `df verify` (or `df gates`), which stamp it for you. Repos that arm only the `docs-only` suppression route (no command routes) are unaffected. (Limitation: a transient `git` error at gate time leaves the diff hash uncomputable, in which case binding falls back to SHA-only for that commit rather than failing the push.)
 
+**Persisting evidence — `df publish` (`dark-factory#207`).** `df verify` writes evidence into the working tree / `.git/`, where it is local-only and unreferenceable after the run. `df publish` uploads that bundle (the per-SHA gate JSON + any UI screenshots) to **Cerebe object storage** and emits a `PublishedEvidence` pointer manifest (`schemaVersion: 1`, provenance `consumer-attested`) keyed by `routeId` + `diffHash`. It reads Cerebe config from the environment (`CEREBE_API_URL`, `CEREBE_API_KEY`, optional `CEREBE_PROJECT`, and optional `CEREBE_USER_ID` — the upload identity, default `dark-factory`) and **degrades-and-passes**: when Cerebe is unconfigured or an upload fails it emits a `status: "degraded"` manifest and exits 0, so it never blocks a push or merge. See `df publish --help`.
+
+> **Integration status.** This slice ships the `df publish` subcommand + the `PublishedEvidence` schema only. The reusable-workflow step that runs `df publish` in CI and attaches the manifest to the PR — and the adoption steps for it — land in a follow-up; until then `df publish` is for manual / custom-CI use.
+
 ## 6. `.agent-review/config.json` — scope to your repo's source layout
 
 Copy the [dark-factory canonical config](../.agent-review/config.json) into your repo and adjust three things:
