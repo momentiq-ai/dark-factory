@@ -357,7 +357,7 @@ export interface ObjectivesManifest {
   objectives: Objective[];
 }
 
-export const OBJECTIVE_ID_RE = /^(cycle|issue)\d+#(ec|ac)\d+$/;
+export const OBJECTIVE_ID_RE = /^(cycle\d+(?:\.\d+)*#ec\d+|issue\d+#ac\d+)$/;
 
 // Cycle 21 (momentiq-ai/dark-factory#185) — the canonical default
 // verification-route table. This is the deterministic floor every consumer
@@ -2242,7 +2242,7 @@ function parseObjective(raw: unknown, path: string): Objective {
     throw new SchemaError(`${path}.id`, `expected "cycle<N>#ec<k>" or "issue<N>#ac<k>", got ${JSON.stringify(id)}`);
   }
   const source = parseObjectiveSource(obj["source"], `${path}.source`);
-  const refNum = source.ref.replace(/^#/, "");
+  const refNum = source.kind === "issue" ? source.ref.replace(/^#/, "") : source.ref;
   if (!id.startsWith(`${source.kind}${refNum}#`)) {
     throw new SchemaError(
       `${path}.id`,
