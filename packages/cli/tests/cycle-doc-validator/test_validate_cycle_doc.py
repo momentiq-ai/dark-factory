@@ -1007,7 +1007,7 @@ def test_objectives_ok(tmp_path):
             enforced: false
     """)
     trailers = parse_trailers("Cycle: 21\nCloses #1234\n")
-    assert validate_objectives(tmp_path, trailers) == []
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
 
 
 def test_objectives_unlinked_source(tmp_path):
@@ -1022,7 +1022,7 @@ def test_objectives_unlinked_source(tmp_path):
             enforced: false
     """)
     trailers = parse_trailers("Cycle: 21\n")
-    errors = validate_objectives(tmp_path, trailers)
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
     assert any("not linked" in e for e in errors)
 
 
@@ -1038,13 +1038,129 @@ def test_objectives_unknown_route(tmp_path):
             enforced: false
     """)
     trailers = parse_trailers("Cycle: 21\n")
-    errors = validate_objectives(tmp_path, trailers)
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
     assert any("verificationRoute" in e for e in errors)
 
 
 def test_no_manifest_is_noop(tmp_path):
     trailers = parse_trailers("Cycle: 21\n")
-    assert validate_objectives(tmp_path, trailers) == []
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
+
+
+def test_objectives_skipped_when_manifest_not_in_diff(tmp_path):
+    # Stale-manifest gate-break fix (#207): a committed manifest must NOT be
+    # validated for a PR that doesn't author it (different trailers, manifest
+    # untouched) — otherwise an old PR's objectives fail unrelated later PRs.
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "From an earlier PR."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 22\n")  # different cycle, manifest untouched
+    assert validate_objectives(tmp_path, trailers, ["src/unrelated.ts"]) == []
+    # ...but when the PR DOES touch the manifest, the unlinked source is caught.
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("not linked" in e for e in errors)
+
+
+def test_objectives_id_source_inconsistent(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "22" }
+            text: "Mismatched id vs source."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 22\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("inconsistent with source" in e for e in errors)
+
+
+def test_objectives_enforced_must_be_bool(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: "nope"
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("enforced" in e for e in errors)
+
+
+def test_objectives_text_must_be_nonempty(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: ""
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any(".text" in e for e in errors)
+
+
+def test_objectives_critic_binding_ok(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Critic-attested."
+            attestedBy: [{ kind: critic, criticId: codex }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
+
+
+def test_objectives_critic_binding_missing_id(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: critic }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("criticId" in e for e in errors)
+
+
+def test_objectives_unknown_binding_kind(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: vibes }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("route' | 'critic' | 'test'" in e for e in errors)
 
 
 def test_objectives_issue_bare_ref_linked(tmp_path):
@@ -1066,7 +1182,7 @@ def test_objectives_issue_bare_ref_linked(tmp_path):
             enforced: false
     """)
     trailers = parse_trailers("Closes #1234\n")
-    assert validate_objectives(tmp_path, trailers) == []
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
 
 
 def test_objectives_issue_hash_ref_linked(tmp_path):
@@ -1083,7 +1199,7 @@ def test_objectives_issue_hash_ref_linked(tmp_path):
             enforced: false
     """)
     trailers = parse_trailers("Issue: #1234\n")
-    assert validate_objectives(tmp_path, trailers) == []
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
 
 
 def test_objectives_issue_unmatched_ref(tmp_path):
@@ -1100,7 +1216,7 @@ def test_objectives_issue_unmatched_ref(tmp_path):
             enforced: false
     """)
     trailers = parse_trailers("Closes #1234\n")
-    errors = validate_objectives(tmp_path, trailers)
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
     assert any("not linked" in e for e in errors)
 
 
@@ -1122,7 +1238,7 @@ def test_objectives_dotted_cycle_linked(tmp_path):
             enforced: false
     """)
     trailers = parse_trailers("Cycle: 318.4\n")
-    assert validate_objectives(tmp_path, trailers) == []
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
 
 
 def test_objectives_malformed_manifest_top_level_list(tmp_path):
@@ -1131,7 +1247,7 @@ def test_objectives_malformed_manifest_top_level_list(tmp_path):
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text("- item1\n- item2\n")
     trailers = parse_trailers("Cycle: 21\n")
-    errors = validate_objectives(tmp_path, trailers)
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
     assert len(errors) == 1
     assert "top-level must be a mapping" in errors[0]
 
@@ -1149,5 +1265,5 @@ def test_objectives_non_dict_source(tmp_path):
             enforced: false
     """)
     trailers = parse_trailers("Cycle: 21\n")
-    errors = validate_objectives(tmp_path, trailers)
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
     assert any("expected a mapping" in e for e in errors)
