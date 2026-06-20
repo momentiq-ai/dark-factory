@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Use to PRODUCE evidence-gated validation-route evidence for a change before pushing — run the change-appropriate verification route(s) (terraform validate, helm lint+template, docker build, the touched service's targeted tests, the UI/Playwright route) and write per-SHA, diffHash-bound QualityGateEvidence the local pre-push gate (df gate-push / enforceVerificationRoutes) asserts. Use when asked to "verify a change", "produce route evidence", a routed push is blocked with verification_route_missing / verification_route_failed, or before pushing a commit that touches a routed surface (infra/terraform, deploy/helm, a Dockerfile, services/*/src, web/** or *.tsx).
+description: Use to PRODUCE evidence-gated validation-route evidence for a change before pushing — run the change-appropriate verification route(s) (terraform validate, helm lint+template, docker build, the touched service's targeted tests, the UI/Playwright route) and write per-SHA, diffHash-bound QualityGateEvidence the local pre-push gate (df gate-push / enforceVerificationRoutes) asserts. Use when asked to "verify a change", "produce route evidence", a routed push is blocked with verification_route_missing / verification_route_failed, or before pushing a commit that touches a routed surface (infra/terraform, deploy/helm, a Dockerfile, services/*/src, web/** or *.tsx). ALSO use at CLOSEOUT — when a change declares objectives in .darkfactory/objectives.yaml, run `df prove` to bind that evidence to the objectives and "declare victory with proof" (a proven/pending/failed readout) instead of asserting "done".
 ---
 
 # /verify — evidence-gated validation routes
@@ -98,3 +98,31 @@ CLI. Copy the reference files from the `@momentiq/dark-factory-cli` package
 (routes + required headings), wire an optional auth storage-state for protected
 surfaces, and arm the `playwright` route's `command`. The full walkthrough is in
 `docs/guides/ui-verification-route.md`.
+
+## Closeout — declare victory with proof, not "done"
+
+Producing evidence is half the loop; the other half is **proving the objectives
+it attests**. When a change declares objectives in `.darkfactory/objectives.yaml`,
+the closeout step is **`df prove`** — it joins each objective against the evidence
+(`df verify` route exit codes + `df review` critic verdicts) and reports, per
+objective, **proven / pending / failed**. An agent's final turn runs `df prove`
+(or the `df_prove` MCP tool) and **cites that readout as the completion claim** —
+proof derived from diffHash-bound artifacts — rather than asserting "done".
+
+```bash
+df prove            # human readout: per-objective proven/pending/failed + bindings
+df prove --json     # the BoundProofRecord (for agents / the df_prove MCP tool)
+df prove --strict   # exit 1 if ANY objective is not proven (the gate form)
+```
+
+- **`pending` is honest, not a failure.** A `critic` binding is `pending` until the
+  fleet runs on HEAD (run `df review` or wait for CI); a `route` binding you can
+  satisfy now with `df verify`. Only `failed` (evidence is negative) is a problem.
+- **Trust boundary.** This readout is *agent-attested, evidence-backed* — stronger
+  than free-text "done" (every status is derived, not asserted), but not yet
+  independent verification (that closes with runner-attested evidence + the
+  source-criterion ratchet).
+- **The ratchet.** v1 is informational (`enforced: false` — `df prove` exits 0 and
+  surfaces pending/failed). Flip an objective to `enforced: true`, or run
+  `df prove --strict` (e.g. a `.husky/pre-push` step — see CONSUMER-ADOPTION §5),
+  to turn unproven objectives into a hard block with no code change.
