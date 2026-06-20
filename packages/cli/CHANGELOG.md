@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.11.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.10.0...dark-factory-cli-v2.11.0) (2026-06-20)
+
+
+### Features
+
+* **objectives:** closeout obligation — df prove in verify skill + pre-push gate docs ([#219](https://github.com/momentiq-ai/dark-factory/issues/219)) ([7bbd470](https://github.com/momentiq-ai/dark-factory/commit/7bbd4700605b84f65b9cdc7bb56c9249cc5082c4))
+
+
+### Bug Fixes
+
+* **objectives:** adoption blockers — diff-gated validation + structural parity + pyyaml ([#217](https://github.com/momentiq-ai/dark-factory/issues/217)) ([1df385c](https://github.com/momentiq-ai/dark-factory/commit/1df385cb7721c7cd6defd763abf41f770a296a25))
+
 ## [2.10.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.9.0...dark-factory-cli-v2.10.0) (2026-06-20)
 
 
