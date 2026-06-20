@@ -1,0 +1,156 @@
+# evidence-publish — reusable workflow (verifiable-objectives Phase 2b, #207).
+#
+# Captures + persists the verification evidence for a PR's HEAD:
+#   1. `df verify` (re)produces the armed routes' diffHash-bound QualityGateEvidence
+#      in the CI environment (deterministic + diffHash-bound, so a CI run is
+#      faithful — the bundle must exist in CI to be published).
+#   2. `df publish` uploads that bundle to Cerebe object storage and emits the
+#      `PublishedEvidence` pointer manifest (`{routeId → upload_id, diffHash}`,
+#      provenance consumer-attested) the hosted worker (Phase 3) will join against
+#      `.darkfactory/objectives.yaml`.
+#
+# Degrade-and-pass (spec §5): when Cerebe is unconfigured (no CEREBE_API_URL /
+# CEREBE_API_KEY) or an upload fails, `df publish` emits a `status: "degraded"`
+# manifest and exits 0 — capture never blocks the merge verdict. This is NOT a
+# required status check; it surfaces evidence, it does not gate.
+#
+# Trusted-surface: gate steps invoke the workflow-controlled binary (the built
+# `dist/cli.js` on the local path, or the npm-installed `$DF_CLI` on the consumer
+# path), never a consumer-repo script. Mirrors agent-critic.yml's install model.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_call:
+    inputs:
+      cli-version:
+        description: |
+          CLI version to install. 'local' (default) builds from the checked-out
+          workspace. Consumers pass an explicit semver tag (e.g. '0.1.0-alpha.5').
+        type: string
+        required: false
+        default: 'local'
+    secrets:
+      CEREBE_API_URL:
+        description: |
+          Base URL of the Cerebe storage API. When absent, `df publish` degrades
+          (emits a degraded manifest, exits 0) — evidence is captured but not
+          published.
+        required: false
+      CEREBE_API_KEY:
+        description: Cerebe API key (sent as the X-API-Key header). See CEREBE_API_URL.
+        required: false
+      MOMENTIQ_NPM_READ_TOKEN:
+        description: |
+          Deprecated — the CLI is public on npm; no auth needed. Kept so callers
+          still passing it via `secrets:` don't error.
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evidence-publish-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  evidence-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      REQUESTED_VERSION: ${{ inputs.cli-version || 'local' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history: `df verify` diffs parent..HEAD to arm routes + stamp the
+          # gated diffHash; a shallow checkout severs the parent (same rationale as
+          # agent-critic.yml).
+          fetch-depth: 0
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Install workspace (lockfile-strict)
+        if: env.REQUESTED_VERSION == 'local'
+        run: npm ci
+
+      - name: Build workspace
+        if: env.REQUESTED_VERSION == 'local'
+        run: npm run build
+
+      - name: Install @momentiq/dark-factory-cli (consumer path)
+        # Isolated install in $RUNNER_TEMP (can't be influenced by the consumer's
+        # lockfile); --ignore-scripts blocks arbitrary lifecycle scripts.
+        if: env.REQUESTED_VERSION != 'local'
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="$RUNNER_TEMP/df-cli"
+          mkdir -p "$INSTALL_DIR"
+          cd "$INSTALL_DIR"
+          cat > package.json <<'EOF'
+          {"name": "df-cli-runtime", "version": "0.0.0", "private": true}
+          EOF
+          npm install --no-audit --no-fund --ignore-scripts \
+            "@momentiq/dark-factory-cli@${REQUESTED_VERSION}"
+          DF_CLI="$INSTALL_DIR/node_modules/.bin/df"
+          if [ ! -x "$DF_CLI" ]; then
+            echo "::error::Installed @momentiq/dark-factory-cli@$REQUESTED_VERSION but binary not found at $DF_CLI." >&2
+            exit 1
+          fi
+          echo "DF_CLI=$DF_CLI" >> "$GITHUB_ENV"
+
+      - name: Resolve df binary
+        run: |
+          set -euo pipefail
+          if [ "${REQUESTED_VERSION}" = "local" ]; then
+            echo "DF_BIN=node ./packages/cli/dist/cli.js" >> "$GITHUB_ENV"
+          else
+            echo "DF_BIN=${DF_CLI}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Produce verification evidence (df verify)
+        # Capture evidence regardless of route outcome — a blocked route (exit 1)
+        # is the merge gate's concern (agent-critic / gate-push), not this
+        # capture step. The manifest records each route's exit code.
+        run: $DF_BIN verify || echo "df verify exited non-zero (a route blocked or soft-skipped) — publishing the evidence regardless." >&2
+
+      - name: Publish evidence to Cerebe (df publish)
+        # Degrade-and-pass: with CEREBE_* unset, df publish emits a degraded
+        # manifest and exits 0. With them set, it uploads + emits upload_ids.
+        env:
+          CEREBE_API_URL: ${{ secrets.CEREBE_API_URL }}
+          CEREBE_API_KEY: ${{ secrets.CEREBE_API_KEY }}
+        run: $DF_BIN publish --out evidence-pointers.json
+
+      - name: Upload published-evidence manifest
+        # The PublishedEvidence pointer manifest is the artifact the hosted worker
+        # (Phase 3) joins against the objectives manifest. Absent when there were
+        # no objectives/evidence to publish (if-no-files-found: warn, non-blocking).
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evidence-pointers-${{ github.sha }}
+          path: evidence-pointers.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Evidence publish"
+            if [ -f evidence-pointers.json ]; then
+              STATUS="$(node -e "process.stdout.write((require('./evidence-pointers.json').status)||'?')" 2>/dev/null || echo '?')"
+              echo "Manifest: \`status=${STATUS}\` — see the \`evidence-pointers-${{ github.sha }}\` artifact."
+              echo ""
+              echo '```json'
+              cat evidence-pointers.json
+              echo '```'
+            else
+              echo "No manifest produced — no objectives/evidence for this commit (nothing to publish)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
