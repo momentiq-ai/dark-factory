@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.8.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.7.0...dark-factory-cli-v2.8.0) (2026-06-20)
+
+
+### Features
+
+* verifiable-objectives Phase 1 — Objective contract + manifest validator ([#208](https://github.com/momentiq-ai/dark-factory/issues/208)) ([4f53313](https://github.com/momentiq-ai/dark-factory/commit/4f53313de2da5a0ce169bb3350e5efd9fb3f2bda))
+
+
+### Bug Fixes
+
+* address Copilot review — tighten Objective id regex (kind pairing + dotted cycles), normalize cycle ids, harden manifest parsing ([#210](https://github.com/momentiq-ai/dark-factory/issues/210)) ([58f3239](https://github.com/momentiq-ai/dark-factory/commit/58f32394ec4e8b656c957c19d6bce65ff49b4220))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.8.0 to 0.9.0
+
 ## [2.7.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.6.0...dark-factory-cli-v2.7.0) (2026-06-17)
 
 
