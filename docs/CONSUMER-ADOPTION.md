@@ -632,6 +632,19 @@ jobs:
     # secrets:
     #   CI_BOT_APP_ID: ${{ secrets.CI_BOT_APP_ID }}
     #   CI_BOT_PRIVATE_KEY: ${{ secrets.CI_BOT_PRIVATE_KEY }}
+
+  # Optional: evidence-publish — capture + persist verification evidence
+  # (verifiable objectives). Runs `df verify` then `df publish`, uploading the
+  # bundle to Cerebe object storage and emitting the PublishedEvidence pointer
+  # manifest the hosted worker joins. NOT a merge gate (surfacing only) and
+  # degrade-and-passes when the CEREBE_* secrets are absent.
+  evidence-publish:
+    uses: momentiq-ai/dark-factory/.github/workflows/evidence-publish.yml@<exact-commit-sha>
+    with:
+      cli-version: '2.2.4'
+    secrets:
+      CEREBE_API_URL: ${{ secrets.CEREBE_API_URL }}
+      CEREBE_API_KEY: ${{ secrets.CEREBE_API_KEY }}
 ```
 
 **Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. Every dark-factory reusable workflow deliberately omits a job-level `name:` override so the callee segment defaults to the job id, giving consumers a uniform `<id> / <id>` contract: `agent-critic:` → **`agent-critic / agent-critic`**, `cycle-doc-validation:` → **`cycle-doc-validation / cycle-doc-validation`**, and `pr-status-check:` → **`pr-status-check / pr-status-check`** (issue #27 — a prior `name: "PR Status Check"` override broke the contract and permanently blocked merges). This is the EXACT string your ruleset must require in §10 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §10 below to make the check binding.
