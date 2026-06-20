@@ -359,6 +359,96 @@ export interface ObjectivesManifest {
 
 export const OBJECTIVE_ID_RE = /^(cycle\d+(?:\.\d+)*#ec\d+|issue\d+#ac\d+)$/;
 
+// Cycle 331.1 verifiable-objectives Phase 2 (momentiq-ai/dark-factory#207) —
+// the published-evidence pointer manifest. `df publish` produces this in CI
+// after `df verify`: it uploads the per-SHA evidence bundle (gate JSON + route
+// artifacts) to Cerebe object storage and emits these pointers, which the
+// hosted worker (Phase 3) joins against `.darkfactory/objectives.yaml` to build
+// the per-SHA bound proof record. The cross-repo contract — the worker imports
+// THIS type, so the publish output and the join input cannot drift. The
+// manifest carries pointers + integrity, never the artifact bytes.
+
+// Lowercase-hex SHA-256 (64 chars). The content-integrity invariant on every
+// uploaded artifact: a consumer (worker/dashboard) re-verifies the bytes Cerebe
+// returns against this digest before trusting the pointer.
+export const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+// Provenance label (spec §4.4 — the honest trust boundary). `consumer-attested`
+// evidence is produced on the consumer's CI (routes/screenshots),
+// integrity-bound by `diffHash` but not hosted-sandbox-produced;
+// `runner-attested` is the hosted critic path (NOT produced by `df publish` —
+// reserved so Phase 3 reuses the same union).
+export type EvidenceProvenance = "consumer-attested" | "runner-attested";
+export const EVIDENCE_PROVENANCES: readonly EvidenceProvenance[] = [
+  "consumer-attested",
+  "runner-attested",
+];
+
+// Completion status (spec §5 — fail-soft on a Cerebe outage). `degraded` means
+// Cerebe was unconfigured (air-gapped) or one+ uploads failed: the proof is
+// EXPLICITLY incomplete, never false-complete (a silently-complete proof on a
+// storage outage would recreate the `evidence_ref` dead-pointer class at the
+// evidence layer).
+export type PublishedEvidenceStatus = "complete" | "degraded";
+export const PUBLISHED_EVIDENCE_STATUSES: readonly PublishedEvidenceStatus[] = [
+  "complete",
+  "degraded",
+];
+
+// A single uploaded artifact: a Cerebe object-storage pointer + integrity.
+export interface EvidenceArtifactPointer {
+  // Repo-relative source path of the artifact (e.g. the per-SHA gate JSON or a
+  // `agent-reviews/quality-gates/ui/<sha>/<surface>/before.png` screenshot).
+  // Diagnostic / human-readable provenance — the bytes live in Cerebe.
+  path: string;
+  // Cerebe object id returned by `POST /storage/upload`. The durable handle
+  // the worker/dashboard resolve to an ephemeral-url.
+  uploadId: string;
+  // Lowercase-hex SHA-256 of the uploaded bytes, computed locally before
+  // upload. Matches `SHA256_HEX_RE`.
+  sha256: string;
+  // MIME type the artifact was uploaded as (e.g. "image/png").
+  contentType: string;
+  // Byte length of the uploaded artifact.
+  sizeBytes: number;
+}
+
+// Per-route uploaded evidence: the route's structured outcome + its artifacts.
+export interface RouteEvidencePointer {
+  routeId: string;
+  // The route's exit code from `QualityGateEvidence.gateResults[routeId]` (the
+  // deterministic 0/1/2 outcome). Carried so the worker can label the binding
+  // without re-fetching the gate JSON.
+  exitCode: number;
+  // Uploaded artifacts the route produced (screenshots, ARIA snapshots, …). The
+  // structured gate JSON is uploaded once at the manifest level
+  // (`gateEvidence`), not duplicated per route.
+  artifacts: EvidenceArtifactPointer[];
+}
+
+// The published-evidence pointer manifest `df publish` emits (and the Phase 3
+// worker consumes).
+export interface PublishedEvidence {
+  schemaVersion: 1;
+  // The commit the evidence was produced for.
+  commit: string;
+  // Provenance for every pointer in this manifest (spec §4.4).
+  provenance: EvidenceProvenance;
+  // Completion status (spec §5 degrade-and-pass).
+  status: PublishedEvidenceStatus;
+  // The per-SHA `QualityGateEvidence` JSON, uploaded once. Absent when the run
+  // degraded before any upload (e.g. Cerebe unconfigured).
+  gateEvidence?: EvidenceArtifactPointer;
+  // The gated diff hash all evidence here is bound to (the #194 content
+  // binding). Absent when `df verify` produced SHA-only evidence.
+  diffHash?: string;
+  // Per-route uploaded artifacts, keyed by routeId.
+  routes: Record<string, RouteEvidencePointer>;
+  // Structured reason, REQUIRED when `status === "degraded"` (so a degraded
+  // proof always says why), omitted when complete.
+  degradedReason?: string;
+}
+
 // Cycle 21 (momentiq-ai/dark-factory#185) — the canonical default
 // verification-route table. This is the deterministic floor every consumer
 // with the corresponding change classes inherits (ADR 2026-06 § Decision 1
@@ -2447,6 +2537,81 @@ export function parseQualityGateEvidence(raw: unknown): QualityGateEvidence {
     results,
     ...(gateResults !== undefined ? { gateResults } : {}),
     ...(diffHash !== undefined ? { diffHash } : {}),
+  };
+}
+
+function parseEvidenceArtifactPointer(raw: unknown, path: string): EvidenceArtifactPointer {
+  const obj = need(isObject, raw, path, "object");
+  const sha256 = need(isNonEmptyString, obj["sha256"], `${path}.sha256`, "non-empty string");
+  if (!SHA256_HEX_RE.test(sha256)) {
+    throw new SchemaError(
+      `${path}.sha256`,
+      `expected lowercase-hex SHA-256 (64 chars), got ${JSON.stringify(sha256)}`,
+    );
+  }
+  const sizeBytes = need(isInteger, obj["sizeBytes"], `${path}.sizeBytes`, "integer");
+  if (sizeBytes < 0) {
+    throw new SchemaError(`${path}.sizeBytes`, `expected a non-negative byte count, got ${sizeBytes}`);
+  }
+  return {
+    path: need(isNonEmptyString, obj["path"], `${path}.path`, "non-empty string"),
+    uploadId: need(isNonEmptyString, obj["uploadId"], `${path}.uploadId`, "non-empty string"),
+    sha256,
+    contentType: need(isNonEmptyString, obj["contentType"], `${path}.contentType`, "non-empty string"),
+    sizeBytes,
+  };
+}
+
+function parseRouteEvidencePointer(raw: unknown, path: string): RouteEvidencePointer {
+  const obj = need(isObject, raw, path, "object");
+  const artifactsRaw = need(isArray, obj["artifacts"], `${path}.artifacts`, "array");
+  return {
+    routeId: need(isNonEmptyString, obj["routeId"], `${path}.routeId`, "non-empty string"),
+    exitCode: need(isInteger, obj["exitCode"], `${path}.exitCode`, "integer"),
+    artifacts: artifactsRaw.map((a, i) =>
+      parseEvidenceArtifactPointer(a, `${path}.artifacts[${i}]`),
+    ),
+  };
+}
+
+// Parse + validate a published-evidence pointer manifest (`df publish` output /
+// Phase 3 worker input). Enforces the degraded→reason invariant (a degraded
+// proof must say why) and the per-artifact SHA-256 integrity shape.
+export function parsePublishedEvidence(raw: unknown, path = "$"): PublishedEvidence {
+  const obj = need(isObject, raw, path, "object");
+  need((v: unknown): v is 1 => v === 1, obj["schemaVersion"], `${path}.schemaVersion`, "1");
+  const commit = need(isNonEmptyString, obj["commit"], `${path}.commit`, "non-empty string");
+  const provenance = needEnum(EVIDENCE_PROVENANCES, obj["provenance"], `${path}.provenance`);
+  const status = needEnum(PUBLISHED_EVIDENCE_STATUSES, obj["status"], `${path}.status`);
+  const gateEvidenceRaw = obj["gateEvidence"];
+  const gateEvidence =
+    gateEvidenceRaw === undefined || gateEvidenceRaw === null
+      ? undefined
+      : parseEvidenceArtifactPointer(gateEvidenceRaw, `${path}.gateEvidence`);
+  const diffHash = optional(isString, obj["diffHash"], `${path}.diffHash`, "string");
+  const routesObj = need(isObject, obj["routes"], `${path}.routes`, "object");
+  const routes: Record<string, RouteEvidencePointer> = {};
+  for (const [key, value] of Object.entries(routesObj)) {
+    routes[key] = parseRouteEvidencePointer(value, `${path}.routes["${key}"]`);
+  }
+  const degradedReason = optional(
+    isNonEmptyString,
+    obj["degradedReason"],
+    `${path}.degradedReason`,
+    "non-empty string",
+  );
+  if (status === "degraded" && degradedReason === undefined) {
+    throw new SchemaError(`${path}.degradedReason`, 'required when status is "degraded"');
+  }
+  return {
+    schemaVersion: 1,
+    commit,
+    provenance,
+    status,
+    ...(gateEvidence !== undefined ? { gateEvidence } : {}),
+    ...(diffHash !== undefined ? { diffHash } : {}),
+    routes,
+    ...(degradedReason !== undefined ? { degradedReason } : {}),
   };
 }
 
