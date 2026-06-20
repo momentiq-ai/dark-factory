@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.9.0...dark-factory-schemas-v0.10.0) (2026-06-20)
+
+
+### Features
+
+* verifiable-objectives Phase 2a — df publish + Cerebe storage facade ([#212](https://github.com/momentiq-ai/dark-factory/issues/212)) ([e2f3c13](https://github.com/momentiq-ai/dark-factory/commit/e2f3c13b8af8024f357b5d1b4bc93d814ea91c2d))
+
 ## [0.9.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.8.0...dark-factory-schemas-v0.9.0) (2026-06-20)
 
 
