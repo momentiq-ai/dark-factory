@@ -1163,6 +1163,36 @@ def test_objectives_unknown_binding_kind(tmp_path):
     assert any("route' | 'critic' | 'test'" in e for e in errors)
 
 
+def test_objectives_bad_schema_version(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 2
+        objectives: []
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("schemaVersion" in e for e in errors)
+
+
+def test_objectives_invalid_kind_no_misleading_not_linked(tmp_path):
+    # An invalid source.kind surfaces ONLY the kind error — not an extra
+    # "not linked" message the TS parser wouldn't emit.
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: nonsense, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("source.kind" in e for e in errors)
+    assert not any("not linked" in e for e in errors)
+
+
 def test_objectives_issue_bare_ref_linked(tmp_path):
     """Issue objective with bare ref ('1234') + 'Closes #1234' trailer → no error.
 

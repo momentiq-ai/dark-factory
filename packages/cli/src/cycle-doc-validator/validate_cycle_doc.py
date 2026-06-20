@@ -1110,6 +1110,11 @@ def validate_objectives(
         return [f"{OBJECTIVES_MANIFEST_PATH}: invalid YAML — {exc}"]
     if not isinstance(data, dict):
         return [f"{OBJECTIVES_MANIFEST_PATH}: top-level must be a mapping"]
+    if data.get("schemaVersion") != 1:
+        return [
+            f"{OBJECTIVES_MANIFEST_PATH}: schemaVersion must be 1, got "
+            f"{data.get('schemaVersion')!r}"
+        ]
     objectives = data.get("objectives")
     if not isinstance(objectives, list):
         return [f"{OBJECTIVES_MANIFEST_PATH}: 'objectives' must be a list"]
@@ -1151,18 +1156,16 @@ def validate_objectives(
                     f"{{kind: {kind}, ref: {ref!r}}}"
                 )
         # PR-context: the source must be linked by one of this PR's trailers.
-        # Normalize to match _declared_refs (cycle via normalize_cycle_id; issue
-        # strips a leading "#").
-        if kind == "cycle" and isinstance(ref, str):
-            normalized_ref = normalize_cycle_id(ref)
-        elif kind == "issue" and isinstance(ref, str):
-            normalized_ref = re.sub(r'^#', '', ref)
-        else:
-            normalized_ref = ref
-        if f"{kind}:{normalized_ref}" not in declared:
-            errors.append(
-                f"{loc}.source: {kind} {ref!r} is not linked by any Cycle:/Closes #N trailer on this PR"
-            )
+        # Only run when kind/ref are themselves valid — otherwise their own
+        # errors above already fired, and a "not linked" message here would be
+        # misleading noise the TS parser wouldn't surface. Normalize to match
+        # _declared_refs (cycle via normalize_cycle_id; issue strips a leading "#").
+        if kind in ("cycle", "issue") and isinstance(ref, str):
+            normalized_ref = normalize_cycle_id(ref) if kind == "cycle" else re.sub(r'^#', '', ref)
+            if f"{kind}:{normalized_ref}" not in declared:
+                errors.append(
+                    f"{loc}.source: {kind} {ref!r} is not linked by any Cycle:/Closes #N trailer on this PR"
+                )
         # attestedBy: structural validation of each binding (kind + required
         # field), plus route-existence (PR context) for route bindings.
         bindings = obj.get("attestedBy")
