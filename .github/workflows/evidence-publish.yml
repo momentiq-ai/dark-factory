@@ -18,6 +18,12 @@
 # `dist/cli.js` on the local path, or the npm-installed `$DF_CLI` on the consumer
 # path), never a consumer-repo script. Mirrors agent-critic.yml's install model.
 
+# Top-level workflow name (Actions-UI label only). Does NOT affect the
+# status-check context — that's `<caller-job-id> / <callee-job-name>`, and the
+# `evidence-publish` job deliberately sets no `name:` (same contract as the
+# other reusable workflows). evidence-publish is non-required regardless.
+name: Evidence Publish
+
 on:
   pull_request:
     branches: [main]
