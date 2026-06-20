@@ -449,6 +449,64 @@ export interface PublishedEvidence {
   degradedReason?: string;
 }
 
+// Cycle 331.1 verifiable-objectives — the closeout proof readout (`df prove`,
+// momentiq-ai/dark-factory#207). The bound proof record joins each declared
+// objective against the evidence that attests it (route exit codes, critic
+// verdicts), resolving every binding to proven / pending / failed. `df prove`
+// produces it LOCALLY (consumer-attested); the Phase 3 worker will later produce
+// the SAME shape server-side (joining runner-attested verdicts) — so THIS is the
+// contract's definition, not a consumer of an existing worker type.
+
+// `pending` is load-bearing (NOT a synonym for failed): at the local closeout the
+// critic fleet has very likely not run on HEAD yet, so a critic binding is
+// `pending` (awaiting evidence), distinct from `failed` (evidence is negative).
+export type ProofStatus = "proven" | "pending" | "failed";
+export const PROOF_STATUSES: readonly ProofStatus[] = ["proven", "pending", "failed"];
+
+// One resolved evidence binding: which evidence (mirrors EvidenceBinding's kind),
+// its proof status, a short human derivation, and — once published — the pointer.
+export interface BoundEvidenceRef {
+  kind: "route" | "critic" | "test";
+  ref: string; // routeId | criticId | test ref
+  status: ProofStatus;
+  // Why this status, e.g. "exit 0, diffHash-bound" | "awaiting critic verdict".
+  detail: string;
+  // Cerebe object id, present only once `df publish` has run for this evidence.
+  uploadId?: string;
+}
+
+// One objective resolved against its bindings (status = worst-of its bindings).
+export interface ObjectiveProof {
+  id: string;
+  text: string;
+  enforced: boolean;
+  status: ProofStatus;
+  bindings: BoundEvidenceRef[];
+}
+
+export interface ProofSummary {
+  proven: number;
+  pending: number;
+  failed: number;
+  total: number;
+}
+
+// The bound proof record `df prove` emits (and the Phase 3 worker will produce).
+export interface BoundProofRecord {
+  schemaVersion: 1;
+  commit: string;
+  // The gated diff hash the evidence binds to (absent on a git error).
+  diffHash?: string;
+  // Provenance of the record as a whole. The local `df prove` readout is
+  // consumer-attested (assembled by the agent from its own artifacts); the union
+  // is reused so Phase 3 can mark a server-produced record runner-attested.
+  provenance: EvidenceProvenance;
+  // ISO timestamp, stamped by the caller (not the parser — keeps parsing pure).
+  generatedAt: string;
+  objectives: ObjectiveProof[];
+  summary: ProofSummary;
+}
+
 // Cycle 21 (momentiq-ai/dark-factory#185) — the canonical default
 // verification-route table. This is the deterministic floor every consumer
 // with the corresponding change classes inherits (ADR 2026-06 § Decision 1
@@ -2627,6 +2685,72 @@ export function parsePublishedEvidence(raw: unknown, path = "$"): PublishedEvide
     ...(diffHash !== undefined ? { diffHash } : {}),
     routes,
     ...(degradedReason !== undefined ? { degradedReason } : {}),
+  };
+}
+
+function parseBoundEvidenceRef(raw: unknown, path: string): BoundEvidenceRef {
+  const obj = need(isObject, raw, path, "object");
+  const uploadId = optional(isNonEmptyString, obj["uploadId"], `${path}.uploadId`, "non-empty string");
+  return {
+    kind: needEnum(["route", "critic", "test"] as const, obj["kind"], `${path}.kind`),
+    ref: need(isNonEmptyString, obj["ref"], `${path}.ref`, "non-empty string"),
+    status: needEnum(PROOF_STATUSES, obj["status"], `${path}.status`),
+    detail: need(isString, obj["detail"], `${path}.detail`, "string"),
+    ...(uploadId !== undefined ? { uploadId } : {}),
+  };
+}
+
+function parseObjectiveProof(raw: unknown, path: string): ObjectiveProof {
+  const obj = need(isObject, raw, path, "object");
+  const bindingsRaw = need(isArray, obj["bindings"], `${path}.bindings`, "array");
+  return {
+    id: need(isNonEmptyString, obj["id"], `${path}.id`, "non-empty string"),
+    text: need(isString, obj["text"], `${path}.text`, "string"),
+    enforced: need(isBoolean, obj["enforced"], `${path}.enforced`, "boolean"),
+    status: needEnum(PROOF_STATUSES, obj["status"], `${path}.status`),
+    bindings: bindingsRaw.map((b, i) => parseBoundEvidenceRef(b, `${path}.bindings[${i}]`)),
+  };
+}
+
+// Parse + validate a bound proof record (`df prove` output / Phase 3 worker
+// output). Stateless: `generatedAt` is accepted as-is (the caller stamps it).
+export function parseBoundProofRecord(raw: unknown, path = "$"): BoundProofRecord {
+  const obj = need(isObject, raw, path, "object");
+  need((v: unknown): v is 1 => v === 1, obj["schemaVersion"], `${path}.schemaVersion`, "1");
+  const summaryRaw = need(isObject, obj["summary"], `${path}.summary`, "object");
+  const summary: ProofSummary = {
+    proven: need(isInteger, summaryRaw["proven"], `${path}.summary.proven`, "integer"),
+    pending: need(isInteger, summaryRaw["pending"], `${path}.summary.pending`, "integer"),
+    failed: need(isInteger, summaryRaw["failed"], `${path}.summary.failed`, "integer"),
+    total: need(isInteger, summaryRaw["total"], `${path}.summary.total`, "integer"),
+  };
+  const objectivesRaw = need(isArray, obj["objectives"], `${path}.objectives`, "array");
+  const objectives = objectivesRaw.map((o, i) => parseObjectiveProof(o, `${path}.objectives[${i}]`));
+  // The summary must match the parsed objectives — an inconsistent rollup is a
+  // corrupt record (the design spec pins summary-count consistency); a
+  // downstream consumer must not trust a wrong count.
+  const expected: ProofSummary = { proven: 0, pending: 0, failed: 0, total: objectives.length };
+  for (const o of objectives) expected[o.status] += 1;
+  if (
+    summary.proven !== expected.proven ||
+    summary.pending !== expected.pending ||
+    summary.failed !== expected.failed ||
+    summary.total !== expected.total
+  ) {
+    throw new SchemaError(
+      `${path}.summary`,
+      `inconsistent with objectives — expected ${JSON.stringify(expected)}, got ${JSON.stringify(summary)}`,
+    );
+  }
+  const diffHash = optional(isString, obj["diffHash"], `${path}.diffHash`, "string");
+  return {
+    schemaVersion: 1,
+    commit: need(isNonEmptyString, obj["commit"], `${path}.commit`, "non-empty string"),
+    ...(diffHash !== undefined ? { diffHash } : {}),
+    provenance: needEnum(EVIDENCE_PROVENANCES, obj["provenance"], `${path}.provenance`),
+    generatedAt: need(isNonEmptyString, obj["generatedAt"], `${path}.generatedAt`, "ISO timestamp"),
+    objectives,
+    summary,
   };
 }
 
