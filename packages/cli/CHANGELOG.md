@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.12.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.11.0...dark-factory-cli-v2.12.0) (2026-06-21)
+
+
+### Features
+
+* **objectives:** 2c — source-criterion binding ratchet ([#221](https://github.com/momentiq-ai/dark-factory/issues/221)) ([3cc2612](https://github.com/momentiq-ai/dark-factory/commit/3cc26121af9c2e4646451c8c6d744d6c0a651fdc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.11.0 to 0.12.0
+
 ## [2.11.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.10.0...dark-factory-cli-v2.11.0) (2026-06-20)
 
 
