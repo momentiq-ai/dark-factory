@@ -129,6 +129,17 @@ describe("transmitEvidence", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("throws TransmitError on a 3xx (redirects are NOT a success; never retries)", async () => {
+    // With redirect:"manual" a 3xx surfaces as a 3xx; only 2xx counts as accepted.
+    const fetch = vi.fn(
+      async () => new Response(null, { status: 302, headers: { location: "https://elsewhere.example" } }),
+    );
+    await expect(
+      transmitEvidence({ config: CONFIG, repository: "o/r", evidence: EVIDENCE, options: { fetch } }),
+    ).rejects.toMatchObject({ name: "TransmitError", status: 302 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("retries a transient 503 then succeeds", async () => {
     const sleep = vi.fn(async () => {});
     let n = 0;

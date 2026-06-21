@@ -171,6 +171,11 @@ export async function transmitEvidence(args: {
     try {
       res = await fetchFn(config.url, {
         method: "POST",
+        // Do NOT follow redirects: the signed body is single-use and bound to
+        // THIS url's secret, so re-POSTing it to a 3xx target would be both
+        // wrong (signature mismatch) and a body-disclosure risk. A 3xx surfaces
+        // as a non-2xx below and is rejected.
+        redirect: "manual",
         headers: {
           "content-type": "application/json",
           [SIGNATURE_HEADER]: signature,
@@ -209,11 +214,13 @@ export async function transmitEvidence(args: {
       break;
     }
 
-    if (res.status >= 400) {
-      // Non-auth client error (e.g. 400 malformed/invalid manifest) — the
-      // request itself is wrong, retrying won't help.
+    if (res.status < 200 || res.status >= 300) {
+      // Any other non-2xx that is neither transient (429/5xx, handled above) nor
+      // auth (401/403, handled above) — including a 3xx redirect or a 4xx like
+      // 400 (malformed/invalid manifest) — is a non-retryable failure. ONLY a
+      // 2xx counts as an accepted transmit.
       throw new TransmitError(
-        `evidence-ingest rejected the manifest (HTTP ${res.status}).`,
+        `evidence-ingest returned a non-2xx response (HTTP ${res.status}).`,
         res.status,
       );
     }

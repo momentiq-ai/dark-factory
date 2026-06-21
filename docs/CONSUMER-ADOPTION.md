@@ -377,6 +377,8 @@ Running an un-overridden placeholder fails fast with an actionable error (`route
 > ⚠️ **Breaking for SHA-only producers (CLI ≥ 2.6.0).** Before #194, route evidence that carried no `diffHash` was accepted (SHA-only binding). It is now **rejected** as unbound when the gate runs content-binding (which `df gate-push` always does). If you arm command routes with a hand-rolled producer, that producer **must stamp the gated `diffHash`** — the simplest fix is to drive routes through `df verify` (or `df gates`), which stamp it for you. Repos that arm only the `docs-only` suppression route (no command routes) are unaffected. (Limitation: a transient `git` error at gate time leaves the diff hash uncomputable, in which case binding falls back to SHA-only for that commit rather than failing the push.)
 
 **Persisting evidence — `df publish` (`dark-factory#207`).** `df verify` writes evidence into the working tree / `.git/`, where it is local-only and unreferenceable after the run. `df publish` uploads that bundle (the per-SHA gate JSON + any UI screenshots) to **Cerebe object storage** and emits a `PublishedEvidence` pointer manifest (`schemaVersion: 1`, provenance `consumer-attested`) keyed by `routeId` + `diffHash`. It reads Cerebe config from the environment (`CEREBE_API_URL`, `CEREBE_API_KEY`, optional `CEREBE_PROJECT`, and optional `CEREBE_USER_ID` — the upload identity, default `dark-factory`) and **degrades-and-passes**: when Cerebe is unconfigured or an upload fails it emits a `status: "degraded"` manifest and exits 0, so it never blocks a push or merge. See `df publish --help`.
+>
+> **Transmitting the manifest to a hosted gate (`dark-factory-platform` Cycle 23).** Beyond persisting to Cerebe, `df publish` can PUSH the manifest to an HTTP **evidence-ingest endpoint** so a hosted worker joins it against `.darkfactory/objectives.yaml` server-side (no out-of-band hand-off). Activated only when both `DF_EVIDENCE_INGEST_URL` and `DF_EVIDENCE_INGEST_SECRET` are set; it then POSTs the envelope `{ "repository": "<owner>/<repo>", "evidence": <PublishedEvidence> }` with header `X-Hub-Signature-256: sha256=<HMAC-SHA256(secret, raw-body)>` (the GitHub webhook convention — the endpoint recomputes the HMAC over the raw body). `repository` is taken from `GITHUB_REPOSITORY` (set by Actions) or `--repository <owner/repo>`. **Same degrade-and-pass posture:** absent vars ⇒ transmit is skipped; a transmit failure is logged but never changes the exit code, so it never blocks the merge. The endpoint URL + secret are generic — any ingest endpoint verifying that signature works.
 
 > **Integration status.** This slice ships the `df publish` subcommand + the `PublishedEvidence` schema only. The reusable-workflow step that runs `df publish` in CI and attaches the manifest to the PR — and the adoption steps for it — land in a follow-up; until then `df publish` is for manual / custom-CI use.
 
@@ -635,16 +637,23 @@ jobs:
 
   # Optional: evidence-publish — capture + persist verification evidence
   # (verifiable objectives). Runs `df verify` then `df publish`, uploading the
-  # bundle to Cerebe object storage and emitting the PublishedEvidence pointer
-  # manifest the hosted worker joins. NOT a merge gate (surfacing only) and
-  # degrade-and-passes when the CEREBE_* secrets are absent.
+  # bundle to Cerebe object storage, emitting the PublishedEvidence pointer
+  # manifest the hosted worker joins, and (when the DF_EVIDENCE_INGEST_* secrets
+  # are set) transmitting it to the hosted evidence-ingest endpoint. NOT a merge
+  # gate (surfacing only); degrade-and-passes when ANY of the secrets are absent.
   evidence-publish:
     uses: momentiq-ai/dark-factory/.github/workflows/evidence-publish.yml@<exact-commit-sha>
     with:
+      # Transmit (the DF_EVIDENCE_INGEST_* path) requires the release that ships
+      # `df publish` transmit (≥ 2.13.0). Older pins still capture to Cerebe.
       cli-version: '2.2.4'
     secrets:
       CEREBE_API_URL: ${{ secrets.CEREBE_API_URL }}
       CEREBE_API_KEY: ${{ secrets.CEREBE_API_KEY }}
+      # Optional transmit-to-hosted-gate (Cycle 23). Absent ⇒ capture-only.
+      # repository is github.repository (auto); signature is X-Hub-Signature-256.
+      DF_EVIDENCE_INGEST_URL: ${{ secrets.DF_EVIDENCE_INGEST_URL }}
+      DF_EVIDENCE_INGEST_SECRET: ${{ secrets.DF_EVIDENCE_INGEST_SECRET }}
 ```
 
 **Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. Every dark-factory reusable workflow deliberately omits a job-level `name:` override so the callee segment defaults to the job id, giving consumers a uniform `<id> / <id>` contract: `agent-critic:` → **`agent-critic / agent-critic`**, `cycle-doc-validation:` → **`cycle-doc-validation / cycle-doc-validation`**, and `pr-status-check:` → **`pr-status-check / pr-status-check`** (issue #27 — a prior `name: "PR Status Check"` override broke the contract and permanently blocked merges). This is the EXACT string your ruleset must require in §10 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §10 below to make the check binding.
