@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.12.0...dark-factory-cli-v2.13.0) (2026-06-21)
+
+
+### Features
+
+* **cli:** df publish transmits the PublishedEvidence manifest to an evidence-ingest endpoint — Cycle 23 ([#223](https://github.com/momentiq-ai/dark-factory/issues/223)) ([689af9c](https://github.com/momentiq-ai/dark-factory/commit/689af9cb4f30be1fe6d347c11fadf3539f5cdaa5))
+
 ## [2.12.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.11.0...dark-factory-cli-v2.12.0) (2026-06-21)
 
 
