@@ -644,9 +644,12 @@ jobs:
   evidence-publish:
     uses: momentiq-ai/dark-factory/.github/workflows/evidence-publish.yml@<exact-commit-sha>
     with:
-      # Transmit (the DF_EVIDENCE_INGEST_* path) requires the release that ships
-      # `df publish` transmit (≥ 2.13.0). Older pins still capture to Cerebe.
-      cli-version: '2.2.4'
+      # This example is transmit-enabled (it sets the DF_EVIDENCE_INGEST_*
+      # secrets below), so it pins a CLI that ships `df publish` transmit
+      # (≥ 2.13.0). For capture-only (upload to Cerebe, no transmit to the
+      # hosted gate), drop the DF_EVIDENCE_INGEST_* secrets — older pins
+      # (e.g. the '2.2.4' the other jobs above use) capture fine.
+      cli-version: '2.13.0'
     secrets:
       CEREBE_API_URL: ${{ secrets.CEREBE_API_URL }}
       CEREBE_API_KEY: ${{ secrets.CEREBE_API_KEY }}

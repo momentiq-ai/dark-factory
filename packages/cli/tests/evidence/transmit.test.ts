@@ -138,6 +138,17 @@ describe("transmitEvidence", () => {
       transmitEvidence({ config: CONFIG, repository: "o/r", evidence: EVIDENCE, options: { fetch } }),
     ).rejects.toMatchObject({ name: "TransmitError", status: 302 });
     expect(fetch).toHaveBeenCalledTimes(1);
+    // Pin the load-bearing no-redirect-follow contract by asserting the option
+    // is ACTUALLY passed to fetch. Without this, dropping `redirect: "manual"`
+    // from transmitEvidence would let undici follow a 3xx to a 2xx target — the
+    // 2xx-only success check would then return success and disclose the
+    // HMAC-signed body to an attacker-controlled Location — and this suite would
+    // still pass (the mock 302 surfaces either way). This assertion makes such a
+    // refactor fail CI here instead of shipping the regression silently.
+    expect(fetch).toHaveBeenCalledWith(
+      CONFIG.url,
+      expect.objectContaining({ redirect: "manual" }),
+    );
   });
 
   it("retries a transient 503 then succeeds", async () => {
