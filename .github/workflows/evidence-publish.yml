@@ -81,6 +81,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # Check out the PR HEAD commit, NOT the default `pull_request` merge
+          # ref. The published evidence must bind to the SAME commit the hosted
+          # worker reviews: the worker keys its `objective_evidence` row on the
+          # PR head sha (worker `targetSha = mergeGroupSha ?? headSha`), and the
+          # join is on (installation_id, commit_sha, diff_hash). On the default
+          # merge-ref checkout `df verify` would stamp the merge commit's sha +
+          # its base..merge diffHash, so NEITHER key matches the worker's head-sha
+          # row and the consumer route evidence never binds (the objective never
+          # flips "proven"). Pinning HEAD aligns both keys; `|| github.sha` keeps
+          # the workflow's own non-PR contexts (push / the dark-factory dogfood)
+          # working unchanged.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # Full history: `df verify` diffs parent..HEAD to arm routes + stamp the
           # gated diffHash; a shallow checkout severs the parent (same rationale as
           # agent-critic.yml).
