@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.11.0...dark-factory-schemas-v0.12.0) (2026-06-21)
+
+
+### Features
+
+* **objectives:** 2c — source-criterion binding ratchet ([#221](https://github.com/momentiq-ai/dark-factory/issues/221)) ([3cc2612](https://github.com/momentiq-ai/dark-factory/commit/3cc26121af9c2e4646451c8c6d744d6c0a651fdc))
+
 ## [0.11.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.10.0...dark-factory-schemas-v0.11.0) (2026-06-20)
 
 
