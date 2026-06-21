@@ -107,11 +107,19 @@ Python recomputes the SAME canonicalization as the TS `canonicalizeCriterion`
 ## 6. `df prove` surfacing
 
 Each `ObjectiveProof` (the `df prove` / `df_prove` readout) gains a
-`sourceVerification: "source-verified" | "human-reviewed" | "unverified" |
-"agent-asserted"` field so the closeout readout shows not just *is it proven by
-evidence* but *is the objective itself grounded in its source*. `agent-asserted`
-= no `sourceCriterion`; `unverified` = `text-hash` whose source wasn't locally
-resolvable.
+`sourceVerification: "agent-asserted" | "human-reviewed" | "source-bound"`
+field so the closeout readout shows not just *is it proven by evidence* but
+*is the objective grounded in its source*:
+
+- `agent-asserted` — no `sourceCriterion` (the v1 default).
+- `human-reviewed` — `sourceCriterion.kind === "human-reviewed"`.
+- `source-bound` — a `text-hash` binding is declared.
+
+df prove reports the **binding kind**; it does NOT re-verify the hash. The
+cycle-doc-validation **gate is the single verifier** (§5) — keeping df prove DRY
+and avoiding a second, drift-prone criterion extractor in TS. (A future
+`df prove --verify-source` could re-check in-repo using the shared
+`canonicalizeCriterion`, but v1 leaves verification to the gate.)
 
 ## 7. Authoring
 
