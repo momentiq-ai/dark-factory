@@ -209,6 +209,35 @@ describe("buildProofRecord — rollup, summary, record", () => {
     );
     expect(r.objectives[0].bindings[0].uploadId).toBe("up_42");
   });
+
+  it("surfaces sourceVerification from each objective's sourceCriterion (2c)", () => {
+    const src = { kind: "cycle", ref: "21" } as const;
+    const objs: Objective[] = [
+      { id: "cycle21#ec1", source: src, text: "a", attestedBy: [], enforced: false },
+      {
+        id: "cycle21#ec2",
+        source: src,
+        text: "b",
+        attestedBy: [],
+        enforced: false,
+        sourceCriterion: { kind: "human-reviewed", by: "PJ" },
+      },
+      {
+        id: "cycle21#ec3",
+        source: src,
+        text: "c",
+        attestedBy: [],
+        enforced: false,
+        sourceCriterion: { kind: "text-hash", locator: "exit_criteria#ec3", sha256: "a".repeat(64) },
+      },
+    ];
+    const r = buildProofRecord(inputs({ objectives: objs }), AT);
+    expect(r.objectives.map((o) => o.sourceVerification)).toEqual([
+      "agent-asserted",
+      "human-reviewed",
+      "source-bound",
+    ]);
+  });
 });
 
 // --- collectProofInputs (reads objectives.yaml + gate evidence from disk) ----

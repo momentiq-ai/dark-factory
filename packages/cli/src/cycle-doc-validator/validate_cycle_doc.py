@@ -94,11 +94,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -1068,6 +1070,87 @@ def _declared_refs(trailers: "Trailers") -> set[str]:
     return refs
 
 
+# Cycle 331.1 2c (#207) — source-criterion binding. These mirror the TS
+# contract in @momentiq/dark-factory-schemas (SOURCE_LOCATOR_RE +
+# canonicalizeCriterion); the canonicalization is pinned byte-for-byte by a
+# cross-impl fixture test so the Python (verify) and TS (author) sides can't drift.
+SOURCE_LOCATOR_RE = re.compile(r"^[a-z0-9_]+#[a-z0-9._-]+$", re.IGNORECASE)
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def canonicalize_criterion(text: str) -> str:
+    """Canonicalize a source criterion's text for hashing (mirror of the TS
+    ``canonicalizeCriterion``). Strips a list marker + criterion label + markdown
+    emphasis and folds whitespace; preserves meaning-bearing text."""
+    s = unicodedata.normalize("NFC", text)
+    s = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", s)  # list marker
+    s = re.sub(r"^\s*\*{0,2}[A-Za-z]+\d+[A-Za-z0-9]*\*{0,2}\s*[:.)–—-]\s+", "", s)  # label
+    s = re.sub(r"[*`]", "", s)  # emphasis / code tokens
+    s = re.sub(r"\s+", " ", s).strip()  # whitespace
+    return s
+
+
+def _slug_heading(h: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", h.strip().lower()).strip("_")
+
+
+def _doc_body(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    m = re.match(r"^---\n.*?\n---\n", text, re.DOTALL)
+    return text[m.end():] if m else text
+
+
+def _h2_sections(body: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {}
+    slug: str | None = None
+    for line in body.splitlines():
+        m = re.match(r"^##\s+(.+)$", line)  # h2 only (### has no space after ##)
+        if m:
+            slug = _slug_heading(m.group(1))
+            sections.setdefault(slug, [])
+        elif slug is not None:
+            sections[slug].append(line)
+    return {k: "\n".join(v).strip() for k, v in sections.items()}
+
+
+def _list_items(section_body: str) -> list[str]:
+    return [ln for ln in section_body.splitlines() if re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", ln)]
+
+
+def _find_criterion(section_body: str, crit_id: str) -> str | None:
+    items = _list_items(section_body)
+    label = re.compile(
+        rf"^\s*(?:[-*+]|\d+[.)])\s*\*{{0,2}}{re.escape(crit_id)}\*{{0,2}}\s*[:.)–—-]",
+        re.IGNORECASE,
+    )
+    for it in items:  # 1) explicit label match (e.g. "- **EC1**: ...")
+        if label.match(it):
+            return it
+    m = re.search(r"(\d+)$", crit_id)  # 2) position fallback (ecN → Nth item)
+    if m:
+        idx = int(m.group(1)) - 1
+        if 0 <= idx < len(items):
+            return items[idx]
+    return None
+
+
+def _resolve_criterion(cycle_id: str, locator: str) -> tuple[str, str | None]:
+    """Resolve a text-hash locator against an IN-REPO cycle doc. Returns
+    (status, text) where status is 'ok' | 'no-doc' | 'no-criterion'. 'no-doc'
+    (source not resolvable locally) is the non-blocking path."""
+    doc = find_cycle_doc(cycle_id)
+    if doc is None:
+        return ("no-doc", None)
+    section_slug, _, crit_id = locator.partition("#")
+    # SOURCE_LOCATOR_RE is case-insensitive but section slugs are lowercased
+    # (_slug_heading), so normalize the lookup to avoid a false "not found".
+    section = _h2_sections(_doc_body(doc.path)).get(section_slug.lower())
+    if section is None:
+        return ("no-criterion", None)
+    text = _find_criterion(section, crit_id)
+    return ("ok", text) if text is not None else ("no-criterion", None)
+
+
 def validate_objectives(
     repo_root: Path, trailers: "Trailers", changed_files: Iterable[str]
 ) -> list[str]:
@@ -1198,6 +1281,58 @@ def validate_objectives(
                 errors.append(
                     f"{bloc}.kind: expected 'route' | 'critic' | 'test', got {bkind!r}"
                 )
+        # Cycle 331.1 2c (#207) — source-criterion binding. Verify a text-hash
+        # against the IN-REPO cycle doc (blocking on mismatch / not-found);
+        # human-reviewed is the escape; an unresolvable source (cross-repo cycle
+        # doc, issue body) is a NON-BLOCKING note — no flaky network on the gate.
+        sc = obj.get("sourceCriterion")
+        if isinstance(sc, dict):
+            sc_kind = sc.get("kind")
+            if sc_kind == "human-reviewed":
+                pass  # accepted; surfaced by df prove as human-reviewed
+            elif sc_kind == "text-hash":
+                sloc, ssha = sc.get("locator"), sc.get("sha256")
+                if not isinstance(sloc, str) or not SOURCE_LOCATOR_RE.match(sloc):
+                    errors.append(
+                        f"{loc}.sourceCriterion.locator: expected '<section-slug>#<criterion-id>', got {sloc!r}"
+                    )
+                elif not isinstance(ssha, str) or not SHA256_HEX_RE.match(ssha):
+                    errors.append(
+                        f"{loc}.sourceCriterion.sha256: expected lowercase-hex SHA-256 (64 chars), got {ssha!r}"
+                    )
+                elif kind == "cycle" and isinstance(ref, str):
+                    status, ctext = _resolve_criterion(normalize_cycle_id(ref) or ref, sloc)
+                    if status == "no-doc":
+                        print(
+                            f"[objectives] {loc}.sourceCriterion: cycle {ref!r} doc not in-repo — "
+                            "recorded, not verified (cross-repo verification deferred)",
+                            file=sys.stderr,
+                        )
+                    elif status == "no-criterion":
+                        errors.append(
+                            f"{loc}.sourceCriterion.locator: criterion {sloc!r} not found in the cycle doc"
+                        )
+                    elif ctext is not None:
+                        actual = hashlib.sha256(
+                            canonicalize_criterion(ctext).encode("utf-8")
+                        ).hexdigest()
+                        if actual != ssha:
+                            errors.append(
+                                f"{loc}.sourceCriterion.sha256: does not match the source criterion "
+                                f"(recomputed {actual})"
+                            )
+                else:
+                    print(
+                        f"[objectives] {loc}.sourceCriterion: {kind} source verification deferred "
+                        "(v1 verifies in-repo cycle docs) — recorded, not verified",
+                        file=sys.stderr,
+                    )
+            else:
+                errors.append(
+                    f"{loc}.sourceCriterion.kind: expected 'text-hash' | 'human-reviewed', got {sc_kind!r}"
+                )
+        elif sc is not None:
+            errors.append(f"{loc}.sourceCriterion: expected a mapping")
     return errors
 
 

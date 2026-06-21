@@ -1,0 +1,9 @@
+[
+  { "input": "- **EC1**: Route table populated.", "expected": "Route table populated." },
+  { "input": "* ec1 - Route table populated.", "expected": "Route table populated." },
+  { "input": "1. Route table populated.", "expected": "Route table populated." },
+  { "input": "  - EC2: Dashboard renders the proof panel.", "expected": "Dashboard renders the proof panel." },
+  { "input": "Route table   populated.\n  More.", "expected": "Route table populated. More." },
+  { "input": "`code` and **bold** text", "expected": "code and bold text" },
+  { "input": "No marker or label here.", "expected": "No marker or label here." }
+]

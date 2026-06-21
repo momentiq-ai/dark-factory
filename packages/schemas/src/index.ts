@@ -350,6 +350,10 @@ export interface Objective {
   // Ratchet hook. v1 always false (informational); flipping to true later
   // turns on per-objective coverage enforcement.
   enforced: boolean;
+  // Cycle 331.1 2c (#207) — optional source-criterion binding. Present ⇒ the
+  // objective is bound to a verbatim criterion in its source (text-hash) or
+  // explicitly human-reviewed; absent ⇒ agent-asserted (the v1 default).
+  sourceCriterion?: SourceCriterion;
 }
 
 export interface ObjectivesManifest {
@@ -358,6 +362,37 @@ export interface ObjectivesManifest {
 }
 
 export const OBJECTIVE_ID_RE = /^(cycle\d+(?:\.\d+)*#ec\d+|issue\d+#ac\d+)$/;
+
+// Cycle 331.1 2c (#207) — source-criterion binding. Binds an objective to a
+// verbatim criterion in its linked cycle doc / issue (text-hash), or marks it
+// human-reviewed. The cycle-doc-validation gate verifies a text-hash against
+// in-repo sources; `df prove` surfaces the binding kind. Closes the
+// agent-asserted → source-verified gap (parent spec §8).
+export type SourceCriterion =
+  | { kind: "text-hash"; locator: string; sha256: string }
+  | { kind: "human-reviewed"; by?: string };
+
+// `<section-slug>#<criterion-id>` — e.g. "exit_criteria#ec1". The section slug is
+// the cycle-doc parser's snake_case h2 slug; the criterion id labels the item.
+export const SOURCE_LOCATOR_RE = /^[a-z0-9_]+#[a-z0-9._-]+$/i;
+
+// Canonicalize a source criterion's text for hashing — the SINGLE source of
+// truth shared by the author (generate the sha256) and the validator (verify
+// it), so the two cannot drift. Normalizes away trivial markdown/whitespace
+// formatting while preserving meaning-bearing text. (Mirrored byte-for-byte in
+// validate_cycle_doc.py, pinned by a cross-impl fixture test.)
+export function canonicalizeCriterion(text: string): string {
+  let s = text.normalize("NFC");
+  // 1. strip a leading list marker: "- ", "* ", "+ ", "1. ", "2) "
+  s = s.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "");
+  // 2. strip a leading criterion label + separator: "**EC1**:", "EC1 -", "ec1) "
+  s = s.replace(/^\s*\*{0,2}[A-Za-z]+\d+[A-Za-z0-9]*\*{0,2}\s*[:.)–—-]\s+/, "");
+  // 3. remove markdown emphasis / inline-code tokens
+  s = s.replace(/[*`]/g, "");
+  // 4. collapse all whitespace runs to one space; trim
+  s = s.replace(/\s+/g, " ").trim();
+  return s;
+}
 
 // Cycle 331.1 verifiable-objectives Phase 2 (momentiq-ai/dark-factory#207) —
 // the published-evidence pointer manifest. `df publish` produces this in CI
@@ -463,6 +498,16 @@ export interface PublishedEvidence {
 export type ProofStatus = "proven" | "pending" | "failed";
 export const PROOF_STATUSES: readonly ProofStatus[] = ["proven", "pending", "failed"];
 
+// Cycle 331.1 2c (#207) — is the objective itself grounded in its source?
+// agent-asserted (no sourceCriterion) | human-reviewed | source-bound (a
+// text-hash binding is declared; the cycle-doc-validation gate is the verifier).
+export type SourceVerification = "agent-asserted" | "human-reviewed" | "source-bound";
+export const SOURCE_VERIFICATIONS: readonly SourceVerification[] = [
+  "agent-asserted",
+  "human-reviewed",
+  "source-bound",
+];
+
 // One resolved evidence binding: which evidence (mirrors EvidenceBinding's kind),
 // its proof status, a short human derivation, and — once published — the pointer.
 export interface BoundEvidenceRef {
@@ -482,6 +527,9 @@ export interface ObjectiveProof {
   enforced: boolean;
   status: ProofStatus;
   bindings: BoundEvidenceRef[];
+  // Whether the objective is grounded in its source (2c). Reflects the
+  // declared `sourceCriterion` binding kind; the gate is the verifier.
+  sourceVerification: SourceVerification;
 }
 
 export interface ProofSummary {
@@ -2383,6 +2431,31 @@ function parseEvidenceBinding(raw: unknown, path: string): EvidenceBinding {
   }
 }
 
+function parseSourceCriterion(raw: unknown, path: string): SourceCriterion | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const obj = need(isObject, raw, path, "object");
+  const kind = needEnum(["text-hash", "human-reviewed"] as const, obj["kind"], `${path}.kind`);
+  if (kind === "human-reviewed") {
+    const by = optional(isNonEmptyString, obj["by"], `${path}.by`, "non-empty string");
+    return { kind, ...(by !== undefined ? { by } : {}) };
+  }
+  const locator = need(isNonEmptyString, obj["locator"], `${path}.locator`, "non-empty string");
+  if (!SOURCE_LOCATOR_RE.test(locator)) {
+    throw new SchemaError(
+      `${path}.locator`,
+      `expected "<section-slug>#<criterion-id>", got ${JSON.stringify(locator)}`,
+    );
+  }
+  const sha256 = need(isNonEmptyString, obj["sha256"], `${path}.sha256`, "non-empty string");
+  if (!SHA256_HEX_RE.test(sha256)) {
+    throw new SchemaError(
+      `${path}.sha256`,
+      `expected lowercase-hex SHA-256 (64 chars), got ${JSON.stringify(sha256)}`,
+    );
+  }
+  return { kind, locator, sha256 };
+}
+
 function parseObjective(raw: unknown, path: string): Objective {
   const obj = need(isObject, raw, path, "object");
   const id = need(isNonEmptyString, obj["id"], `${path}.id`, "non-empty string");
@@ -2399,12 +2472,14 @@ function parseObjective(raw: unknown, path: string): Objective {
   }
   const rawBindings = need(isArray, obj["attestedBy"], `${path}.attestedBy`, "array");
   const attestedBy = rawBindings.map((b, i) => parseEvidenceBinding(b, `${path}.attestedBy[${i}]`));
+  const sourceCriterion = parseSourceCriterion(obj["sourceCriterion"], `${path}.sourceCriterion`);
   return {
     id,
     source,
     text: need(isNonEmptyString, obj["text"], `${path}.text`, "non-empty string"),
     attestedBy,
     enforced: need(isBoolean, obj["enforced"], `${path}.enforced`, "boolean"),
+    ...(sourceCriterion !== undefined ? { sourceCriterion } : {}),
   };
 }
 
@@ -2709,6 +2784,12 @@ function parseObjectiveProof(raw: unknown, path: string): ObjectiveProof {
     enforced: need(isBoolean, obj["enforced"], `${path}.enforced`, "boolean"),
     status: needEnum(PROOF_STATUSES, obj["status"], `${path}.status`),
     bindings: bindingsRaw.map((b, i) => parseBoundEvidenceRef(b, `${path}.bindings[${i}]`)),
+    // Tolerant default: records produced before 2c (or by a non-2c producer)
+    // are agent-asserted.
+    sourceVerification:
+      obj["sourceVerification"] === undefined
+        ? "agent-asserted"
+        : needEnum(SOURCE_VERIFICATIONS, obj["sourceVerification"], `${path}.sourceVerification`),
   };
 }
 

@@ -112,7 +112,9 @@ const GLYPH: Record<ProofStatus, string> = { proven: "✓", pending: "…", fail
 function renderObjective(o: ObjectiveProof): string {
   const lines: string[] = [];
   const tag = o.enforced ? " [enforced]" : "";
-  lines.push(`  ${GLYPH[o.status]} ${o.status.padEnd(7)} ${o.id}${tag}  ${o.text}`);
+  // 2c: show source grounding when not the agent-asserted default.
+  const src = o.sourceVerification === "agent-asserted" ? "" : ` {${o.sourceVerification}}`;
+  lines.push(`  ${GLYPH[o.status]} ${o.status.padEnd(7)} ${o.id}${tag}${src}  ${o.text}`);
   for (const b of o.bindings) {
     const ptr = b.uploadId ? ` (cerebe:${b.uploadId})` : "";
     lines.push(`      ${b.kind}[${b.ref}] ${b.status} — ${b.detail}${ptr}`);

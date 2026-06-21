@@ -1297,3 +1297,184 @@ def test_objectives_non_dict_source(tmp_path):
     trailers = parse_trailers("Cycle: 21\n")
     errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
     assert any("expected a mapping" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# source-criterion ratchet (2c)
+# ---------------------------------------------------------------------------
+import hashlib  # noqa: E402
+import json as _json2  # noqa: E402
+
+from validate_cycle_doc import canonicalize_criterion  # noqa: E402
+
+CF = [".darkfactory/objectives.yaml"]
+
+
+def _crit_hash(item_text):
+    return hashlib.sha256(canonicalize_criterion(item_text).encode("utf-8")).hexdigest()
+
+
+def _write_cycle_doc(repo_root, cycle_id, body):
+    d = repo_root / "docs" / "roadmap" / "cycles"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"cycle{cycle_id}-test.md").write_text(textwrap.dedent(body))
+
+
+def test_canonicalize_criterion_matches_fixture():
+    # Cross-impl parity: Python canonicalize_criterion must agree with the TS
+    # canonicalizeCriterion on the shared fixture (the TS side asserts the same file).
+    cases = _json2.loads((Path(__file__).parent / "canonicalize-fixture.json").read_text())
+    for c in cases:
+        assert canonicalize_criterion(c["input"]) == c["expected"], c["input"]
+
+
+def test_source_criterion_human_reviewed_ok(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: human-reviewed, by: PJ }
+    """)
+    assert validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF) == []
+
+
+def test_source_criterion_bad_locator(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "bad locator", sha256: "%s" }
+    """ % ("a" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert any("sourceCriterion.locator" in e for e in errors)
+
+
+def test_source_criterion_text_hash_match(tmp_path, monkeypatch):
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        status: in-progress
+        ---
+        ## Exit criteria
+
+        - **EC1**: Route table populated.
+        - **EC2**: Dashboard renders.
+    """)
+    good = _crit_hash("- **EC1**: Route table populated.")
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Route table populated."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "exit_criteria#ec1", sha256: "%s" }
+    """ % good)
+    assert validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF) == []
+
+
+def test_source_criterion_text_hash_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        status: in-progress
+        ---
+        ## Exit criteria
+
+        - **EC1**: Route table populated.
+    """)
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Route table populated."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "exit_criteria#ec1", sha256: "%s" }
+    """ % ("b" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert any("does not match the source criterion" in e for e in errors)
+
+
+def test_source_criterion_no_doc_is_non_blocking(tmp_path, monkeypatch):
+    # Source not resolvable in-repo (no cycle doc) → NON-blocking note, no error.
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "exit_criteria#ec1", sha256: "%s" }
+    """ % ("a" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert not any("sourceCriterion" in e for e in errors)
+
+
+def test_source_criterion_not_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        status: in-progress
+        ---
+        ## Exit criteria
+
+        - **EC1**: Route table populated.
+    """)
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec9
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "exit_criteria#ec9", sha256: "%s" }
+    """ % ("a" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert any("not found in the cycle doc" in e for e in errors)
+
+
+def test_source_criterion_locator_section_case_insensitive(tmp_path, monkeypatch):
+    # SOURCE_LOCATOR_RE accepts mixed-case section slugs; resolution must lower()
+    # them so "Exit_Criteria#ec1" resolves (not a false "not found").
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        status: in-progress
+        ---
+        ## Exit criteria
+
+        - **EC1**: Route table populated.
+    """)
+    good = _crit_hash("- **EC1**: Route table populated.")
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Route table populated."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "Exit_Criteria#ec1", sha256: "%s" }
+    """ % good)
+    assert validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF) == []
