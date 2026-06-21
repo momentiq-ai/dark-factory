@@ -29,6 +29,7 @@ import {
   type Objective,
   type ObjectiveProof,
   type ProofStatus,
+  type SourceVerification,
   type ProofSummary,
   type ReviewVerdict,
 } from "@momentiq/dark-factory-schemas";
@@ -139,7 +140,15 @@ export function buildProofRecord(inputs: ProofInputs, generatedAt: string): Boun
     // silently proven. Otherwise it's the worst of its bindings.
     const status: ProofStatus =
       bindings.length === 0 ? "pending" : worstOf(bindings.map((b) => b.status));
-    return { id: o.id, text: o.text, enforced: o.enforced, status, bindings };
+    // 2c: surface whether the objective is grounded in its source. df prove
+    // reports the binding kind; the cycle-doc-validation gate is the verifier.
+    const sourceVerification: SourceVerification =
+      o.sourceCriterion === undefined
+        ? "agent-asserted"
+        : o.sourceCriterion.kind === "human-reviewed"
+          ? "human-reviewed"
+          : "source-bound";
+    return { id: o.id, text: o.text, enforced: o.enforced, status, bindings, sourceVerification };
   });
 
   const summary: ProofSummary = { proven: 0, pending: 0, failed: 0, total: objectives.length };

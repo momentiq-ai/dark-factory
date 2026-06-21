@@ -498,6 +498,16 @@ export interface PublishedEvidence {
 export type ProofStatus = "proven" | "pending" | "failed";
 export const PROOF_STATUSES: readonly ProofStatus[] = ["proven", "pending", "failed"];
 
+// Cycle 331.1 2c (#207) — is the objective itself grounded in its source?
+// agent-asserted (no sourceCriterion) | human-reviewed | source-bound (a
+// text-hash binding is declared; the cycle-doc-validation gate is the verifier).
+export type SourceVerification = "agent-asserted" | "human-reviewed" | "source-bound";
+export const SOURCE_VERIFICATIONS: readonly SourceVerification[] = [
+  "agent-asserted",
+  "human-reviewed",
+  "source-bound",
+];
+
 // One resolved evidence binding: which evidence (mirrors EvidenceBinding's kind),
 // its proof status, a short human derivation, and — once published — the pointer.
 export interface BoundEvidenceRef {
@@ -517,6 +527,9 @@ export interface ObjectiveProof {
   enforced: boolean;
   status: ProofStatus;
   bindings: BoundEvidenceRef[];
+  // Whether the objective is grounded in its source (2c). Reflects the
+  // declared `sourceCriterion` binding kind; the gate is the verifier.
+  sourceVerification: SourceVerification;
 }
 
 export interface ProofSummary {
@@ -2771,6 +2784,12 @@ function parseObjectiveProof(raw: unknown, path: string): ObjectiveProof {
     enforced: need(isBoolean, obj["enforced"], `${path}.enforced`, "boolean"),
     status: needEnum(PROOF_STATUSES, obj["status"], `${path}.status`),
     bindings: bindingsRaw.map((b, i) => parseBoundEvidenceRef(b, `${path}.bindings[${i}]`)),
+    // Tolerant default: records produced before 2c (or by a non-2c producer)
+    // are agent-asserted.
+    sourceVerification:
+      obj["sourceVerification"] === undefined
+        ? "agent-asserted"
+        : needEnum(SOURCE_VERIFICATIONS, obj["sourceVerification"], `${path}.sourceVerification`),
   };
 }
 
