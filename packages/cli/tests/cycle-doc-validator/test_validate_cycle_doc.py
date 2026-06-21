@@ -1451,3 +1451,30 @@ def test_source_criterion_not_found(tmp_path, monkeypatch):
     """ % ("a" * 64))
     errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
     assert any("not found in the cycle doc" in e for e in errors)
+
+
+def test_source_criterion_locator_section_case_insensitive(tmp_path, monkeypatch):
+    # SOURCE_LOCATOR_RE accepts mixed-case section slugs; resolution must lower()
+    # them so "Exit_Criteria#ec1" resolves (not a false "not found").
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        status: in-progress
+        ---
+        ## Exit criteria
+
+        - **EC1**: Route table populated.
+    """)
+    good = _crit_hash("- **EC1**: Route table populated.")
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Route table populated."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "Exit_Criteria#ec1", sha256: "%s" }
+    """ % good)
+    assert validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF) == []

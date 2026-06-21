@@ -5,7 +5,6 @@ import {
   SchemaError,
   canonicalizeCriterion,
   parseObjectivesManifest,
-  type Objective,
 } from "../src/index.js";
 
 const HASH = "a".repeat(64);

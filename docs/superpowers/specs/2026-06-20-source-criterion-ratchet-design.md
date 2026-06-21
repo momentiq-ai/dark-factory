@@ -77,7 +77,8 @@ break the hash, while meaning-bearing text does:
 
 1. Strip a leading list marker (`- `, `* `, `1. `) and an optional bold/plain
    criterion label that matches the locator id (`**EC1**`, `EC1:`, `ec1 -`).
-2. Strip surrounding markdown emphasis tokens (`**`, `*`, `` ` ``) — not inner.
+2. Strip markdown emphasis / inline-code tokens (`*`, `` ` ``) wherever they
+   appear — v1 strips all of them (deterministic + simplest), matching the impl.
 3. Collapse all internal whitespace runs (incl. newlines) to a single space; trim.
 4. NFC-normalize. Case is preserved (meaning-bearing).
 
@@ -148,7 +149,8 @@ coverage ratchet (orthogonal).
 - validator (pytest): text-hash match → ok; mismatch → error; criterion-not-found
   → error; source-not-in-repo → non-blocking note; human-reviewed → ok; +
   cross-impl canonicalization parity fixture (TS == Python).
-- `df prove`: `sourceVerification` per objective across the four states.
+- `df prove`: `sourceVerification` per objective across the three states
+  (agent-asserted / human-reviewed / source-bound).
 
 ## 10. References
 

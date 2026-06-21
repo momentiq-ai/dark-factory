@@ -1142,7 +1142,9 @@ def _resolve_criterion(cycle_id: str, locator: str) -> tuple[str, str | None]:
     if doc is None:
         return ("no-doc", None)
     section_slug, _, crit_id = locator.partition("#")
-    section = _h2_sections(_doc_body(doc.path)).get(section_slug)
+    # SOURCE_LOCATOR_RE is case-insensitive but section slugs are lowercased
+    # (_slug_heading), so normalize the lookup to avoid a false "not found".
+    section = _h2_sections(_doc_body(doc.path)).get(section_slug.lower())
     if section is None:
         return ("no-criterion", None)
     text = _find_criterion(section, crit_id)
