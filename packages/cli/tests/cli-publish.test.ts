@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -164,5 +164,94 @@ describe("cmdPublish", () => {
     expect(manifest.status).toBe("degraded");
     expect(manifest.degradedReason).toMatch(/CEREBE_API_URL/);
     expect(c.err.join("")).toMatch(/status=degraded/);
+  });
+
+  // ---- Transmit (Cycle 23) ----
+  const TRANSMIT_ENV = {
+    DF_EVIDENCE_INGEST_URL: "https://ingest.example/events/evidence/publish",
+    DF_EVIDENCE_INGEST_SECRET: "s",
+    GITHUB_REPOSITORY: "owner/repo",
+  };
+
+  it("transmits the built manifest when DF_EVIDENCE_INGEST_* is configured", async () => {
+    const { dir, loaded, sha } = await setupRepo();
+    await writeEvidence(dir, loaded, sha, true);
+    const transmit = vi.fn(async () => ({ status: 204 }));
+    const c = capture();
+    const code = await cmdPublish(["--commit", sha, "--cwd", dir], c.io, {
+      ...CONFIGURED,
+      env: TRANSMIT_ENV,
+      transmit,
+    });
+    expect(code).toBe(0);
+    expect(transmit).toHaveBeenCalledTimes(1);
+    const arg = transmit.mock.calls[0]![0];
+    expect(arg.repository).toBe("owner/repo");
+    expect(arg.config).toEqual({ url: TRANSMIT_ENV.DF_EVIDENCE_INGEST_URL, secret: "s" });
+    expect(arg.evidence.status).toBe("complete");
+    expect(c.err.join("")).toMatch(/transmitted evidence for owner\/repo/);
+  });
+
+  it("prefers --repository over GITHUB_REPOSITORY for transmit", async () => {
+    const { dir, loaded, sha } = await setupRepo();
+    await writeEvidence(dir, loaded, sha, true);
+    const transmit = vi.fn(async () => ({ status: 204 }));
+    const c = capture();
+    const code = await cmdPublish(
+      ["--commit", sha, "--cwd", dir, "--repository", "flag/repo"],
+      c.io,
+      { ...CONFIGURED, env: TRANSMIT_ENV, transmit },
+    );
+    expect(code).toBe(0);
+    expect(transmit.mock.calls[0]![0].repository).toBe("flag/repo");
+  });
+
+  it("degrade-and-passes (exit 0) when transmit throws", async () => {
+    const { dir, loaded, sha } = await setupRepo();
+    await writeEvidence(dir, loaded, sha, true);
+    const transmit = vi.fn(async () => {
+      throw new Error("boom");
+    });
+    const c = capture();
+    const code = await cmdPublish(["--commit", sha, "--cwd", dir], c.io, {
+      ...CONFIGURED,
+      env: TRANSMIT_ENV,
+      transmit,
+    });
+    expect(code).toBe(0);
+    expect(transmit).toHaveBeenCalledTimes(1);
+    expect(c.err.join("")).toMatch(/transmit failed.*merge not blocked/);
+  });
+
+  it("skips transmit (no call) when DF_EVIDENCE_INGEST_* is unset", async () => {
+    const { dir, loaded, sha } = await setupRepo();
+    await writeEvidence(dir, loaded, sha, true);
+    const transmit = vi.fn(async () => ({ status: 204 }));
+    const c = capture();
+    const code = await cmdPublish(["--commit", sha, "--cwd", dir], c.io, {
+      ...CONFIGURED,
+      env: {},
+      transmit,
+    });
+    expect(code).toBe(0);
+    expect(transmit).not.toHaveBeenCalled();
+  });
+
+  it("skips transmit with a diagnostic when configured but no repository resolvable", async () => {
+    const { dir, loaded, sha } = await setupRepo();
+    await writeEvidence(dir, loaded, sha, true);
+    const transmit = vi.fn(async () => ({ status: 204 }));
+    const c = capture();
+    const code = await cmdPublish(["--commit", sha, "--cwd", dir], c.io, {
+      ...CONFIGURED,
+      env: {
+        DF_EVIDENCE_INGEST_URL: TRANSMIT_ENV.DF_EVIDENCE_INGEST_URL,
+        DF_EVIDENCE_INGEST_SECRET: "s",
+      }, // no GITHUB_REPOSITORY, no --repository
+      transmit,
+    });
+    expect(code).toBe(0);
+    expect(transmit).not.toHaveBeenCalled();
+    expect(c.err.join("")).toMatch(/no repository/);
   });
 });
