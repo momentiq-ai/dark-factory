@@ -47,6 +47,18 @@ on:
       CEREBE_API_KEY:
         description: Cerebe API key (sent as the X-API-Key header). See CEREBE_API_URL.
         required: false
+      DF_EVIDENCE_INGEST_URL:
+        description: |
+          Evidence-ingest endpoint the PublishedEvidence manifest is PUSHed to,
+          HMAC-signed (`{repository, evidence}` envelope). When absent, `df
+          publish` skips transmit (capture-only, exits 0) — same degrade-and-pass
+          posture as Cerebe. The repository is `github.repository` (auto).
+        required: false
+      DF_EVIDENCE_INGEST_SECRET:
+        description: |
+          HMAC-SHA256 key for the `X-Hub-Signature-256: sha256=<hex>` header the
+          endpoint verifies over the raw body. See DF_EVIDENCE_INGEST_URL.
+        required: false
       MOMENTIQ_NPM_READ_TOKEN:
         description: |
           Deprecated — the CLI is public on npm; no auth needed. Kept so callers
@@ -123,12 +135,17 @@ jobs:
         # capture step. The manifest records each route's exit code.
         run: $DF_BIN verify || echo "df verify exited non-zero (a route blocked or soft-skipped) — publishing the evidence regardless." >&2
 
-      - name: Publish evidence to Cerebe (df publish)
-        # Degrade-and-pass: with CEREBE_* unset, df publish emits a degraded
-        # manifest and exits 0. With them set, it uploads + emits upload_ids.
+      - name: Publish + transmit evidence (df publish)
+        # Degrade-and-pass on BOTH facets: with CEREBE_* unset df publish emits a
+        # degraded manifest (exit 0); with DF_EVIDENCE_INGEST_* unset it skips the
+        # transmit (exit 0). With each set, it uploads to Cerebe + PUSHes the
+        # signed manifest to the ingest endpoint. GITHUB_REPOSITORY is auto-set by
+        # Actions and read by df publish as the transmit `repository`.
         env:
           CEREBE_API_URL: ${{ secrets.CEREBE_API_URL }}
           CEREBE_API_KEY: ${{ secrets.CEREBE_API_KEY }}
+          DF_EVIDENCE_INGEST_URL: ${{ secrets.DF_EVIDENCE_INGEST_URL }}
+          DF_EVIDENCE_INGEST_SECRET: ${{ secrets.DF_EVIDENCE_INGEST_SECRET }}
         run: $DF_BIN publish --out evidence-pointers.json
 
       - name: Upload published-evidence manifest
