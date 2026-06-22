@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.13.2](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.13.1...dark-factory-cli-v2.13.2) (2026-06-22)
+
+
+### Bug Fixes
+
+* **handoff:** allow acyclic handoff→handoff links via true cycle detection — [#229](https://github.com/momentiq-ai/dark-factory/issues/229) ([#230](https://github.com/momentiq-ai/dark-factory/issues/230)) ([45954ab](https://github.com/momentiq-ai/dark-factory/commit/45954ab0e0dfcf6a511d8c7b956ab6c3c6cd7d70))
+* **worktree:** prevent + recover the linked-worktree auto-gc index corruption — [#227](https://github.com/momentiq-ai/dark-factory/issues/227) ([#231](https://github.com/momentiq-ai/dark-factory/issues/231)) ([11d86fa](https://github.com/momentiq-ai/dark-factory/commit/11d86fa5d4305659fcba84fe7231971b7af87a0e))
+
 ## [2.13.1](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.13.0...dark-factory-cli-v2.13.1) (2026-06-22)
 
 
