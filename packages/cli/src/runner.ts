@@ -2,6 +2,7 @@ import { setMaxListeners } from "node:events";
 
 import type { LoadedConfig } from "./policy/config.js";
 import type { AdapterRegistry, CriticReviewOptions } from "./adapters/critic.js";
+import { buildErrorResult } from "./adapters/_shared.js";
 import { buildReviewPacket } from "./trusted-surface/rebind.js";
 import { collectChangedPaths } from "./evidence/index.js";
 import {
@@ -39,6 +40,7 @@ import { gitShowFile } from "./git.js";
 // lives in the same module so they evolve in lockstep.
 import type { TelemetrySink } from "./evidence/audit-trail.js";
 import type {
+  CriticConfig,
   CriticResult,
   GateBlock,
   GateResult,
@@ -134,9 +136,18 @@ const CRITIC_SIGNAL_MAX_LISTENERS = 64;
 // `MaxListenersExceededWarning`. Returns the `cleanup` thunk the caller
 // MUST invoke in `finally` to clear the internal timer (no-op when no
 // internal timer was created).
+//
+// Issue #180 — also returns `internalDeadlineMs`: the `DF_CRITIC_TIMEOUT_MS`
+// value WHEN (and only when) the runner created its OWN internal deadline.
+// It is `undefined` whenever the caller supplied their own signal OR no
+// internal deadline was created (env unset / invalid). The per-critic
+// deadline race (see `dispatchWithDeadline`) is armed ONLY when this is set,
+// so today's behavior is preserved for callers that own cancellation or that
+// run unbounded.
 function resolveEffectiveSignal(callerSignal: AbortSignal | undefined): {
   signal: AbortSignal | undefined;
   cleanup: () => void;
+  internalDeadlineMs?: number;
 } {
   if (callerSignal !== undefined) {
     setMaxListeners(CRITIC_SIGNAL_MAX_LISTENERS, callerSignal);
@@ -161,7 +172,133 @@ function resolveEffectiveSignal(callerSignal: AbortSignal | undefined): {
   return {
     signal: controller.signal,
     cleanup: () => clearTimeout(timer),
+    internalDeadlineMs: ms,
   };
+}
+
+// Issue #180 — derive the per-critic hard deadline from the runner's
+// internal `DF_CRITIC_TIMEOUT_MS` abort deadline. This is the LAST-RESORT
+// settlement guarantee that covers a genuinely-wedged adapter — one whose
+// `review()` promise never settles because it ignores `options.signal` (e.g.
+// a stalled vendor stream that never calls `run.cancel()`, or a spawned
+// subprocess not wired to the abort controller). Without it, ONE such
+// promise stalls `Promise.all` forever → `runReview()` never returns →
+// `main()` never resolves → the `#167` `finalizeExit` backstop never arms →
+// the process runs to the 20m GHA job clamp and is killed as an orphan,
+// dequeuing the PR.
+//
+// Ordering invariant (load-bearing): the internal 15m abort deadline fires
+// FIRST, giving a well-behaved adapter the chance to honor `options.signal`
+// and emit its OWN structured error (`degrade-and-pass`); only a wedged
+// adapter that ignored the abort reaches this generic per-critic deadline.
+// The deadline must therefore sit STRICTLY BETWEEN the 15m abort and the 20m
+// job clamp: 15m < per-critic deadline < 20m.
+//
+// The grace SHRINKS WITH the base deadline — `min(grace, base)` — for two
+// reasons: (1) in production (base 900_000ms = 15m) it adds the full 30s
+// grace → 930_000ms = 15.5m, which satisfies 15m < 15.5m < 20m; (2) under a
+// LOW test deadline (e.g. base 100ms) it caps the grace at the base so the
+// per-critic deadline still fires near-instantly (200ms) — a fixed +30s
+// grace would make the deadline un-observable inside a unit test's default
+// timeout.
+const PER_CRITIC_DEADLINE_GRACE_MS = 30_000;
+
+export function computePerCriticDeadlineMs(internalDeadlineMs: number): number {
+  return internalDeadlineMs + Math.min(PER_CRITIC_DEADLINE_GRACE_MS, internalDeadlineMs);
+}
+
+// Issue #180 — structured error `code` stamped on a CriticResult when the
+// per-critic deadline fires. Discriminable from transport/auth/transient
+// failures (and from the 15m abort path) in `_runs.ndjson` and `df stats`.
+export const CRITIC_DEADLINE_EXCEEDED_CODE = "critic_deadline_exceeded";
+
+// Issue #180 — per-critic heartbeat cadence. The wedged run that motivated
+// this fix emitted ZERO per-critic output for the full 20m before the clamp
+// killed it, so an operator could not tell WHICH adapter blocked. A minute-N
+// "still running" log per critic (plus the `::warning::` on deadline-fire)
+// closes that blind spot. The heartbeat is stderr-log-only (a GHA `::notice::`
+// annotation) so it adds no schema surface and changes no control flow.
+const PER_CRITIC_HEARTBEAT_INTERVAL_MS = 60_000;
+
+// Issue #180 — wrap a single `adapter.review(...)` in a `Promise.race`
+// against a deadline that RESOLVES (never rejects) to a structured-error
+// CriticResult. On a deadline win the aggregate still settles, so
+// `Promise.all` resolves, `runReview()` returns, `main()` resolves, and the
+// `#167` `finalizeExit` backstop arms and force-exits the wedged process.
+//
+// The heartbeat interval and the deadline timer are BOTH cleared on settle —
+// AND `unref`'d at creation — so (a) a healthy adapter that settles fast
+// leaves no pending timer holding the event loop open, and (b) a wedged
+// sibling's timer can't keep the whole `Promise.all` alive after the others
+// resolve. Defense in depth: even if a settle path were missed, the `unref`
+// keeps the timers from blocking process exit.
+//
+// The deadline-fire is reported via the EXISTING `critic_run_error` telemetry
+// event (a deadline IS a per-critic run error) carrying `status:
+// "deadline_exceeded"` and the structured `errorCode` — so no new schema
+// surface is introduced. Pure aside from the optional `emit` and the
+// `process.stderr` annotations; the review promise itself is untouched.
+export function dispatchWithDeadline(args: {
+  reviewPromise: Promise<CriticResult>;
+  critic: CriticConfig;
+  deadlineMs: number;
+  emit?: (event: TelemetryEvent) => void;
+  commit: string;
+  // Injectable clock so tests can compute the heartbeat's minute-N without
+  // wall-clock drift. Defaults to `Date.now`.
+  now?: () => number;
+}): Promise<CriticResult> {
+  const startMs = (args.now ?? Date.now)();
+  let heartbeat: NodeJS.Timeout | undefined;
+  let deadline: NodeJS.Timeout | undefined;
+
+  const clear = (): void => {
+    if (heartbeat !== undefined) clearInterval(heartbeat);
+    if (deadline !== undefined) clearTimeout(deadline);
+  };
+
+  // Heartbeat: a "still running at minute-N" GHA annotation per critic.
+  // Diagnostic only — no control-flow effect, no telemetry-schema surface.
+  heartbeat = setInterval(() => {
+    const elapsedMs = (args.now ?? Date.now)() - startMs;
+    const minute = Math.round(elapsedMs / 60_000);
+    process.stderr.write(
+      `::notice::df critic: "${args.critic.id}" still running at minute ${minute}\n`,
+    );
+  }, PER_CRITIC_HEARTBEAT_INTERVAL_MS);
+  if (typeof heartbeat.unref === "function") heartbeat.unref();
+
+  const deadlinePromise = new Promise<CriticResult>((resolveDeadline) => {
+    deadline = setTimeout(() => {
+      const message = `${args.critic.id} exceeded per-critic deadline (${args.deadlineMs}ms); degraded`;
+      // `::warning::` names the wedged critic in the GHA log — the run that
+      // motivated #180 had no way to attribute the hang to a critic.
+      process.stderr.write(`::warning::df critic: ${message}\n`);
+      args.emit?.({
+        ts: new Date().toISOString(),
+        event: "critic_run_error",
+        commit: args.commit,
+        criticId: args.critic.id,
+        adapter: args.critic.adapter,
+        model: args.critic.model.id,
+        durationMs: args.deadlineMs,
+        error: message,
+        status: "deadline_exceeded",
+        errorCode: CRITIC_DEADLINE_EXCEEDED_CODE,
+      });
+      resolveDeadline(
+        buildErrorResult({
+          critic: args.critic,
+          message,
+          retryable: false,
+          code: CRITIC_DEADLINE_EXCEEDED_CODE,
+        }),
+      );
+    }, args.deadlineMs);
+    if (typeof deadline.unref === "function") deadline.unref();
+  });
+
+  return Promise.race([args.reviewPromise, deadlinePromise]).finally(clear);
 }
 
 export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOutcome> {
@@ -169,8 +306,20 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
   const cwd = options.cwd ?? options.loaded.repoRoot;
   const ref = options.ref ?? "HEAD";
   const sha = await resolveCommit(ref, cwd);
-  const { signal: effectiveSignal, cleanup: cleanupSignal } =
-    resolveEffectiveSignal(options.signal);
+  const {
+    signal: effectiveSignal,
+    cleanup: cleanupSignal,
+    internalDeadlineMs,
+  } = resolveEffectiveSignal(options.signal);
+  // Issue #180 — the per-critic deadline is armed ONLY when the runner
+  // created its OWN internal deadline (env-driven `DF_CRITIC_TIMEOUT_MS`,
+  // no caller signal). When a caller supplied their own signal, or no
+  // timeout is set, `internalDeadlineMs` is undefined and dispatch behaves
+  // exactly as it did before (the caller / embedder owns cancellation).
+  const perCriticDeadlineMs =
+    internalDeadlineMs !== undefined
+      ? computePerCriticDeadlineMs(internalDeadlineMs)
+      : undefined;
 
   // Self-modification guard across the whole trusted policy surface
   // (config + guidance files + prompt fragments). See `policy-baseline.ts`.
@@ -372,7 +521,24 @@ export async function runReview(options: ReviewRunOptions): Promise<ReviewRunOut
           };
         }
         const adapter = registry.resolve(critic.adapter);
-        return adapter.review(packet!, critic, reviewOptions);
+        const reviewPromise = adapter.review(packet!, critic, reviewOptions);
+        // Issue #180 — last-resort per-critic settlement guarantee. When the
+        // runner armed its own internal deadline, race each adapter's
+        // `review()` against a hard per-critic deadline that RESOLVES to a
+        // structured `critic_deadline_exceeded` error. A genuinely-wedged
+        // adapter (one that ignores `options.signal`) can no longer stall
+        // `Promise.all` forever; the aggregate settles, `runReview()` returns,
+        // and the `#167` `finalizeExit` backstop arms. A well-behaved adapter
+        // honors the 15m abort and emits its own structured error well before
+        // this generic deadline (15m abort < per-critic deadline < 20m clamp).
+        if (perCriticDeadlineMs === undefined) return reviewPromise;
+        return dispatchWithDeadline({
+          reviewPromise,
+          critic,
+          deadlineMs: perCriticDeadlineMs,
+          commit: sha,
+          ...(sink !== undefined ? { emit: (e: TelemetryEvent) => sink.emit(e) } : {}),
+        });
       }),
     );
 

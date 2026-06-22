@@ -201,14 +201,50 @@ export class CursorSdkAdapter implements CriticAdapter {
     let runStatus: string | undefined;
     let terminalResult: unknown = null;
 
+    // Issue #180 — the `@cursor/sdk` Run exposes NO `signal` field; `cancel()`
+    // is its only abort surface. Without wiring `options.signal` →
+    // `run.cancel()`, a stalled vendor stream (the SDK's internal event buffer
+    // never closes) keeps `for await (run.stream())` / `await run.wait()`
+    // blocked forever even after the runner's 15m `DF_CRITIC_TIMEOUT_MS` abort
+    // fires — so the critic's `review()` promise never settles and the whole
+    // `Promise.all` in the runner hangs to the 20m job clamp (the #180 hang).
+    // `cancel()` aborts the SDK's internal controller, closes the event
+    // buffer, terminates the stalled `for await`, and unblocks `wait()`.
+    let onAbort: (() => void) | undefined;
     try {
       const sendable = agent as { send: (text: string) => Promise<unknown> };
       const run = (await sendable.send(prompt.text)) as {
         id?: string;
         stream(): AsyncIterable<unknown>;
         wait(): Promise<unknown>;
+        cancel?: () => void | Promise<void>;
       };
       runId = run.id;
+      // Register the abort → cancel() bridge. `cancel` is best-effort (the
+      // `run` is a type assertion, not a guarantee) and wrapped so a throwing
+      // cancel never escapes the abort listener. Handle the already-aborted
+      // case synchronously: if the runner's deadline fired between `send()`
+      // resolving and this line, cancel immediately so we don't enter a
+      // doomed stream.
+      onAbort = (): void => {
+        // Swallow BOTH a synchronous throw AND an async rejection: `cancel()`
+        // may return a rejecting Promise, and an unhandled rejection fired
+        // from an event listener could destabilize the process. Wrapping in
+        // `Promise.resolve(...).catch()` makes the best-effort cancel total.
+        // A failed cancel falls through to the stream/wait loop, which the
+        // runner's per-critic deadline (#180) still bounds.
+        try {
+          void Promise.resolve(run.cancel?.()).catch(() => {});
+        } catch {
+          // Defensive: `cancel` throwing synchronously (before returning a
+          // promise) is also swallowed.
+        }
+      };
+      if (options.signal?.aborted) {
+        onAbort();
+      } else {
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+      }
       for await (const event of run.stream()) {
         if (options.signal?.aborted) break;
         const ids = extractIds(event);
@@ -279,6 +315,13 @@ export class CursorSdkAdapter implements CriticAdapter {
         runId: runId ?? null,
         agentId: agentId ?? null,
       };
+    } finally {
+      // Issue #180 — remove the abort → cancel() listener on EVERY exit path
+      // (success fall-through, permanent/retryable returns from the catch).
+      // Without this, each of the 3 retry-loop attempts would leave a listener
+      // on `options.signal`, leaking across the loop and re-tripping the #29
+      // MaxListenersExceededWarning the runner raised the cap to avoid.
+      if (onAbort !== undefined) options.signal?.removeEventListener("abort", onAbort);
     }
 
     await disposeAgent(agent);

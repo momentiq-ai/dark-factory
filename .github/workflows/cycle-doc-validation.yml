@@ -165,6 +165,14 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install validator Python deps (pyyaml)
+        # The objectives validator (validate_cycle_doc.py) defers `import yaml`
+        # so the dependency-light boot path stays clean — but a consumer that
+        # ships `.darkfactory/objectives.yaml` needs pyyaml present to validate
+        # it (else the gate fails closed with a "pip install pyyaml" hint).
+        if: env.EVENT_NAME == 'pull_request'
+        run: python -m pip install --quiet pyyaml
+
       - name: Run cycle-doc-validation on dark-factory PRs (no-op by default, local path)
         # Dark-factory has no cycle docs of its own (the cycle 331.1 doc
         # lives in sage3c). The default Phase E posture is to NO-OP on

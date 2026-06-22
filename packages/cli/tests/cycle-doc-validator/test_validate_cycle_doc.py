@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import textwrap
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -35,6 +37,7 @@ from validate_cycle_doc import (  # noqa: E402
     read_cycle_frontmatter_from_text,
     status_completion_in_diff,
     validate,
+    validate_objectives,
 )
 
 
@@ -966,3 +969,512 @@ def test_is_gh_not_found_error_distinguishes_404_from_other_errors():
     assert validator._is_gh_not_found_error(err_404_lower) is True
     assert validator._is_gh_not_found_error(err_403) is False
     assert validator._is_gh_not_found_error(err_500) is False
+
+
+# ---------------------------------------------------------------------------
+# validate_objectives
+# ---------------------------------------------------------------------------
+
+
+def _write_manifest(repo_root, body: str):
+    d = repo_root / ".darkfactory"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "objectives.yaml").write_text(textwrap.dedent(body))
+
+
+def _write_config(repo_root, route_ids):
+    routes = ",".join(
+        f'{{"id":"{r}","trigger":["x/**"],"command":null,"evidencePath":null,"category":"c"}}'
+        for r in route_ids
+    )
+    cfg = repo_root / ".agent-review"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "config.json").write_text(
+        '{"version":1,"validation":{"verificationRoutes":[' + routes + "]}}"
+    )
+
+
+def test_objectives_ok(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Route table populated."
+            attestedBy:
+              - { kind: route, routeId: targeted-test }
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\nCloses #1234\n")
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
+
+
+def test_objectives_unlinked_source(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle99#ec1
+            source: { kind: cycle, ref: "99" }
+            text: "Orphan."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("not linked" in e for e in errors)
+
+
+def test_objectives_unknown_route(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: nope }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("verificationRoute" in e for e in errors)
+
+
+def test_no_manifest_is_noop(tmp_path):
+    trailers = parse_trailers("Cycle: 21\n")
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
+
+
+def test_objectives_skipped_when_manifest_not_in_diff(tmp_path):
+    # Stale-manifest gate-break fix (#207): a committed manifest must NOT be
+    # validated for a PR that doesn't author it (different trailers, manifest
+    # untouched) — otherwise an old PR's objectives fail unrelated later PRs.
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "From an earlier PR."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 22\n")  # different cycle, manifest untouched
+    assert validate_objectives(tmp_path, trailers, ["src/unrelated.ts"]) == []
+    # ...but when the PR DOES touch the manifest, the unlinked source is caught.
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("not linked" in e for e in errors)
+
+
+def test_objectives_id_source_inconsistent(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "22" }
+            text: "Mismatched id vs source."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 22\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("inconsistent with source" in e for e in errors)
+
+
+def test_objectives_enforced_must_be_bool(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: "nope"
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("enforced" in e for e in errors)
+
+
+def test_objectives_text_must_be_nonempty(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: ""
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any(".text" in e for e in errors)
+
+
+def test_objectives_critic_binding_ok(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Critic-attested."
+            attestedBy: [{ kind: critic, criticId: codex }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
+
+
+def test_objectives_critic_binding_missing_id(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: critic }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("criticId" in e for e in errors)
+
+
+def test_objectives_unknown_binding_kind(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: vibes }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("route' | 'critic' | 'test'" in e for e in errors)
+
+
+def test_objectives_bad_schema_version(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 2
+        objectives: []
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("schemaVersion" in e for e in errors)
+
+
+def test_objectives_invalid_kind_no_misleading_not_linked(tmp_path):
+    # An invalid source.kind surfaces ONLY the kind error — not an extra
+    # "not linked" message the TS parser wouldn't emit.
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: nonsense, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("source.kind" in e for e in errors)
+    assert not any("not linked" in e for e in errors)
+
+
+def test_objectives_issue_bare_ref_linked(tmp_path):
+    """Issue objective with bare ref ('1234') + 'Closes #1234' trailer → no error.
+
+    This is the key regression the #-prefix normalization fix addresses: the TS
+    parseObjective accepts ref: '1234' (bare), parse_trailers stores '#1234' from
+    the autoclose keyword. Without normalization they never match.
+    """
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: issue1234#ac1
+            source: { kind: issue, ref: "1234" }
+            text: "Bare ref links correctly."
+            attestedBy:
+              - { kind: route, routeId: targeted-test }
+            enforced: false
+    """)
+    trailers = parse_trailers("Closes #1234\n")
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
+
+
+def test_objectives_issue_hash_ref_linked(tmp_path):
+    """Issue objective with hash-prefixed ref ('#1234') + 'Issue: #1234' trailer → no error."""
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: issue1234#ac1
+            source: { kind: issue, ref: "#1234" }
+            text: "Hash-prefixed ref links correctly."
+            attestedBy:
+              - { kind: route, routeId: targeted-test }
+            enforced: false
+    """)
+    trailers = parse_trailers("Issue: #1234\n")
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
+
+
+def test_objectives_issue_unmatched_ref(tmp_path):
+    """Issue objective whose ref matches no trailer → 'not linked' error."""
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: issue9999#ac1
+            source: { kind: issue, ref: "9999" }
+            text: "Unlinked issue objective."
+            attestedBy:
+              - { kind: route, routeId: targeted-test }
+            enforced: false
+    """)
+    trailers = parse_trailers("Closes #1234\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("not linked" in e for e in errors)
+
+
+def test_objectives_dotted_cycle_linked(tmp_path):
+    """Dotted cycle objective (cycle318.4#ec1) links to 'Cycle: 318.4' trailer → no error.
+
+    This is the regression the dotted-cycle support fixes: OBJECTIVE_ID_RE previously
+    rejected ids containing a dot, and _declared_refs / validate_objectives previously
+    did not normalize the cycle id through normalize_cycle_id.
+    """
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle318.4#ec1
+            source: { kind: cycle, ref: "318.4" }
+            text: "Dotted sub-cycle objective."
+            attestedBy:
+              - { kind: critic, criticId: codex }
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 318.4\n")
+    assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
+
+
+def test_objectives_malformed_manifest_top_level_list(tmp_path):
+    """A top-level YAML list (not a mapping) returns an error and does NOT raise."""
+    manifest = tmp_path / ".darkfactory" / "objectives.yaml"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("- item1\n- item2\n")
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert len(errors) == 1
+    assert "top-level must be a mapping" in errors[0]
+
+
+def test_objectives_non_dict_source(tmp_path):
+    """An objective with a non-dict source field returns an error and does NOT raise."""
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: "not-a-dict"
+            text: "Bad source."
+            attestedBy:
+              - { kind: critic, criticId: codex }
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("expected a mapping" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# source-criterion ratchet (2c)
+# ---------------------------------------------------------------------------
+import hashlib  # noqa: E402
+import json as _json2  # noqa: E402
+
+from validate_cycle_doc import canonicalize_criterion  # noqa: E402
+
+CF = [".darkfactory/objectives.yaml"]
+
+
+def _crit_hash(item_text):
+    return hashlib.sha256(canonicalize_criterion(item_text).encode("utf-8")).hexdigest()
+
+
+def _write_cycle_doc(repo_root, cycle_id, body):
+    d = repo_root / "docs" / "roadmap" / "cycles"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"cycle{cycle_id}-test.md").write_text(textwrap.dedent(body))
+
+
+def test_canonicalize_criterion_matches_fixture():
+    # Cross-impl parity: Python canonicalize_criterion must agree with the TS
+    # canonicalizeCriterion on the shared fixture (the TS side asserts the same file).
+    cases = _json2.loads((Path(__file__).parent / "canonicalize-fixture.json").read_text())
+    for c in cases:
+        assert canonicalize_criterion(c["input"]) == c["expected"], c["input"]
+
+
+def test_source_criterion_human_reviewed_ok(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: human-reviewed, by: PJ }
+    """)
+    assert validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF) == []
+
+
+def test_source_criterion_bad_locator(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "bad locator", sha256: "%s" }
+    """ % ("a" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert any("sourceCriterion.locator" in e for e in errors)
+
+
+def test_source_criterion_text_hash_match(tmp_path, monkeypatch):
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        status: in-progress
+        ---
+        ## Exit criteria
+
+        - **EC1**: Route table populated.
+        - **EC2**: Dashboard renders.
+    """)
+    good = _crit_hash("- **EC1**: Route table populated.")
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Route table populated."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "exit_criteria#ec1", sha256: "%s" }
+    """ % good)
+    assert validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF) == []
+
+
+def test_source_criterion_text_hash_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        status: in-progress
+        ---
+        ## Exit criteria
+
+        - **EC1**: Route table populated.
+    """)
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Route table populated."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "exit_criteria#ec1", sha256: "%s" }
+    """ % ("b" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert any("does not match the source criterion" in e for e in errors)
+
+
+def test_source_criterion_no_doc_is_non_blocking(tmp_path, monkeypatch):
+    # Source not resolvable in-repo (no cycle doc) → NON-blocking note, no error.
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "exit_criteria#ec1", sha256: "%s" }
+    """ % ("a" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert not any("sourceCriterion" in e for e in errors)
+
+
+def test_source_criterion_not_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        status: in-progress
+        ---
+        ## Exit criteria
+
+        - **EC1**: Route table populated.
+    """)
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec9
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "exit_criteria#ec9", sha256: "%s" }
+    """ % ("a" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert any("not found in the cycle doc" in e for e in errors)
+
+
+def test_source_criterion_locator_section_case_insensitive(tmp_path, monkeypatch):
+    # SOURCE_LOCATOR_RE accepts mixed-case section slugs; resolution must lower()
+    # them so "Exit_Criteria#ec1" resolves (not a false "not found").
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_config(tmp_path, ["targeted-test"])
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        status: in-progress
+        ---
+        ## Exit criteria
+
+        - **EC1**: Route table populated.
+    """)
+    good = _crit_hash("- **EC1**: Route table populated.")
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Route table populated."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: text-hash, locator: "Exit_Criteria#ec1", sha256: "%s" }
+    """ % good)
+    assert validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF) == []

@@ -94,11 +94,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -1036,6 +1038,304 @@ def terminal_status_error(cycle_id: str, doc: CycleDoc, pr_type: str, source: st
     return None
 
 
+OBJECTIVE_ID_RE = re.compile(r"^(cycle\d+(\.\d+)*#ec\d+|issue\d+#ac\d+)$")
+OBJECTIVES_MANIFEST_PATH = ".darkfactory/objectives.yaml"
+
+
+def _route_ids(repo_root: Path) -> set[str]:
+    cfg = repo_root / ".agent-review" / "config.json"
+    if not cfg.exists():
+        return set()
+    try:
+        data = json.loads(cfg.read_text())
+    except json.JSONDecodeError:
+        return set()
+    routes = (data.get("validation") or {}).get("verificationRoutes") or []
+    return {r.get("id") for r in routes if isinstance(r, dict) and isinstance(r.get("id"), str)}
+
+
+def _declared_refs(trailers: "Trailers") -> set[str]:
+    # The PR's declared sources of intent, keyed "<kind>:<ref>" to match an
+    # objective's source. Cycle trailer ref is normalized via normalize_cycle_id
+    # so dotted ids like "318.4" and trailer values like "Cycle 318.4" compare
+    # equal. Issue ref strips a leading "#" so "1234" and "#1234" both match
+    # (mirroring the TS parseObjective's `ref.replace(/^#/, "")`).
+    refs: set[str] = set()
+    if trailers.cycle:
+        cycle_id = normalize_cycle_id(trailers.cycle)
+        if cycle_id:
+            refs.add(f"cycle:{cycle_id}")
+    if trailers.issue:
+        refs.add(f"issue:{re.sub(r'^#', '', trailers.issue).strip()}")
+    return refs
+
+
+# Cycle 331.1 2c (#207) — source-criterion binding. These mirror the TS
+# contract in @momentiq/dark-factory-schemas (SOURCE_LOCATOR_RE +
+# canonicalizeCriterion); the canonicalization is pinned byte-for-byte by a
+# cross-impl fixture test so the Python (verify) and TS (author) sides can't drift.
+SOURCE_LOCATOR_RE = re.compile(r"^[a-z0-9_]+#[a-z0-9._-]+$", re.IGNORECASE)
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def canonicalize_criterion(text: str) -> str:
+    """Canonicalize a source criterion's text for hashing (mirror of the TS
+    ``canonicalizeCriterion``). Strips a list marker + criterion label + markdown
+    emphasis and folds whitespace; preserves meaning-bearing text."""
+    s = unicodedata.normalize("NFC", text)
+    s = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", s)  # list marker
+    s = re.sub(r"^\s*\*{0,2}[A-Za-z]+\d+[A-Za-z0-9]*\*{0,2}\s*[:.)–—-]\s+", "", s)  # label
+    s = re.sub(r"[*`]", "", s)  # emphasis / code tokens
+    s = re.sub(r"\s+", " ", s).strip()  # whitespace
+    return s
+
+
+def _slug_heading(h: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", h.strip().lower()).strip("_")
+
+
+def _doc_body(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    m = re.match(r"^---\n.*?\n---\n", text, re.DOTALL)
+    return text[m.end():] if m else text
+
+
+def _h2_sections(body: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {}
+    slug: str | None = None
+    for line in body.splitlines():
+        m = re.match(r"^##\s+(.+)$", line)  # h2 only (### has no space after ##)
+        if m:
+            slug = _slug_heading(m.group(1))
+            sections.setdefault(slug, [])
+        elif slug is not None:
+            sections[slug].append(line)
+    return {k: "\n".join(v).strip() for k, v in sections.items()}
+
+
+def _list_items(section_body: str) -> list[str]:
+    return [ln for ln in section_body.splitlines() if re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", ln)]
+
+
+def _find_criterion(section_body: str, crit_id: str) -> str | None:
+    items = _list_items(section_body)
+    label = re.compile(
+        rf"^\s*(?:[-*+]|\d+[.)])\s*\*{{0,2}}{re.escape(crit_id)}\*{{0,2}}\s*[:.)–—-]",
+        re.IGNORECASE,
+    )
+    for it in items:  # 1) explicit label match (e.g. "- **EC1**: ...")
+        if label.match(it):
+            return it
+    m = re.search(r"(\d+)$", crit_id)  # 2) position fallback (ecN → Nth item)
+    if m:
+        idx = int(m.group(1)) - 1
+        if 0 <= idx < len(items):
+            return items[idx]
+    return None
+
+
+def _resolve_criterion(cycle_id: str, locator: str) -> tuple[str, str | None]:
+    """Resolve a text-hash locator against an IN-REPO cycle doc. Returns
+    (status, text) where status is 'ok' | 'no-doc' | 'no-criterion'. 'no-doc'
+    (source not resolvable locally) is the non-blocking path."""
+    doc = find_cycle_doc(cycle_id)
+    if doc is None:
+        return ("no-doc", None)
+    section_slug, _, crit_id = locator.partition("#")
+    # SOURCE_LOCATOR_RE is case-insensitive but section slugs are lowercased
+    # (_slug_heading), so normalize the lookup to avoid a false "not found".
+    section = _h2_sections(_doc_body(doc.path)).get(section_slug.lower())
+    if section is None:
+        return ("no-criterion", None)
+    text = _find_criterion(section, crit_id)
+    return ("ok", text) if text is not None else ("no-criterion", None)
+
+
+def validate_objectives(
+    repo_root: Path, trailers: "Trailers", changed_files: Iterable[str]
+) -> list[str]:
+    """Validate .darkfactory/objectives.yaml against PR context. Empty list = ok.
+
+    **Validated ONLY when this PR authors/edits the manifest** (it appears in the
+    PR's changed files). A committed manifest from an earlier PR must NOT be
+    re-validated against an unrelated later PR's trailers — that was the
+    stale-manifest gate-break (momentiq-ai/dark-factory#207). Combined with
+    per-PR authoring (the agent drafts the manifest at PR-open), each PR's
+    objectives are checked against that PR's own trailers and nothing else.
+
+    Structural checks mirror the TS ``parseObjectivesManifest`` contract (id
+    format, id↔source consistency, non-empty text, ``enforced`` boolean, and the
+    ``attestedBy`` binding shapes) so the Python gate is not a looser subset that
+    can silently drift from the TS parser. The PR-context checks (source linked
+    by a trailer, ``route`` binding exists in config) are gate-only — they need
+    PR state the pure parser doesn't have. NO coverage check (the ``enforced``
+    flag is the future ratchet).
+
+    Uses a deferred ``import yaml`` so a missing pyyaml installation only errors
+    when a repo actually ships the manifest (the skip/absent paths never import
+    yaml), preserving the validator's dependency-light boot.
+    """
+    # Gate: only author-time validation. PRs that don't touch the manifest skip.
+    if OBJECTIVES_MANIFEST_PATH not in set(changed_files):
+        return []
+    manifest_path = repo_root / OBJECTIVES_MANIFEST_PATH
+    if not manifest_path.exists():
+        return []
+    try:
+        import yaml  # deferred: pyyaml not guaranteed in all CI environments
+        data = yaml.safe_load(manifest_path.read_text()) or {}
+    except ImportError:
+        return [
+            f"{OBJECTIVES_MANIFEST_PATH}: pyyaml is required to validate objectives "
+            "(pip install pyyaml)"
+        ]
+    except yaml.YAMLError as exc:
+        return [f"{OBJECTIVES_MANIFEST_PATH}: invalid YAML — {exc}"]
+    if not isinstance(data, dict):
+        return [f"{OBJECTIVES_MANIFEST_PATH}: top-level must be a mapping"]
+    if data.get("schemaVersion") != 1:
+        return [
+            f"{OBJECTIVES_MANIFEST_PATH}: schemaVersion must be 1, got "
+            f"{data.get('schemaVersion')!r}"
+        ]
+    objectives = data.get("objectives")
+    if not isinstance(objectives, list):
+        return [f"{OBJECTIVES_MANIFEST_PATH}: 'objectives' must be a list"]
+
+    route_ids = _route_ids(repo_root)
+    declared = _declared_refs(trailers)
+    errors: list[str] = []
+    for idx, obj in enumerate(objectives):
+        loc = f"{OBJECTIVES_MANIFEST_PATH} objectives[{idx}]"
+        if not isinstance(obj, dict):
+            errors.append(f"{loc}: expected a mapping")
+            continue
+        oid = obj.get("id")
+        if not isinstance(oid, str) or not OBJECTIVE_ID_RE.match(oid):
+            errors.append(
+                f"{loc}.id: expected 'cycle<N>#ec<k>' or 'issue<N>#ac<k>', got {oid!r}"
+            )
+        text = obj.get("text")
+        if not isinstance(text, str) or not text:
+            errors.append(f"{loc}.text: expected a non-empty string")
+        if not isinstance(obj.get("enforced"), bool):
+            errors.append(f"{loc}.enforced: expected a boolean")
+        source = obj.get("source")
+        if not isinstance(source, dict):
+            errors.append(f"{loc}.source: expected a mapping, got {source!r}")
+            continue
+        kind, ref = source.get("kind"), source.get("ref")
+        if kind not in ("cycle", "issue"):
+            errors.append(f"{loc}.source.kind: expected 'cycle' | 'issue', got {kind!r}")
+        if not isinstance(ref, str) or not ref:
+            errors.append(f"{loc}.source.ref: expected a non-empty string")
+        # id↔source consistency (mirrors the TS parseObjective invariant): the id
+        # must be namespaced by its source, e.g. cycle21#ec1 ↔ {cycle, "21"}.
+        if isinstance(oid, str) and isinstance(kind, str) and isinstance(ref, str):
+            ref_num = re.sub(r"^#", "", ref) if kind == "issue" else ref
+            if not oid.startswith(f"{kind}{ref_num}#"):
+                errors.append(
+                    f"{loc}.id: {oid!r} is inconsistent with source "
+                    f"{{kind: {kind}, ref: {ref!r}}}"
+                )
+        # PR-context: the source must be linked by one of this PR's trailers.
+        # Only run when kind/ref are themselves valid — otherwise their own
+        # errors above already fired, and a "not linked" message here would be
+        # misleading noise the TS parser wouldn't surface. Normalize to match
+        # _declared_refs (cycle via normalize_cycle_id; issue strips a leading "#").
+        if kind in ("cycle", "issue") and isinstance(ref, str):
+            normalized_ref = normalize_cycle_id(ref) if kind == "cycle" else re.sub(r'^#', '', ref)
+            if f"{kind}:{normalized_ref}" not in declared:
+                errors.append(
+                    f"{loc}.source: {kind} {ref!r} is not linked by any Cycle:/Closes #N trailer on this PR"
+                )
+        # attestedBy: structural validation of each binding (kind + required
+        # field), plus route-existence (PR context) for route bindings.
+        bindings = obj.get("attestedBy")
+        if not isinstance(bindings, list):
+            errors.append(f"{loc}.attestedBy: expected a list")
+            continue
+        for j, binding in enumerate(bindings):
+            bloc = f"{loc}.attestedBy[{j}]"
+            if not isinstance(binding, dict):
+                errors.append(f"{bloc}: expected a mapping")
+                continue
+            bkind = binding.get("kind")
+            if bkind == "route":
+                rid = binding.get("routeId")
+                if not isinstance(rid, str) or not rid:
+                    errors.append(f"{bloc}.routeId: expected a non-empty string")
+                elif rid not in route_ids:
+                    errors.append(
+                        f"{bloc}.routeId: {rid!r} is not a verificationRoute in .agent-review/config.json"
+                    )
+            elif bkind == "critic":
+                cid = binding.get("criticId")
+                if not isinstance(cid, str) or not cid:
+                    errors.append(f"{bloc}.criticId: expected a non-empty string")
+            elif bkind == "test":
+                tref = binding.get("ref")
+                if not isinstance(tref, str) or not tref:
+                    errors.append(f"{bloc}.ref: expected a non-empty string")
+            else:
+                errors.append(
+                    f"{bloc}.kind: expected 'route' | 'critic' | 'test', got {bkind!r}"
+                )
+        # Cycle 331.1 2c (#207) — source-criterion binding. Verify a text-hash
+        # against the IN-REPO cycle doc (blocking on mismatch / not-found);
+        # human-reviewed is the escape; an unresolvable source (cross-repo cycle
+        # doc, issue body) is a NON-BLOCKING note — no flaky network on the gate.
+        sc = obj.get("sourceCriterion")
+        if isinstance(sc, dict):
+            sc_kind = sc.get("kind")
+            if sc_kind == "human-reviewed":
+                pass  # accepted; surfaced by df prove as human-reviewed
+            elif sc_kind == "text-hash":
+                sloc, ssha = sc.get("locator"), sc.get("sha256")
+                if not isinstance(sloc, str) or not SOURCE_LOCATOR_RE.match(sloc):
+                    errors.append(
+                        f"{loc}.sourceCriterion.locator: expected '<section-slug>#<criterion-id>', got {sloc!r}"
+                    )
+                elif not isinstance(ssha, str) or not SHA256_HEX_RE.match(ssha):
+                    errors.append(
+                        f"{loc}.sourceCriterion.sha256: expected lowercase-hex SHA-256 (64 chars), got {ssha!r}"
+                    )
+                elif kind == "cycle" and isinstance(ref, str):
+                    status, ctext = _resolve_criterion(normalize_cycle_id(ref) or ref, sloc)
+                    if status == "no-doc":
+                        print(
+                            f"[objectives] {loc}.sourceCriterion: cycle {ref!r} doc not in-repo — "
+                            "recorded, not verified (cross-repo verification deferred)",
+                            file=sys.stderr,
+                        )
+                    elif status == "no-criterion":
+                        errors.append(
+                            f"{loc}.sourceCriterion.locator: criterion {sloc!r} not found in the cycle doc"
+                        )
+                    elif ctext is not None:
+                        actual = hashlib.sha256(
+                            canonicalize_criterion(ctext).encode("utf-8")
+                        ).hexdigest()
+                        if actual != ssha:
+                            errors.append(
+                                f"{loc}.sourceCriterion.sha256: does not match the source criterion "
+                                f"(recomputed {actual})"
+                            )
+                else:
+                    print(
+                        f"[objectives] {loc}.sourceCriterion: {kind} source verification deferred "
+                        "(v1 verifies in-repo cycle docs) — recorded, not verified",
+                        file=sys.stderr,
+                    )
+            else:
+                errors.append(
+                    f"{loc}.sourceCriterion.kind: expected 'text-hash' | 'human-reviewed', got {sc_kind!r}"
+                )
+        elif sc is not None:
+            errors.append(f"{loc}.sourceCriterion: expected a mapping")
+    return errors
+
+
 def validate(
     title: str,
     body: str,
@@ -1057,6 +1357,8 @@ def validate(
         return errors
 
     trailers = parse_trailers(body)
+    changed_files = list(changed_files)
+    errors.extend(validate_objectives(REPO_ROOT, trailers, changed_files))
     plan = is_plan_pr(title, labels_list, changed_files)
     pr_type = "plan-pr" if plan else "code-pr"
 

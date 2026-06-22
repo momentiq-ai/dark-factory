@@ -1,5 +1,99 @@
 # Changelog
 
+## [2.13.1](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.13.0...dark-factory-cli-v2.13.1) (2026-06-22)
+
+
+### Bug Fixes
+
+* **git:** pin --full-index in commitDiff so diffHash is clone-shape invariant — Cycle 23 ([#392](https://github.com/momentiq-ai/dark-factory/issues/392)) ([#226](https://github.com/momentiq-ai/dark-factory/issues/226)) ([f95c3bb](https://github.com/momentiq-ai/dark-factory/commit/f95c3bbeb9d0d420b3f8d9e923e6ff64c4bc3dd7))
+
+## [2.13.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.12.0...dark-factory-cli-v2.13.0) (2026-06-21)
+
+
+### Features
+
+* **cli:** df publish transmits the PublishedEvidence manifest to an evidence-ingest endpoint — Cycle 23 ([#223](https://github.com/momentiq-ai/dark-factory/issues/223)) ([689af9c](https://github.com/momentiq-ai/dark-factory/commit/689af9cb4f30be1fe6d347c11fadf3539f5cdaa5))
+
+## [2.12.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.11.0...dark-factory-cli-v2.12.0) (2026-06-21)
+
+
+### Features
+
+* **objectives:** 2c — source-criterion binding ratchet ([#221](https://github.com/momentiq-ai/dark-factory/issues/221)) ([3cc2612](https://github.com/momentiq-ai/dark-factory/commit/3cc26121af9c2e4646451c8c6d744d6c0a651fdc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.11.0 to 0.12.0
+
+## [2.11.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.10.0...dark-factory-cli-v2.11.0) (2026-06-20)
+
+
+### Features
+
+* **objectives:** closeout obligation — df prove in verify skill + pre-push gate docs ([#219](https://github.com/momentiq-ai/dark-factory/issues/219)) ([7bbd470](https://github.com/momentiq-ai/dark-factory/commit/7bbd4700605b84f65b9cdc7bb56c9249cc5082c4))
+
+
+### Bug Fixes
+
+* **objectives:** adoption blockers — diff-gated validation + structural parity + pyyaml ([#217](https://github.com/momentiq-ai/dark-factory/issues/217)) ([1df385c](https://github.com/momentiq-ai/dark-factory/commit/1df385cb7721c7cd6defd763abf41f770a296a25))
+
+## [2.10.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.9.0...dark-factory-cli-v2.10.0) (2026-06-20)
+
+
+### Features
+
+* df prove — closeout proof readout (CLI + df_prove MCP) ([#215](https://github.com/momentiq-ai/dark-factory/issues/215)) ([cdff677](https://github.com/momentiq-ai/dark-factory/commit/cdff67776cb2b3b91ceb3393d4c41c07c02dcbd0))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.10.0 to 0.11.0
+
+## [2.9.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.8.0...dark-factory-cli-v2.9.0) (2026-06-20)
+
+
+### Features
+
+* verifiable-objectives Phase 2a — df publish + Cerebe storage facade ([#212](https://github.com/momentiq-ai/dark-factory/issues/212)) ([e2f3c13](https://github.com/momentiq-ai/dark-factory/commit/e2f3c13b8af8024f357b5d1b4bc93d814ea91c2d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.9.0 to 0.10.0
+
+## [2.8.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.7.0...dark-factory-cli-v2.8.0) (2026-06-20)
+
+
+### Features
+
+* verifiable-objectives Phase 1 — Objective contract + manifest validator ([#208](https://github.com/momentiq-ai/dark-factory/issues/208)) ([4f53313](https://github.com/momentiq-ai/dark-factory/commit/4f53313de2da5a0ce169bb3350e5efd9fb3f2bda))
+
+
+### Bug Fixes
+
+* address Copilot review — tighten Objective id regex (kind pairing + dotted cycles), normalize cycle ids, harden manifest parsing ([#210](https://github.com/momentiq-ai/dark-factory/issues/210)) ([58f3239](https://github.com/momentiq-ai/dark-factory/commit/58f32394ec4e8b656c957c19d6bce65ff49b4220))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.8.0 to 0.9.0
+
+## [2.7.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.6.0...dark-factory-cli-v2.7.0) (2026-06-17)
+
+
+### Features
+
+* **critic:** fail loud on shallow-clone boundary + codex char preflight ([#182](https://github.com/momentiq-ai/dark-factory/issues/182)/[#181](https://github.com/momentiq-ai/dark-factory/issues/181)) ([#203](https://github.com/momentiq-ai/dark-factory/issues/203)) ([e58fe1a](https://github.com/momentiq-ai/dark-factory/commit/e58fe1a37720b003a678caa94677111c94f70062))
+
 ## [2.6.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.5.0...dark-factory-cli-v2.6.0) (2026-06-12)
 
 

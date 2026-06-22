@@ -30,9 +30,9 @@ import { runRoutes } from "../evidence/route-runner.js";
 import {
   changedFiles,
   commitDiff,
-  commitParent,
   diffHash,
   resolveCommit,
+  safeParentOrThrow,
 } from "../git.js";
 
 export interface VerifyIo {
@@ -128,16 +128,6 @@ function parseVerifyArgs(rest: string[]): VerifyOptions | { error: string } {
   return { commit, route, cwd };
 }
 
-// `commitParent` throws on a root/shallow commit; an empty parent makes the
-// git helpers fall back to `git show` (the commit-introduces-everything case).
-async function safeParent(sha: string, cwd: string): Promise<string> {
-  try {
-    return await commitParent(sha, cwd);
-  } catch {
-    return "";
-  }
-}
-
 export async function cmdVerify(rest: string[], io: VerifyIo): Promise<number> {
   if (rest.includes("--help") || rest.includes("-h")) {
     io.stdout(`${HELP}`);
@@ -180,7 +170,16 @@ export async function cmdVerify(rest: string[], io: VerifyIo): Promise<number> {
     return 1;
   }
 
-  const parent = await safeParent(sha, parsed.cwd);
+  // Issues #181 / #182 — fail loud on a shallow-clone boundary (true root
+  // commits still resolve to ""). A masked boundary would arm the routes
+  // against a whole-repo diff.
+  let parent: string;
+  try {
+    parent = await safeParentOrThrow(sha, parsed.cwd);
+  } catch (err) {
+    io.stderr(`df verify: ${(err as Error).message}\n`);
+    return 1;
+  }
   const files = await changedFiles(parent, sha, parsed.cwd, { readContent: false });
   const changedPaths = collectChangedPaths(files);
 

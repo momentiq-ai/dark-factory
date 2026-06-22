@@ -331,6 +331,230 @@ export interface VerificationRoute {
   evidenceKind?: EvidenceKind;
 }
 
+export type ObjectiveSource = { kind: "cycle" | "issue"; ref: string };
+
+export type EvidenceBinding =
+  | { kind: "route"; routeId: string }
+  | { kind: "critic"; criticId: string }
+  | { kind: "test"; ref: string };
+
+export interface Objective {
+  // Stable, PR-independent id. Namespaced by source so the same objective can
+  // later be promoted into a cycle-level registry with zero id churn.
+  id: string; // "cycle<N>#ec<k>" | "issue<N>#ac<k>"
+  source: ObjectiveSource;
+  text: string;
+  // The binding: which evidence attests this objective. The manifest is the
+  // single source of truth — evidence itself carries no objectiveId.
+  attestedBy: EvidenceBinding[];
+  // Ratchet hook. v1 always false (informational); flipping to true later
+  // turns on per-objective coverage enforcement.
+  enforced: boolean;
+  // Cycle 331.1 2c (#207) — optional source-criterion binding. Present ⇒ the
+  // objective is bound to a verbatim criterion in its source (text-hash) or
+  // explicitly human-reviewed; absent ⇒ agent-asserted (the v1 default).
+  sourceCriterion?: SourceCriterion;
+}
+
+export interface ObjectivesManifest {
+  schemaVersion: 1;
+  objectives: Objective[];
+}
+
+export const OBJECTIVE_ID_RE = /^(cycle\d+(?:\.\d+)*#ec\d+|issue\d+#ac\d+)$/;
+
+// Cycle 331.1 2c (#207) — source-criterion binding. Binds an objective to a
+// verbatim criterion in its linked cycle doc / issue (text-hash), or marks it
+// human-reviewed. The cycle-doc-validation gate verifies a text-hash against
+// in-repo sources; `df prove` surfaces the binding kind. Closes the
+// agent-asserted → source-verified gap (parent spec §8).
+export type SourceCriterion =
+  | { kind: "text-hash"; locator: string; sha256: string }
+  | { kind: "human-reviewed"; by?: string };
+
+// `<section-slug>#<criterion-id>` — e.g. "exit_criteria#ec1". The section slug is
+// the cycle-doc parser's snake_case h2 slug; the criterion id labels the item.
+export const SOURCE_LOCATOR_RE = /^[a-z0-9_]+#[a-z0-9._-]+$/i;
+
+// Canonicalize a source criterion's text for hashing — the SINGLE source of
+// truth shared by the author (generate the sha256) and the validator (verify
+// it), so the two cannot drift. Normalizes away trivial markdown/whitespace
+// formatting while preserving meaning-bearing text. (Mirrored byte-for-byte in
+// validate_cycle_doc.py, pinned by a cross-impl fixture test.)
+export function canonicalizeCriterion(text: string): string {
+  let s = text.normalize("NFC");
+  // 1. strip a leading list marker: "- ", "* ", "+ ", "1. ", "2) "
+  s = s.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "");
+  // 2. strip a leading criterion label + separator: "**EC1**:", "EC1 -", "ec1) "
+  s = s.replace(/^\s*\*{0,2}[A-Za-z]+\d+[A-Za-z0-9]*\*{0,2}\s*[:.)–—-]\s+/, "");
+  // 3. remove markdown emphasis / inline-code tokens
+  s = s.replace(/[*`]/g, "");
+  // 4. collapse all whitespace runs to one space; trim
+  s = s.replace(/\s+/g, " ").trim();
+  return s;
+}
+
+// Cycle 331.1 verifiable-objectives Phase 2 (momentiq-ai/dark-factory#207) —
+// the published-evidence pointer manifest. `df publish` produces this in CI
+// after `df verify`: it uploads the per-SHA evidence bundle (gate JSON + route
+// artifacts) to Cerebe object storage and emits these pointers, which the
+// hosted worker (Phase 3) joins against `.darkfactory/objectives.yaml` to build
+// the per-SHA bound proof record. The cross-repo contract — the worker imports
+// THIS type, so the publish output and the join input cannot drift. The
+// manifest carries pointers + integrity, never the artifact bytes.
+
+// Lowercase-hex SHA-256 (64 chars). The content-integrity invariant on every
+// uploaded artifact: a consumer (worker/dashboard) re-verifies the bytes Cerebe
+// returns against this digest before trusting the pointer.
+export const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+// Provenance label (spec §4.4 — the honest trust boundary). `consumer-attested`
+// evidence is produced on the consumer's CI (routes/screenshots),
+// integrity-bound by `diffHash` but not hosted-sandbox-produced;
+// `runner-attested` is the hosted critic path (NOT produced by `df publish` —
+// reserved so Phase 3 reuses the same union).
+export type EvidenceProvenance = "consumer-attested" | "runner-attested";
+export const EVIDENCE_PROVENANCES: readonly EvidenceProvenance[] = [
+  "consumer-attested",
+  "runner-attested",
+];
+
+// Completion status (spec §5 — fail-soft on a Cerebe outage). `degraded` means
+// Cerebe was unconfigured (air-gapped) or one+ uploads failed: the proof is
+// EXPLICITLY incomplete, never false-complete (a silently-complete proof on a
+// storage outage would recreate the `evidence_ref` dead-pointer class at the
+// evidence layer).
+export type PublishedEvidenceStatus = "complete" | "degraded";
+export const PUBLISHED_EVIDENCE_STATUSES: readonly PublishedEvidenceStatus[] = [
+  "complete",
+  "degraded",
+];
+
+// A single uploaded artifact: a Cerebe object-storage pointer + integrity.
+export interface EvidenceArtifactPointer {
+  // Repo-relative source path of the artifact (e.g. the per-SHA gate JSON or a
+  // `agent-reviews/quality-gates/ui/<sha>/<surface>/before.png` screenshot).
+  // Diagnostic / human-readable provenance — the bytes live in Cerebe.
+  path: string;
+  // Cerebe object id returned by `POST /storage/upload`. The durable handle
+  // the worker/dashboard resolve to an ephemeral-url.
+  uploadId: string;
+  // Lowercase-hex SHA-256 of the uploaded bytes, computed locally before
+  // upload. Matches `SHA256_HEX_RE`.
+  sha256: string;
+  // MIME type the artifact was uploaded as (e.g. "image/png").
+  contentType: string;
+  // Byte length of the uploaded artifact.
+  sizeBytes: number;
+}
+
+// Per-route uploaded evidence: the route's structured outcome + its artifacts.
+export interface RouteEvidencePointer {
+  routeId: string;
+  // The route's exit code from `QualityGateEvidence.gateResults[routeId]` (the
+  // deterministic 0/1/2 outcome). Carried so the worker can label the binding
+  // without re-fetching the gate JSON.
+  exitCode: number;
+  // Uploaded artifacts the route produced (screenshots, ARIA snapshots, …). The
+  // structured gate JSON is uploaded once at the manifest level
+  // (`gateEvidence`), not duplicated per route.
+  artifacts: EvidenceArtifactPointer[];
+}
+
+// The published-evidence pointer manifest `df publish` emits (and the Phase 3
+// worker consumes).
+export interface PublishedEvidence {
+  schemaVersion: 1;
+  // The commit the evidence was produced for.
+  commit: string;
+  // Provenance for every pointer in this manifest (spec §4.4).
+  provenance: EvidenceProvenance;
+  // Completion status (spec §5 degrade-and-pass).
+  status: PublishedEvidenceStatus;
+  // The per-SHA `QualityGateEvidence` JSON, uploaded once. Absent when the run
+  // degraded before any upload (e.g. Cerebe unconfigured).
+  gateEvidence?: EvidenceArtifactPointer;
+  // The gated diff hash all evidence here is bound to (the #194 content
+  // binding). Absent when `df verify` produced SHA-only evidence.
+  diffHash?: string;
+  // Per-route uploaded artifacts, keyed by routeId.
+  routes: Record<string, RouteEvidencePointer>;
+  // Structured reason, REQUIRED when `status === "degraded"` (so a degraded
+  // proof always says why), omitted when complete.
+  degradedReason?: string;
+}
+
+// Cycle 331.1 verifiable-objectives — the closeout proof readout (`df prove`,
+// momentiq-ai/dark-factory#207). The bound proof record joins each declared
+// objective against the evidence that attests it (route exit codes, critic
+// verdicts), resolving every binding to proven / pending / failed. `df prove`
+// produces it LOCALLY (consumer-attested); the Phase 3 worker will later produce
+// the SAME shape server-side (joining runner-attested verdicts) — so THIS is the
+// contract's definition, not a consumer of an existing worker type.
+
+// `pending` is load-bearing (NOT a synonym for failed): at the local closeout the
+// critic fleet has very likely not run on HEAD yet, so a critic binding is
+// `pending` (awaiting evidence), distinct from `failed` (evidence is negative).
+export type ProofStatus = "proven" | "pending" | "failed";
+export const PROOF_STATUSES: readonly ProofStatus[] = ["proven", "pending", "failed"];
+
+// Cycle 331.1 2c (#207) — is the objective itself grounded in its source?
+// agent-asserted (no sourceCriterion) | human-reviewed | source-bound (a
+// text-hash binding is declared; the cycle-doc-validation gate is the verifier).
+export type SourceVerification = "agent-asserted" | "human-reviewed" | "source-bound";
+export const SOURCE_VERIFICATIONS: readonly SourceVerification[] = [
+  "agent-asserted",
+  "human-reviewed",
+  "source-bound",
+];
+
+// One resolved evidence binding: which evidence (mirrors EvidenceBinding's kind),
+// its proof status, a short human derivation, and — once published — the pointer.
+export interface BoundEvidenceRef {
+  kind: "route" | "critic" | "test";
+  ref: string; // routeId | criticId | test ref
+  status: ProofStatus;
+  // Why this status, e.g. "exit 0, diffHash-bound" | "awaiting critic verdict".
+  detail: string;
+  // Cerebe object id, present only once `df publish` has run for this evidence.
+  uploadId?: string;
+}
+
+// One objective resolved against its bindings (status = worst-of its bindings).
+export interface ObjectiveProof {
+  id: string;
+  text: string;
+  enforced: boolean;
+  status: ProofStatus;
+  bindings: BoundEvidenceRef[];
+  // Whether the objective is grounded in its source (2c). Reflects the
+  // declared `sourceCriterion` binding kind; the gate is the verifier.
+  sourceVerification: SourceVerification;
+}
+
+export interface ProofSummary {
+  proven: number;
+  pending: number;
+  failed: number;
+  total: number;
+}
+
+// The bound proof record `df prove` emits (and the Phase 3 worker will produce).
+export interface BoundProofRecord {
+  schemaVersion: 1;
+  commit: string;
+  // The gated diff hash the evidence binds to (absent on a git error).
+  diffHash?: string;
+  // Provenance of the record as a whole. The local `df prove` readout is
+  // consumer-attested (assembled by the agent from its own artifacts); the union
+  // is reused so Phase 3 can mark a server-produced record runner-attested.
+  provenance: EvidenceProvenance;
+  // ISO timestamp, stamped by the caller (not the parser — keeps parsing pure).
+  generatedAt: string;
+  objectives: ObjectiveProof[];
+  summary: ProofSummary;
+}
+
 // Cycle 21 (momentiq-ai/dark-factory#185) — the canonical default
 // verification-route table. This is the deterministic floor every consumer
 // with the corresponding change classes inherits (ADR 2026-06 § Decision 1
@@ -2186,6 +2410,92 @@ function parseVerificationRoute(raw: unknown, path: string): VerificationRoute {
   };
 }
 
+function parseObjectiveSource(raw: unknown, path: string): ObjectiveSource {
+  const obj = need(isObject, raw, path, "object");
+  return {
+    kind: needEnum(["cycle", "issue"] as const, obj["kind"], `${path}.kind`),
+    ref: need(isNonEmptyString, obj["ref"], `${path}.ref`, "non-empty string"),
+  };
+}
+
+function parseEvidenceBinding(raw: unknown, path: string): EvidenceBinding {
+  const obj = need(isObject, raw, path, "object");
+  const kind = needEnum(["route", "critic", "test"] as const, obj["kind"], `${path}.kind`);
+  switch (kind) {
+    case "route":
+      return { kind, routeId: need(isNonEmptyString, obj["routeId"], `${path}.routeId`, "non-empty string") };
+    case "critic":
+      return { kind, criticId: need(isNonEmptyString, obj["criticId"], `${path}.criticId`, "non-empty string") };
+    case "test":
+      return { kind, ref: need(isNonEmptyString, obj["ref"], `${path}.ref`, "non-empty string") };
+  }
+}
+
+function parseSourceCriterion(raw: unknown, path: string): SourceCriterion | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const obj = need(isObject, raw, path, "object");
+  const kind = needEnum(["text-hash", "human-reviewed"] as const, obj["kind"], `${path}.kind`);
+  if (kind === "human-reviewed") {
+    const by = optional(isNonEmptyString, obj["by"], `${path}.by`, "non-empty string");
+    return { kind, ...(by !== undefined ? { by } : {}) };
+  }
+  const locator = need(isNonEmptyString, obj["locator"], `${path}.locator`, "non-empty string");
+  if (!SOURCE_LOCATOR_RE.test(locator)) {
+    throw new SchemaError(
+      `${path}.locator`,
+      `expected "<section-slug>#<criterion-id>", got ${JSON.stringify(locator)}`,
+    );
+  }
+  const sha256 = need(isNonEmptyString, obj["sha256"], `${path}.sha256`, "non-empty string");
+  if (!SHA256_HEX_RE.test(sha256)) {
+    throw new SchemaError(
+      `${path}.sha256`,
+      `expected lowercase-hex SHA-256 (64 chars), got ${JSON.stringify(sha256)}`,
+    );
+  }
+  return { kind, locator, sha256 };
+}
+
+function parseObjective(raw: unknown, path: string): Objective {
+  const obj = need(isObject, raw, path, "object");
+  const id = need(isNonEmptyString, obj["id"], `${path}.id`, "non-empty string");
+  if (!OBJECTIVE_ID_RE.test(id)) {
+    throw new SchemaError(`${path}.id`, `expected "cycle<N>#ec<k>" or "issue<N>#ac<k>", got ${JSON.stringify(id)}`);
+  }
+  const source = parseObjectiveSource(obj["source"], `${path}.source`);
+  const refNum = source.kind === "issue" ? source.ref.replace(/^#/, "") : source.ref;
+  if (!id.startsWith(`${source.kind}${refNum}#`)) {
+    throw new SchemaError(
+      `${path}.id`,
+      `id ${JSON.stringify(id)} is inconsistent with source { kind: ${source.kind}, ref: ${JSON.stringify(source.ref)} }`,
+    );
+  }
+  const rawBindings = need(isArray, obj["attestedBy"], `${path}.attestedBy`, "array");
+  const attestedBy = rawBindings.map((b, i) => parseEvidenceBinding(b, `${path}.attestedBy[${i}]`));
+  const sourceCriterion = parseSourceCriterion(obj["sourceCriterion"], `${path}.sourceCriterion`);
+  return {
+    id,
+    source,
+    text: need(isNonEmptyString, obj["text"], `${path}.text`, "non-empty string"),
+    attestedBy,
+    enforced: need(isBoolean, obj["enforced"], `${path}.enforced`, "boolean"),
+    ...(sourceCriterion !== undefined ? { sourceCriterion } : {}),
+  };
+}
+
+export function parseObjectivesManifest(raw: unknown, path = "objectives-manifest"): ObjectivesManifest {
+  const obj = need(isObject, raw, path, "object");
+  const schemaVersion = need(
+    (v: unknown): v is 1 => v === 1,
+    obj["schemaVersion"],
+    `${path}.schemaVersion`,
+    "1",
+  );
+  const rawObjectives = need(isArray, obj["objectives"], `${path}.objectives`, "array");
+  const objectives = rawObjectives.map((o, i) => parseObjective(o, `${path}.objectives[${i}]`));
+  return { schemaVersion, objectives };
+}
+
 function parseTddConfig(raw: unknown, path: string): TddConfig {
   const obj = need(isObject, raw, path, "object");
   const classifierRaw = need(isObject, obj["classifier"], `${path}.classifier`, "object");
@@ -2360,6 +2670,168 @@ export function parseQualityGateEvidence(raw: unknown): QualityGateEvidence {
     results,
     ...(gateResults !== undefined ? { gateResults } : {}),
     ...(diffHash !== undefined ? { diffHash } : {}),
+  };
+}
+
+function parseEvidenceArtifactPointer(raw: unknown, path: string): EvidenceArtifactPointer {
+  const obj = need(isObject, raw, path, "object");
+  const sha256 = need(isNonEmptyString, obj["sha256"], `${path}.sha256`, "non-empty string");
+  if (!SHA256_HEX_RE.test(sha256)) {
+    throw new SchemaError(
+      `${path}.sha256`,
+      `expected lowercase-hex SHA-256 (64 chars), got ${JSON.stringify(sha256)}`,
+    );
+  }
+  const sizeBytes = need(isInteger, obj["sizeBytes"], `${path}.sizeBytes`, "integer");
+  if (sizeBytes < 0) {
+    throw new SchemaError(`${path}.sizeBytes`, `expected a non-negative byte count, got ${sizeBytes}`);
+  }
+  return {
+    path: need(isNonEmptyString, obj["path"], `${path}.path`, "non-empty string"),
+    uploadId: need(isNonEmptyString, obj["uploadId"], `${path}.uploadId`, "non-empty string"),
+    sha256,
+    contentType: need(isNonEmptyString, obj["contentType"], `${path}.contentType`, "non-empty string"),
+    sizeBytes,
+  };
+}
+
+function parseRouteEvidencePointer(raw: unknown, path: string): RouteEvidencePointer {
+  const obj = need(isObject, raw, path, "object");
+  const artifactsRaw = need(isArray, obj["artifacts"], `${path}.artifacts`, "array");
+  return {
+    routeId: need(isNonEmptyString, obj["routeId"], `${path}.routeId`, "non-empty string"),
+    exitCode: need(isInteger, obj["exitCode"], `${path}.exitCode`, "integer"),
+    artifacts: artifactsRaw.map((a, i) =>
+      parseEvidenceArtifactPointer(a, `${path}.artifacts[${i}]`),
+    ),
+  };
+}
+
+// Parse + validate a published-evidence pointer manifest (`df publish` output /
+// Phase 3 worker input). Enforces the degraded→reason invariant (a degraded
+// proof must say why) and the per-artifact SHA-256 integrity shape.
+export function parsePublishedEvidence(raw: unknown, path = "$"): PublishedEvidence {
+  const obj = need(isObject, raw, path, "object");
+  need((v: unknown): v is 1 => v === 1, obj["schemaVersion"], `${path}.schemaVersion`, "1");
+  const commit = need(isNonEmptyString, obj["commit"], `${path}.commit`, "non-empty string");
+  const provenance = needEnum(EVIDENCE_PROVENANCES, obj["provenance"], `${path}.provenance`);
+  const status = needEnum(PUBLISHED_EVIDENCE_STATUSES, obj["status"], `${path}.status`);
+  const gateEvidenceRaw = obj["gateEvidence"];
+  const gateEvidence =
+    gateEvidenceRaw === undefined || gateEvidenceRaw === null
+      ? undefined
+      : parseEvidenceArtifactPointer(gateEvidenceRaw, `${path}.gateEvidence`);
+  const diffHash = optional(isString, obj["diffHash"], `${path}.diffHash`, "string");
+  const routesObj = need(isObject, obj["routes"], `${path}.routes`, "object");
+  const routes: Record<string, RouteEvidencePointer> = {};
+  for (const [key, value] of Object.entries(routesObj)) {
+    const route = parseRouteEvidencePointer(value, `${path}.routes["${key}"]`);
+    // The map key IS the routeId; reject a manifest where the embedded
+    // `routeId` disagrees, so a consumer that indexes by key and one that
+    // reads the field can never see different ids for the same entry.
+    if (route.routeId !== key) {
+      throw new SchemaError(
+        `${path}.routes["${key}"].routeId`,
+        `must match its map key, got ${JSON.stringify(route.routeId)}`,
+      );
+    }
+    routes[key] = route;
+  }
+  const degradedReason = optional(
+    isNonEmptyString,
+    obj["degradedReason"],
+    `${path}.degradedReason`,
+    "non-empty string",
+  );
+  // A degraded proof must say why; a complete one must not carry a reason —
+  // the two-way invariant keeps `status` and `degradedReason` from contradicting.
+  if (status === "degraded" && degradedReason === undefined) {
+    throw new SchemaError(`${path}.degradedReason`, 'required when status is "degraded"');
+  }
+  if (status === "complete" && degradedReason !== undefined) {
+    throw new SchemaError(`${path}.degradedReason`, 'must be omitted when status is "complete"');
+  }
+  return {
+    schemaVersion: 1,
+    commit,
+    provenance,
+    status,
+    ...(gateEvidence !== undefined ? { gateEvidence } : {}),
+    ...(diffHash !== undefined ? { diffHash } : {}),
+    routes,
+    ...(degradedReason !== undefined ? { degradedReason } : {}),
+  };
+}
+
+function parseBoundEvidenceRef(raw: unknown, path: string): BoundEvidenceRef {
+  const obj = need(isObject, raw, path, "object");
+  const uploadId = optional(isNonEmptyString, obj["uploadId"], `${path}.uploadId`, "non-empty string");
+  return {
+    kind: needEnum(["route", "critic", "test"] as const, obj["kind"], `${path}.kind`),
+    ref: need(isNonEmptyString, obj["ref"], `${path}.ref`, "non-empty string"),
+    status: needEnum(PROOF_STATUSES, obj["status"], `${path}.status`),
+    detail: need(isString, obj["detail"], `${path}.detail`, "string"),
+    ...(uploadId !== undefined ? { uploadId } : {}),
+  };
+}
+
+function parseObjectiveProof(raw: unknown, path: string): ObjectiveProof {
+  const obj = need(isObject, raw, path, "object");
+  const bindingsRaw = need(isArray, obj["bindings"], `${path}.bindings`, "array");
+  return {
+    id: need(isNonEmptyString, obj["id"], `${path}.id`, "non-empty string"),
+    text: need(isString, obj["text"], `${path}.text`, "string"),
+    enforced: need(isBoolean, obj["enforced"], `${path}.enforced`, "boolean"),
+    status: needEnum(PROOF_STATUSES, obj["status"], `${path}.status`),
+    bindings: bindingsRaw.map((b, i) => parseBoundEvidenceRef(b, `${path}.bindings[${i}]`)),
+    // Tolerant default: records produced before 2c (or by a non-2c producer)
+    // are agent-asserted.
+    sourceVerification:
+      obj["sourceVerification"] === undefined
+        ? "agent-asserted"
+        : needEnum(SOURCE_VERIFICATIONS, obj["sourceVerification"], `${path}.sourceVerification`),
+  };
+}
+
+// Parse + validate a bound proof record (`df prove` output / Phase 3 worker
+// output). Stateless: `generatedAt` is accepted as-is (the caller stamps it).
+export function parseBoundProofRecord(raw: unknown, path = "$"): BoundProofRecord {
+  const obj = need(isObject, raw, path, "object");
+  need((v: unknown): v is 1 => v === 1, obj["schemaVersion"], `${path}.schemaVersion`, "1");
+  const summaryRaw = need(isObject, obj["summary"], `${path}.summary`, "object");
+  const summary: ProofSummary = {
+    proven: need(isInteger, summaryRaw["proven"], `${path}.summary.proven`, "integer"),
+    pending: need(isInteger, summaryRaw["pending"], `${path}.summary.pending`, "integer"),
+    failed: need(isInteger, summaryRaw["failed"], `${path}.summary.failed`, "integer"),
+    total: need(isInteger, summaryRaw["total"], `${path}.summary.total`, "integer"),
+  };
+  const objectivesRaw = need(isArray, obj["objectives"], `${path}.objectives`, "array");
+  const objectives = objectivesRaw.map((o, i) => parseObjectiveProof(o, `${path}.objectives[${i}]`));
+  // The summary must match the parsed objectives — an inconsistent rollup is a
+  // corrupt record (the design spec pins summary-count consistency); a
+  // downstream consumer must not trust a wrong count.
+  const expected: ProofSummary = { proven: 0, pending: 0, failed: 0, total: objectives.length };
+  for (const o of objectives) expected[o.status] += 1;
+  if (
+    summary.proven !== expected.proven ||
+    summary.pending !== expected.pending ||
+    summary.failed !== expected.failed ||
+    summary.total !== expected.total
+  ) {
+    throw new SchemaError(
+      `${path}.summary`,
+      `inconsistent with objectives — expected ${JSON.stringify(expected)}, got ${JSON.stringify(summary)}`,
+    );
+  }
+  const diffHash = optional(isString, obj["diffHash"], `${path}.diffHash`, "string");
+  return {
+    schemaVersion: 1,
+    commit: need(isNonEmptyString, obj["commit"], `${path}.commit`, "non-empty string"),
+    ...(diffHash !== undefined ? { diffHash } : {}),
+    provenance: needEnum(EVIDENCE_PROVENANCES, obj["provenance"], `${path}.provenance`),
+    generatedAt: need(isNonEmptyString, obj["generatedAt"], `${path}.generatedAt`, "ISO timestamp"),
+    objectives,
+    summary,
   };
 }
 

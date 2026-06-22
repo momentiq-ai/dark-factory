@@ -8,11 +8,7 @@ Audience: maintainers of a repo that wants to consume `@momentiq/dark-factory-cl
 - **Binding enforcement** — a branch ruleset that makes your chosen PR-gate critic a *required* status check (`dark-factory/critic` for the hosted App, or `agent-critic / agent-critic` for CI), so red verdicts actually block merges (not just post advisory comments). This is the difference between *installing* Dark Factory and *enforcing* it (§10).
 - **Optional branch-protection drift detector** if your repo has a ruleset.
 
-This document is the canonical adoption guide. Concrete worked examples:
-
-- **taxpilot2a F.5a** ([PR #45](https://github.com/momentiq-ai/taxpilot2a/pull/45)) — first external consumer; full CI wiring, `.agent-review/config.json`, `.npmrc` + root `package.json`.
-- **taxpilot2a F.5a follow-up** ([PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46)) — documents the prerequisite `actions/permissions/access` flip on `momentiq-ai/dark-factory` so cross-repo `uses:` works.
-- **lyra F.5b** (planned) — second external consumer (under `alien8d/`, fully outside momentiq-ai org).
+This document is the canonical adoption guide. Two early pilot consumers have run it end-to-end (one inside the `momentiq-ai` org, one outside it) and the gotchas they hit are folded into the prerequisite and "make it binding" sections below.
 
 ## 1. Onboard agent context (NEW — Cycle 15)
 
@@ -122,7 +118,7 @@ Dark Factory runs the **same** multi-vendor adversarial critic fleet against you
 | Item | Where | Notes |
 |---|---|---|
 | Node.js >= 20 | `node --version` | The CLI's `engines.node` is `>=20`. |
-| `momentiq-ai/dark-factory` Actions access set to `organization` | `gh api -X PUT repos/momentiq-ai/dark-factory/actions/permissions/access -f access_level=organization` (org admin only) | Without this, your `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@<sha>` calls fail at startup with "workflow file issue". See [taxpilot2a PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) — this trap was discovered the hard way. |
+| `momentiq-ai/dark-factory` Actions access set to `organization` | `gh api -X PUT repos/momentiq-ai/dark-factory/actions/permissions/access -f access_level=organization` (org admin only) | Without this, your `uses: momentiq-ai/dark-factory/.github/workflows/<name>.yml@<sha>` calls fail at startup with "workflow file issue". This is a **one-time setting on the provider repo** (`momentiq-ai/dark-factory`), applied once by a `momentiq-ai` org admin — it grants org repos access to the reusable workflows; individual consumer repos do not run it themselves. An early pilot consumer discovered this the hard way. |
 
 ## 4. Install the CLI
 
@@ -259,6 +255,25 @@ fi
 printf '%s' "${STDIN_BUF}" | "${CLI}" gate-push
 ```
 
+**Closeout proof gate (verifiable objectives).** When your repo declares objectives in `.darkfactory/objectives.yaml`, add a closeout proof step so a push surfaces — and optionally gates on — whether the change's evidence proves its objectives:
+
+```bash
+# Append to .husky/pre-push (after gate-push). Informational by default —
+# `|| true` applies to `df prove` itself, so a non-zero exit never blocks the
+# push (with `set -euo pipefail` earlier in the hook):
+"${CLI}" prove || true   # prints per-objective proven/pending/failed; never blocks
+
+# To make it a HARD gate (block the push on any unproven objective):
+#   "${CLI}" prove --strict
+```
+
+`df prove` joins each objective against local evidence (`df verify` route exit codes + `df review` critic verdicts) and prints a per-objective **proven / pending / failed** readout — the "declare victory with proof" closeout (see the `/verify` skill). How (and where) to gate depends on the binding kind:
+
+- **`route` / `test` bindings** are satisfiable *locally* — `df verify` produces their evidence before the push. Gate these at pre-push with `df prove --strict`, or flip `enforced: true` per objective.
+- **`critic` bindings** are `pending` pre-push *by design* — the critic fleet runs in CI / post-commit, not before the push. Keep pre-push **informational** for them (the `|| true` form above) and run the strict gate **in CI**, after the fleet. `enforced: true` does NOT make a critic binding provable pre-push — it would just block every push.
+
+v1 ships informational; the strict/enforced ratchet is opt-in.
+
 **Audit the un-gated intermediates.** When you want to see what the
 critic said about every commit in the iteration trail — not just the
 HEAD that was actually gated — run:
@@ -385,6 +400,12 @@ Running an un-overridden placeholder fails fast with an actionable error (`route
 **Content binding — evidence is bound to the diff, not just the SHA (`dark-factory#194`, Cycle 21 EC7).** `df verify` / `df gates` stamp the gated diff's hash onto the evidence, and `df gate-push` re-validates it: the same SHA re-staged under a *different* diff (or evidence with the diffHash stripped) no longer satisfies the gate.
 
 > ⚠️ **Breaking for SHA-only producers (CLI ≥ 2.6.0).** Before #194, route evidence that carried no `diffHash` was accepted (SHA-only binding). It is now **rejected** as unbound when the gate runs content-binding (which `df gate-push` always does). If you arm command routes with a hand-rolled producer, that producer **must stamp the gated `diffHash`** — the simplest fix is to drive routes through `df verify` (or `df gates`), which stamp it for you. Repos that arm only the `docs-only` suppression route (no command routes) are unaffected. (Limitation: a transient `git` error at gate time leaves the diff hash uncomputable, in which case binding falls back to SHA-only for that commit rather than failing the push.)
+
+**Persisting evidence — `df publish` (`dark-factory#207`).** `df verify` writes evidence into the working tree / `.git/`, where it is local-only and unreferenceable after the run. `df publish` uploads that bundle (the per-SHA gate JSON + any UI screenshots) to **Cerebe object storage** and emits a `PublishedEvidence` pointer manifest (`schemaVersion: 1`, provenance `consumer-attested`) keyed by `routeId` + `diffHash`. It reads Cerebe config from the environment (`CEREBE_API_URL`, `CEREBE_API_KEY`, optional `CEREBE_PROJECT`, and optional `CEREBE_USER_ID` — the upload identity, default `dark-factory`) and **degrades-and-passes**: when Cerebe is unconfigured or an upload fails it emits a `status: "degraded"` manifest and exits 0, so it never blocks a push or merge. See `df publish --help`.
+>
+> **Transmitting the manifest to a hosted gate (`dark-factory-platform` Cycle 23).** Beyond persisting to Cerebe, `df publish` can PUSH the manifest to an HTTP **evidence-ingest endpoint** so a hosted worker joins it against `.darkfactory/objectives.yaml` server-side (no out-of-band hand-off). Activated only when both `DF_EVIDENCE_INGEST_URL` and `DF_EVIDENCE_INGEST_SECRET` are set; it then POSTs the envelope `{ "repository": "<owner>/<repo>", "evidence": <PublishedEvidence> }` with header `X-Hub-Signature-256: sha256=<HMAC-SHA256(secret, raw-body)>` (the GitHub webhook convention — the endpoint recomputes the HMAC over the raw body). `repository` is taken from `GITHUB_REPOSITORY` (set by Actions) or `--repository <owner/repo>`. **Same degrade-and-pass posture:** absent vars ⇒ transmit is skipped; a transmit failure is logged but never changes the exit code, so it never blocks the merge. The endpoint URL + secret are generic — any ingest endpoint verifying that signature works.
+
+> **Integration status.** This slice ships the `df publish` subcommand + the `PublishedEvidence` schema only. The reusable-workflow step that runs `df publish` in CI and attaches the manifest to the PR — and the adoption steps for it — land in a follow-up; until then `df publish` is for manual / custom-CI use.
 
 ## 6. `.agent-review/config.json` — scope to your repo's source layout
 
@@ -589,7 +610,7 @@ Pin each reusable workflow to an exact **commit SHA** (NOT a `@v0` tag — per `
 ```yaml
 # .github/workflows/dark-factory-pr.yml
 # Prereq: momentiq-ai/dark-factory actions/permissions/access must be
-# set to 'organization' (org admin only). See taxpilot2a#46.
+# set to 'organization' (org admin only) — see Prerequisites table above.
 
 name: Dark Factory PR Gates
 
@@ -638,11 +659,36 @@ jobs:
     # secrets:
     #   CI_BOT_APP_ID: ${{ secrets.CI_BOT_APP_ID }}
     #   CI_BOT_PRIVATE_KEY: ${{ secrets.CI_BOT_PRIVATE_KEY }}
+
+  # Optional: evidence-publish — capture + persist verification evidence
+  # (verifiable objectives). Runs `df verify` then `df publish`, uploading the
+  # bundle to Cerebe object storage, emitting the PublishedEvidence pointer
+  # manifest the hosted worker joins, and (when the DF_EVIDENCE_INGEST_* secrets
+  # are set) transmitting it to the hosted evidence-ingest endpoint. NOT a merge
+  # gate (surfacing only); degrade-and-passes when ANY of the secrets are absent.
+  evidence-publish:
+    uses: momentiq-ai/dark-factory/.github/workflows/evidence-publish.yml@<exact-commit-sha>
+    with:
+      # This example is transmit-enabled (it sets the DF_EVIDENCE_INGEST_*
+      # secrets below), so it pins a CLI that ships `df publish` transmit
+      # (≥ 2.13.0). For capture-only (upload to Cerebe, no transmit to the
+      # hosted gate), drop the DF_EVIDENCE_INGEST_* secrets — older pins
+      # (e.g. the '2.2.4' the other jobs above use) capture fine.
+      cli-version: '2.13.0'
+    secrets:
+      CEREBE_API_URL: ${{ secrets.CEREBE_API_URL }}
+      CEREBE_API_KEY: ${{ secrets.CEREBE_API_KEY }}
+      # Optional transmit-to-hosted-gate (Cycle 23). Absent ⇒ capture-only.
+      # repository is github.repository (auto); signature is X-Hub-Signature-256.
+      DF_EVIDENCE_INGEST_URL: ${{ secrets.DF_EVIDENCE_INGEST_URL }}
+      DF_EVIDENCE_INGEST_SECRET: ${{ secrets.DF_EVIDENCE_INGEST_SECRET }}
 ```
 
 **Caller job-id naming (load-bearing — read before writing your ruleset).** A reusable workflow invoked via `uses:` produces a status-check context of the form **`<caller-job-id> / <callee-job-name>`**, NOT the bare callee name. Every dark-factory reusable workflow deliberately omits a job-level `name:` override so the callee segment defaults to the job id, giving consumers a uniform `<id> / <id>` contract: `agent-critic:` → **`agent-critic / agent-critic`**, `cycle-doc-validation:` → **`cycle-doc-validation / cycle-doc-validation`**, and `pr-status-check:` → **`pr-status-check / pr-status-check`** (issue #27 — a prior `name: "PR Status Check"` override broke the contract and permanently blocked merges). This is the EXACT string your ruleset must require in §10 — requiring the bare `agent-critic` would never match and would block every PR forever. See `README.md` § Consumer-side wiring for the contract, and §10 below to make the check binding.
 
-See [taxpilot2a's dark-factory-pr.yml](https://github.com/momentiq-ai/taxpilot2a/blob/main/.github/workflows/dark-factory-pr.yml) for a working production example pinned to a real commit SHA.
+**Checkout depth — `df critic` needs full history (`fetch-depth: 0`).** The critic reviews the commit's `parent..HEAD` diff. On GitHub Actions' default **shallow** checkout (`fetch-depth: 1`) the parent of a merge/squash commit is severed by the shallow graft, so the parent lookup finds nothing — which previously fell back to "this commit introduces everything," making the critic prompt the **entire repository**, overflowing the codex/gemini/grok context windows so only Cursor survived and the quorum silently shrank (issues [#181](https://github.com/momentiq-ai/dark-factory/issues/181) / [#182](https://github.com/momentiq-ai/dark-factory/issues/182)). The fix is two-sided: (a) the reusable **`agent-critic.yml` workflow now sets `fetch-depth: 0` on its own checkout**, so consumers invoking it via `uses:` (the `agent-critic:` job in the example above) inherit the deep checkout with **no change on their side**; and (b) the CLI now **fails loud** with a "deepen the clone (`fetch-depth: 0`)" error instead of masking a shallow boundary — so a too-shallow checkout surfaces as a clear, actionable failure rather than a degraded-but-green gate. **If you run `df critic` / `df verify` yourself** (a hand-rolled workflow, not the reusable one, or any custom job that checks out the repo before invoking the CLI), set `fetch-depth: 0` on your `actions/checkout` step (or run `git fetch --unshallow`). True root commits are unaffected — they still review correctly with no parent.
+
+Pin to a real commit SHA — see `git ls-remote https://github.com/momentiq-ai/dark-factory main` for the current main HEAD, or pick a tagged release from the [releases page](https://github.com/momentiq-ai/dark-factory/releases).
 
 ## 9. Provision secrets on your repo's GH Actions
 
@@ -666,7 +712,7 @@ gh secret set CODEX_API_KEY --repo <your-org>/<your-repo>
 
 **This is the step that turns Dark Factory from advisory to enforcing. Skipping it is the single most common adoption failure.**
 
-Everything up to here makes the gates *run* and *post verdicts*. None of it makes them *block a merge*. The local Husky `pre-push` hook (§5) gates `git push` on your own machine — but it does nothing for merges that go through the GitHub UI, the merge queue, an auto-merge, a PR opened from another machine, or anything that bypasses the local hook. **CI enforcement is what gates the merge queue.** Without a ruleset that requires the `agent-critic` status check, a PR with red critic findings merges anyway — exactly what happened to `taxpilot2a` PR #48 (merged ~4 minutes before `agent-critic` finished, with the critic's findings landing on `main` unguarded; tracked at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213)).
+Everything up to here makes the gates *run* and *post verdicts*. None of it makes them *block a merge*. The local Husky `pre-push` hook (§5) gates `git push` on your own machine — but it does nothing for merges that go through the GitHub UI, the merge queue, an auto-merge, a PR opened from another machine, or anything that bypasses the local hook. **CI enforcement is what gates the merge queue.** Without a ruleset that requires the `agent-critic` status check, a PR with red critic findings merges anyway — an early pilot consumer had a PR auto-merge ~4 minutes before `agent-critic` finished, with the critic's findings landing on `main` unguarded (incident tracked at [`momentiq-ai/sage3c#2213`](https://github.com/momentiq-ai/sage3c/issues/2213)).
 
 > **Rulesets are NOT optional for enforcement.** Earlier sections describe `branch-protection-audit` as an *optional* drift detector — that audit is genuinely optional. **Requiring the `agent-critic` check is not.** If you want Dark Factory to actually block anything, you must require it. "Installed Dark Factory" and "enforcing Dark Factory" are two different states; this section closes the gap between them.
 
@@ -1261,8 +1307,12 @@ any description of the existing security context.
   (ii) most recent CLOSED `handoff`-labeled issue accepted by `@me` within 7
   days (the post-`/accept` crash/reboot/model-upgrade case). Both refuse with
   a `/handoffs` pointer if neither matches.
-- **Refuse link cycles.** `--link` to a handoff-labeled issue is refused (no
-  handoff-issue-links-handoff-issue cycles).
+- **Refuse only link *cycles*.** `--link` to a handoff-labeled issue is allowed
+  — this is how an umbrella/program handoff enumerates its per-cycle member
+  handoffs (a one-directional DAG). A link is refused ONLY when it would close a
+  cycle (the target handoff already reaches back to the source). Cycle detection
+  is a bounded, same-repo graph walk (dark-factory#229; cross-repo targets are
+  treated as leaves and skip the walk).
 - **Issue arg validation.** A non-positive-integer issue arg is rejected by
   `requireIssueNumber` before any `gh` call, plus a defense-in-depth allow-list
   on the full argv (rejects shell metacharacters even though TS real argv
@@ -1338,5 +1388,4 @@ The originating cycle is [`momentiq-ai/dark-factory-platform` → Cycle 13](http
 - **Cross-repo subagent isolation:** when dispatching Claude Code subagents across multiple consumer repos in one session, each subagent MUST clone to a unique path (`/Users/<you>/projects/<repo>-wt-<task>`). Otherwise concurrent subagents trample each other's git state. This is documented in the `feedback_cross_repo_subagent_isolation` memory pattern (private to PJ's Claude Code memory).
 - **A2 follow-up — CLI adapter dynamic loading:** the CLI dynamically imports vendor adapters inside `buildDefaultAdapterRegistry()` (`packages/cli/src/cli.ts` lines ~70-80) so the binary loads under `--ignore-scripts` for non-`df critic` subcommands. Don't trip over this when debugging install issues.
 - **Reusable workflow security model:** `CLAUDE.md` § Reusable workflow conventions explains the trusted-surface rebind (workflow-baked `EXPECTED_INTEGRITY` + `$RUNNER_TEMP/df-trusted-*` extraction) for paranoid consumers.
-- **Worked external example:** [taxpilot2a PR #45](https://github.com/momentiq-ai/taxpilot2a/pull/45) (F.5a integration) + [PR #46](https://github.com/momentiq-ai/taxpilot2a/pull/46) (access-permission follow-up).
 - **Docker build evidence shim contract (§5.5):** [`dark-factory-platform#141`](https://github.com/momentiq-ai/dark-factory-platform/issues/141) — host-side `scripts/check-dockerfile.sh` shim spec; the upstream half (CLI evidence consumption + SHA binding + injection-resistant prompt section) shipped in `dark-factory#115`.

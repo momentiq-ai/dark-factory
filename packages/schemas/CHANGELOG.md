@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.12.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.11.0...dark-factory-schemas-v0.12.0) (2026-06-21)
+
+
+### Features
+
+* **objectives:** 2c — source-criterion binding ratchet ([#221](https://github.com/momentiq-ai/dark-factory/issues/221)) ([3cc2612](https://github.com/momentiq-ai/dark-factory/commit/3cc26121af9c2e4646451c8c6d744d6c0a651fdc))
+
+## [0.11.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.10.0...dark-factory-schemas-v0.11.0) (2026-06-20)
+
+
+### Features
+
+* df prove — closeout proof readout (CLI + df_prove MCP) ([#215](https://github.com/momentiq-ai/dark-factory/issues/215)) ([cdff677](https://github.com/momentiq-ai/dark-factory/commit/cdff67776cb2b3b91ceb3393d4c41c07c02dcbd0))
+
+## [0.10.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.9.0...dark-factory-schemas-v0.10.0) (2026-06-20)
+
+
+### Features
+
+* verifiable-objectives Phase 2a — df publish + Cerebe storage facade ([#212](https://github.com/momentiq-ai/dark-factory/issues/212)) ([e2f3c13](https://github.com/momentiq-ai/dark-factory/commit/e2f3c13b8af8024f357b5d1b4bc93d814ea91c2d))
+
+## [0.9.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.8.0...dark-factory-schemas-v0.9.0) (2026-06-20)
+
+
+### Features
+
+* verifiable-objectives Phase 1 — Objective contract + manifest validator ([#208](https://github.com/momentiq-ai/dark-factory/issues/208)) ([4f53313](https://github.com/momentiq-ai/dark-factory/commit/4f53313de2da5a0ce169bb3350e5efd9fb3f2bda))
+
+
+### Bug Fixes
+
+* address Copilot review — tighten Objective id regex (kind pairing + dotted cycles), normalize cycle ids, harden manifest parsing ([#210](https://github.com/momentiq-ai/dark-factory/issues/210)) ([58f3239](https://github.com/momentiq-ai/dark-factory/commit/58f32394ec4e8b656c957c19d6bce65ff49b4220))
+
 ## [0.8.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.7.0...dark-factory-schemas-v0.8.0) (2026-06-12)
 
 
