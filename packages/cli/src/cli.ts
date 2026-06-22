@@ -90,7 +90,12 @@ import {
   classifyDoctorState,
   detectCloudEnv,
   runDoctor,
+  probeCacheTree,
 } from "./doctor.js";
+import {
+  ensureGcAutoDisabled,
+  recoverCacheTree,
+} from "./worktree-safety.js";
 import type { DoctorReportV1 } from "@momentiq/dark-factory-schemas";
 import { resolveProfile } from "./policy/profile.js";
 import {
@@ -974,6 +979,9 @@ async function cmdReview(rest: string[]): Promise<number> {
   loadDopplerBootstrapEnv({ allowlist: DEFAULT_BOOTSTRAP_ALLOWLIST });
   const loaded = await loadHookConfig();
   if (!loaded) return 2;
+  // #227 — disable auto-gc so a background prune can't corrupt a linked
+  // worktree's index. Idempotent + best-effort; never blocks the review.
+  await ensureGcAutoDisabled(loaded.repoRoot);
   const { flags } = parseFlags(rest);
   const registry = await buildHookRegistry();
 
@@ -1159,6 +1167,9 @@ async function cmdGatePush(rest: string[]): Promise<number> {
   }
   const loaded = await loadHookConfig();
   if (!loaded) return 2;
+  // #227 — disable auto-gc so a background prune can't corrupt a linked
+  // worktree's index. Idempotent + best-effort; never blocks the gate.
+  await ensureGcAutoDisabled(loaded.repoRoot);
   const { flags } = parseFlags(rest);
   const artifactDir = await resolveArtifactDir(loaded);
   const sink = new FileTelemetrySink(telemetryPath(artifactDir));
@@ -1273,6 +1284,12 @@ async function cmdDoctor(rest: string[]): Promise<number> {
         "                                   human-readable INFO/OK/FAIL lines",
         "                                   (for consumer-side pre-push hooks",
         "                                   that fail-fast on auth_pending).",
+        "  --fix-cache-tree                 If the cache-tree probe finds a",
+        "                                   corrupt linked-worktree index",
+        "                                   (#227), recover it via",
+        "                                   `git read-tree HEAD` (unstages",
+        "                                   staged changes; working-tree edits",
+        "                                   are preserved).",
         "",
         "Environment:",
         "  AGENT_REVIEW_PROFILE=<name>      Profile to validate (default: local)",
@@ -1310,6 +1327,35 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     bootstrap,
     profileName,
   });
+
+  // #227 — opt-in cache-tree recovery. The `cache_tree_probe` check (inside
+  // runDoctor) is detect-only by design because the recovery is destructive;
+  // `--fix-cache-tree` performs the supported `git read-tree HEAD` recovery
+  // when the probe found corruption, then re-probes so the reported state +
+  // exit code reflect the recovery. Messages go to stderr so they never
+  // corrupt --json stdout.
+  if (flags["fix-cache-tree"]) {
+    const probe = checks.find((c) => c.name === "cache_tree_probe");
+    if (probe && !probe.passed) {
+      process.stderr.write(
+        `df doctor: cache-tree corruption detected (${probe.detail}) — recovering…\n`,
+      );
+      const rec = await recoverCacheTree(loaded.repoRoot);
+      process.stderr.write(
+        `df doctor: ${rec.ok ? "recovered" : "recovery FAILED"} — ${rec.detail}\n`,
+      );
+      if (rec.ok) {
+        const reprobed = await probeCacheTree(loaded.repoRoot);
+        const idx = checks.findIndex((c) => c.name === "cache_tree_probe");
+        if (idx >= 0) checks[idx] = reprobed;
+      }
+    } else {
+      process.stderr.write(
+        "df doctor: --fix-cache-tree: no cache-tree corruption to recover.\n",
+      );
+    }
+  }
+
   // Issue #51 — surface the 3-state triage classification FIRST, before
   // the per-check INFO/OK/FAIL block. The headline tells the operator
   // whether they're in config_missing / auth_pending / ok before they

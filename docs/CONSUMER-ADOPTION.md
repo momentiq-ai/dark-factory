@@ -174,6 +174,16 @@ if [[ "${AGENT_REVIEW_SKIP:-}" == "1" ]]; then
   exit 0
 fi
 
+# Worktree safety (dark-factory#227): disable git auto-gc so a background
+# prune can't drop objects still referenced ONLY by another linked worktree's
+# uncommitted index cache-tree — which corrupts that worktree
+# (`fatal: unable to read <sha>`). Idempotent; a lost race with a sibling
+# worktree's identical flip is harmless. `df review`/`df gate-push` also do
+# this, but flipping here covers the window before the CLI is installed.
+if [[ "$(git config --get gc.auto || echo)" != "0" ]]; then
+  git config gc.auto 0 || true
+fi
+
 CLI="./node_modules/.bin/df"
 if [[ ! -x "${CLI}" ]]; then
   echo "df review: CLI not installed at ${CLI}; run 'npm install' first" >&2
@@ -286,6 +296,21 @@ Make both executable:
 ```bash
 chmod +x .husky/post-commit .husky/pre-push
 ```
+
+**Worktree safety & recovery (dark-factory#227).** If you use linked git
+worktrees (`git worktree add`) — common when running parallel agent sessions —
+rapid commits across worktrees can push the shared object store past `gc.auto`'s
+threshold and trigger a background prune that drops objects still referenced
+only by another worktree's uncommitted index, corrupting it (`git status` then
+fails with `fatal: unable to read <sha>` / `invalid sha1 pointer in cache-tree`).
+The hooks above and the `df review` / `df gate-push` commands disable auto-gc
+(`gc.auto=0`) for the repo to prevent this; opt out with `DF_KEEP_GC_AUTO=1` if
+you manage gc yourself. Trade-off: loose objects accumulate, so run `git gc`
+by hand occasionally on long-lived clones. If a worktree is already corrupted,
+recover it with `df doctor --fix-cache-tree` (runs `git read-tree HEAD` —
+unstages staged changes, preserves working-tree edits); if that fails (HEAD's
+own tree was pruned), `git worktree remove --force <path>` and recreate it off
+the remote.
 
 **Cost model.** Two-path:
 
