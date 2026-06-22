@@ -729,20 +729,18 @@ describe("/handoff — link/unlink", () => {
     expect(inblock).toContain("- pr momentiq-ai/dark-factory#103");
   });
 
-  it("--link to handoff-labeled issue refused with no-link-cycles message (t_handoff_link_handoff_refused)", async () => {
+  it("--link to a handoff issue that would CLOSE A CYCLE is refused (#229)", async () => {
     const { gh, git, clock } = setup();
-    gh.setIssueViewDefault(
-      issueView({ number: 42, body: bodyWithBlock() }),
+    // slot 1 = source handoff #42; slot 2 = link target #999 (handoff-labeled),
+    // whose body links back to #42 → linking #999 into #42 closes a cycle.
+    gh.setIssueViewDefault(issueView({ number: 42, body: bodyWithBlock() }));
+    gh.setIssueViewSlot(
+      2,
+      issueView({
+        number: 999,
+        body: bodyWithLinks("- issue #42 — back-link to the source handoff"),
+      }),
     );
-    // Make PR view fail so the link resolver falls through to issue lookup.
-    gh.setAllPrViewsThrow(new Error("not a PR"));
-    // The issue lookup (for link target) returns a handoff-labeled issue.
-    // Both slot 1 (the handoff target's own view) and slot 2 (issue ref lookup)
-    // hit the same setIssueViewDefault, so the link target picks up the
-    // handoff label by default — but we have to be careful: slot 1 is the
-    // primary issue (42) which we want labelled handoff anyway. The link
-    // resolver calls issueView on the OTHER number (999); both go through
-    // the same default.
     await expect(
       runHandoff({
         noteStdin: NOTE,
@@ -752,10 +750,35 @@ describe("/handoff — link/unlink", () => {
         git,
         clock,
       }),
-    ).rejects.toThrow(/no link-cycles/i);
+    ).rejects.toThrow(/link-cycle back to this handoff \(#42\)/i);
+    // Refused before any mutation — no body PATCH.
     expect(
       gh.calls().some((c) => c.startsWith("gh issue edit 42 --body-file")),
     ).toBe(false);
+  });
+
+  it("--link to an ACYCLIC handoff issue is now allowed (#229 unblocks umbrella→member)", async () => {
+    const { gh, git, clock } = setup();
+    // slot 1 = source handoff #42; slot 2 = member handoff #999 with no link
+    // back to #42 → acyclic → allowed (the historical blanket ban is gone).
+    gh.setIssueViewDefault(issueView({ number: 42, body: bodyWithBlock() }));
+    gh.setIssueViewSlot(
+      2,
+      issueView({ number: 999, title: "member handoff", body: bodyWithBlock() }),
+    );
+    await runHandoff({
+      noteStdin: NOTE,
+      issue: 42,
+      link: ["issue:999"],
+      gh,
+      git,
+      clock,
+    });
+    expect(
+      gh.calls().some((c) => c.startsWith("gh issue edit 42 --body-file")),
+    ).toBe(true);
+    const body = gh.lastEditBody()?.bodyMd ?? "";
+    expect(body).toContain("- issue #999 — member handoff");
   });
 
   it("--link URL with ?query=string accepted, parsed, linked (t_handoff_link_url_with_query_string_allowed)", async () => {
