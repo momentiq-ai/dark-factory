@@ -225,10 +225,19 @@ export async function commitDiff(
   sha: string,
   cwd: string = process.cwd(),
 ): Promise<string> {
+  // `--full-index` is load-bearing for the content-binding diffHash (#392).
+  // `git diff/show --patch` embeds object IDs in each `index <old>..<new>` line
+  // ABBREVIATED to a length `core.abbrev=auto` derives from the repo's object
+  // count — so the SAME commit yields different patch bytes in a full clone
+  // (e.g. 8 hex) vs a shallow/smaller clone (7 hex). Since the hosted worker and
+  // the consumer CI run this from differently-shaped checkouts, the abbreviated
+  // index lines made their diffHashes diverge and the consumer-evidence pointer
+  // never bound. `--full-index` emits full 40-char IDs → abbrev-invariant →
+  // byte-identical diff (hence diffHash) across any clone shape.
   if (!parent) {
-    return git(["show", "--patch", "--format=", sha], { cwd });
+    return git(["show", "--patch", "--full-index", "--format=", sha], { cwd });
   }
-  return git(["diff", "--patch", "--no-color", `${parent}..${sha}`], { cwd });
+  return git(["diff", "--patch", "--no-color", "--full-index", `${parent}..${sha}`], { cwd });
 }
 
 interface NumstatEntry {
