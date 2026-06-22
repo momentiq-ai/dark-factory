@@ -434,8 +434,17 @@ export async function runHandoff(
   let entries: string[] = [...extractLinkedItems(existingBody)];
 
   // --link: resolve via gh, scrub title, dedup by "kind display" prefix.
+  // Pass the source handoff number so resolveLinkRef can refuse a link that
+  // would close a handoff→handoff cycle (dark-factory#229). `issueNum` is set
+  // on both the explicit (`opts.issue`) and auto-picked update paths; it is
+  // undefined ONLY when creating a brand-new issue (`createNew`), where no
+  // cycle is possible because the source issue does not exist yet.
   for (const ref of links) {
-    const resolved = await resolveLinkRef(ref, gh);
+    const resolved = await resolveLinkRef(
+      ref,
+      gh,
+      issueNum !== undefined ? { sourceIssue: issueNum } : undefined,
+    );
     const titleScrub = scrubString(
       resolved.title,
       `linked work-item title for ${resolved.display}`,

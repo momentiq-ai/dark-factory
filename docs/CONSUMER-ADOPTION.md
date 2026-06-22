@@ -1236,8 +1236,12 @@ any description of the existing security context.
   (ii) most recent CLOSED `handoff`-labeled issue accepted by `@me` within 7
   days (the post-`/accept` crash/reboot/model-upgrade case). Both refuse with
   a `/handoffs` pointer if neither matches.
-- **Refuse link cycles.** `--link` to a handoff-labeled issue is refused (no
-  handoff-issue-links-handoff-issue cycles).
+- **Refuse only link *cycles*.** `--link` to a handoff-labeled issue is allowed
+  — this is how an umbrella/program handoff enumerates its per-cycle member
+  handoffs (a one-directional DAG). A link is refused ONLY when it would close a
+  cycle (the target handoff already reaches back to the source). Cycle detection
+  is a bounded, same-repo graph walk (dark-factory#229; cross-repo targets are
+  treated as leaves and skip the walk).
 - **Issue arg validation.** A non-positive-integer issue arg is rejected by
   `requireIssueNumber` before any `gh` call, plus a defense-in-depth allow-list
   on the full argv (rejects shell metacharacters even though TS real argv

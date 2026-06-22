@@ -72,21 +72,108 @@ export function canonicalizeLinkRef(input: string): LinkRefCanonical {
   return { kind, display: `#${ref}` };
 }
 
+/** Defensive ceiling on handoff-link graph nodes walked during cycle
+ * detection. Real programs are an umbrella + a handful of members, far under
+ * this; the bound only guarantees termination on pathological input. (No
+ * handoff→handoff link data exists in any repo today — the historical blanket
+ * ban prevented it — so in practice the walk terminates near-immediately.) */
+const MAX_CYCLE_WALK_NODES = 256;
+
+/**
+ * Same-repo issue numbers linked from a handoff body's `**Linked work items:**`
+ * section. Matches ONLY `- issue #N — …` entries: PR entries (`- pr …`) can't
+ * be handoff issues, and cross-repo issue links (`- issue owner/repo#N — …`)
+ * are deliberately treated as leaves (see the cross-repo note on
+ * `assertLinkAcyclic`). Reuses `extractLinkedItems` so the in-marker scoping is
+ * identical to every other reader.
+ */
+function sameRepoLinkedIssues(body: string): number[] {
+  const out: number[] = [];
+  for (const entry of extractLinkedItems(body)) {
+    const m = entry.match(/^- issue #([0-9]+) — /);
+    if (m) out.push(Number(m[1]));
+  }
+  return out;
+}
+
+/**
+ * Refuse a handoff→handoff link ONLY when it would close a cycle — i.e. the
+ * target handoff already reaches back to the source handoff through its own
+ * same-repo handoff links. Acyclic links (umbrella → member) are allowed; this
+ * is the real cycle-detection that replaces the historical blanket ban
+ * (dark-factory#229).
+ *
+ * Bounded: a `visited` set guarantees termination even on malformed cyclic
+ * data, and each reachable node costs one `gh issue view`. gh failures
+ * mid-walk are treated as leaves (an unreachable node can't extend a cycle),
+ * so the ONLY thing this throws is the cycle refusal.
+ *
+ * Scope — same-repo only. The source handoff is always in the current repo;
+ * cross-repo issue links are leaves (not followed), and cross-repo TARGETS
+ * skip the walk entirely (see `resolveLinkRef`). All current readers
+ * (`/rehydrate`, `/accept`, `/handoffs`) are depth-1 / non-recursive, so a
+ * cross-repo cycle — which this does not detect — still cannot cause an
+ * infinite loop. A first-class cross-repo program model is deferred to
+ * issue #229 Proposal B.
+ */
+async function assertLinkAcyclic(
+  sourceIssue: number,
+  targetNum: number,
+  targetBody: string,
+  gh: GhClient,
+): Promise<void> {
+  const refuse = (): never => {
+    throw new HandoffError(
+      `refusing to link #${targetNum}: it would close a link-cycle back to this handoff (#${sourceIssue}). ` +
+        "Handoff links form a one-directional DAG (umbrella → members), never a cycle.",
+    );
+  };
+  if (targetNum === sourceIssue) refuse(); // direct self-link
+  const visited = new Set<number>([targetNum]);
+  // Seed the frontier from the ALREADY-fetched target body so we don't
+  // re-fetch the target as the first walk node.
+  const queue: number[] = sameRepoLinkedIssues(targetBody);
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (cur === sourceIssue) refuse();
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    if (visited.size > MAX_CYCLE_WALK_NODES) return; // defensive bound — stop walking
+    let body: string;
+    try {
+      body = (await gh.issueView(cur)).body;
+    } catch {
+      continue; // unreachable node = leaf; can't extend a cycle
+    }
+    for (const n of sameRepoLinkedIssues(body)) queue.push(n);
+  }
+}
+
 /**
  * Resolve a link ref to (kind, display, title) WITH a gh fetch.
  * PR-first per spec §3: a bare 42 is a PR if it resolves; else tried as an
  * issue. A `pr:N` / `issue:N` prefix short-circuits auto-detection.
+ *
+ * `ctx.sourceIssue` is the handoff issue the link is being written INTO (the
+ * source of the edge). When present and the resolved target is a same-repo
+ * handoff issue, the link is refused ONLY if it would close a cycle
+ * (dark-factory#229). When absent — e.g. `--new`, where the source issue does
+ * not exist yet and therefore cannot be the target of any back-link — no cycle
+ * is possible, so handoff targets are allowed without a walk.
  *
  * Throws HandoffError on:
  *   - project URL (deferred to Phase 12.2 per OQ-12.7)
  *   - invalid ref shape
  *   - ref 0 / leading-zero
  *   - both PR and issue lookups fail (not found)
- *   - resolved issue carries the handoff label (no link-cycles)
+ *   - a same-repo handoff target that would close a link-cycle back to
+ *     `ctx.sourceIssue` (true cycle-detection; acyclic umbrella→member links
+ *     are allowed)
  */
 export async function resolveLinkRef(
   input: string,
   gh: GhClient,
+  ctx?: { sourceIssue?: number },
 ): Promise<LinkRefResolved> {
   let kind: "" | "pr" | "issue" = "";
   let ref = input;
@@ -167,16 +254,24 @@ export async function resolveLinkRef(
   if (title === "" && (kind === "" || kind === "issue")) {
     try {
       const issue = await gh.issueView(num, opts);
-      // Refuse a handoff-labeled issue link target (no link-cycles).
-      if (issue.labels.some((l) => l.name === HANDOFF_LABEL)) {
-        throw new HandoffError(
-          `refusing to link handoff issue ${display} (no link-cycles between handoff issues).`,
-        );
-      }
       title = issue.title;
       resolvedKind = "issue";
+      // dark-factory#229 — handoff→handoff links are ALLOWED unless they would
+      // close a cycle. Same-repo targets only (`ownerRepo === ""`); the source
+      // handoff is always current-repo. No `sourceIssue` (e.g. `--new`) ⇒ the
+      // source can't yet be a back-link target ⇒ no cycle possible ⇒ allow.
+      // `assertLinkAcyclic` swallows its own gh failures (treats unreachable
+      // nodes as leaves), so its only throw is the HandoffError cycle refusal,
+      // which the catch below re-raises.
+      if (
+        ctx?.sourceIssue !== undefined &&
+        ownerRepo === "" &&
+        issue.labels.some((l) => l.name === HANDOFF_LABEL)
+      ) {
+        await assertLinkAcyclic(ctx.sourceIssue, num, issue.body, gh);
+      }
     } catch (err) {
-      if (err instanceof HandoffError) throw err; // re-raise link-cycle refusal
+      if (err instanceof HandoffError) throw err; // re-raise cycle refusal
       // otherwise fall through to "not found" error
     }
   }
