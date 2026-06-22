@@ -49,14 +49,17 @@ describe("commitDiff diffHash is abbrev-invariant (#392)", () => {
       return diffHash(await commitDiff(parent, head, root));
     };
 
-    const h4 = await hashAt("4");
+    // Cover the EXACT divergent values from #392 / sage3c#2583 — the worker's
+    // smaller clone abbreviated to 7 and the consumer's full clone to 8 — plus
+    // wider bounds. Without --full-index the `index aaaa..bbbb` line bytes change
+    // with the abbreviation length and these differ; with it, all are identical.
+    const h7 = await hashAt("7");
     const h8 = await hashAt("8");
+    const h12 = await hashAt("12");
     const h40 = await hashAt("40");
-
-    // Without --full-index these would differ (the `index aaaa..bbbb` line bytes
-    // change with the abbreviation length). With it, all three are identical.
-    expect(h8).toBe(h4);
-    expect(h40).toBe(h4);
+    expect(h8).toBe(h7);
+    expect(h12).toBe(h7);
+    expect(h40).toBe(h7);
   });
 
   it("emits full 40-hex object ids in the index line", async () => {
