@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.1](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.13.0...dark-factory-cli-v2.13.1) (2026-06-22)
+
+
+### Bug Fixes
+
+* **git:** pin --full-index in commitDiff so diffHash is clone-shape invariant — Cycle 23 ([#392](https://github.com/momentiq-ai/dark-factory/issues/392)) ([#226](https://github.com/momentiq-ai/dark-factory/issues/226)) ([f95c3bb](https://github.com/momentiq-ai/dark-factory/commit/f95c3bbeb9d0d420b3f8d9e923e6ff64c4bc3dd7))
+
 ## [2.13.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.12.0...dark-factory-cli-v2.13.0) (2026-06-21)
 
 
