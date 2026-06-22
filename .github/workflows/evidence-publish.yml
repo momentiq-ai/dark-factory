@@ -158,7 +158,19 @@ jobs:
           CEREBE_API_KEY: ${{ secrets.CEREBE_API_KEY }}
           DF_EVIDENCE_INGEST_URL: ${{ secrets.DF_EVIDENCE_INGEST_URL }}
           DF_EVIDENCE_INGEST_SECRET: ${{ secrets.DF_EVIDENCE_INGEST_SECRET }}
-        run: $DF_BIN publish --out evidence-pointers.json
+        # Degrade-and-pass at the WORKFLOW level too (#233), mirroring the
+        # `df verify` step above: this is a NON-required, capture-only workflow
+        # (header §"Degrade-and-pass") and must never turn red on a benign
+        # `df publish` non-zero. The common case is a PR branched off a `main`
+        # that predates the `df publish` subcommand — the head-sha checkout above
+        # builds that older tree, so its `df` exits 2 ("not implemented in this
+        # build"). A genuine `df publish` regression is covered by the CLI unit
+        # suite, not by this capture workflow; the Summary step below still
+        # surfaces the no-manifest outcome so a failure stays visible.
+        run: |
+          if ! $DF_BIN publish --out evidence-pointers.json; then
+            echo "::warning title=evidence-publish::df publish exited non-zero — evidence capture skipped (degrade-and-pass; this workflow is non-blocking). Most often the PR branch predates the 'df publish' subcommand; rebase onto main to capture evidence." >&2
+          fi
 
       - name: Upload published-evidence manifest
         # The PublishedEvidence pointer manifest is the artifact the hosted worker
