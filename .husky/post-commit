@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${AGENT_REVIEW_SKIP:-}" == "1" ]]; then
+  echo "df review: skipped by AGENT_REVIEW_SKIP=1"
+  exit 0
+fi
+
+# Worktree safety (dark-factory#227): disable git auto-gc so a background
+# prune can't drop objects still referenced ONLY by another linked worktree's
+# uncommitted index cache-tree — which corrupts that worktree
+# (`fatal: unable to read <sha>`). Idempotent; a lost race with a sibling
+# worktree's identical flip is harmless. `df review`/`df gate-push` also do
+# this, but flipping here covers the window before the CLI is installed.
+if [[ "$(git config --get gc.auto || echo)" != "0" ]]; then
+  git config gc.auto 0 || true
+fi
+
+CLI="./node_modules/.bin/df"
+if [[ ! -x "${CLI}" ]]; then
+  echo "df review: CLI not installed at ${CLI}; run 'npm install' first" >&2
+  exit 0   # don't block commits; just warn
+fi
+
+COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)"
+mkdir -p "${COMMON_DIR}/agent-reviews"
+LOG_FILE="${COMMON_DIR}/agent-reviews/post-commit.log"
+
+# Capture SHA at hook time, NOT in the background process. If two
+# commits land before the background process starts, the literal
+# "HEAD" would resolve to the SECOND commit and the first one would
+# never get an artifact — pre-push then blocks on missing-review.
+SHA="$(git rev-parse HEAD)"
+
+# Pin the `local` profile so we use Cursor/Codex/Claude subscriptions
+# (per `.agent-review/config.json` § profiles.local.auth), not API keys.
+AGENT_REVIEW_PROFILE=local nohup "${CLI}" review --commit "${SHA}" \
+  >"${LOG_FILE}" 2>&1 \
+  </dev/null &
+disown || true
+
+echo "df review: critic started for ${SHA:0:12} (log: ${LOG_FILE})"
