@@ -11,7 +11,7 @@
     "build": "npm run build --workspace=@momentiq/dark-factory-schemas && npm run build --workspace=@momentiq/dark-factory-cli && npm run build --workspace=@momentiq/sage-cli",
     "type-check": "npm run type-check --workspace=@momentiq/dark-factory-schemas && npm run type-check --workspace=@momentiq/dark-factory-cli && npm run type-check --workspace=@momentiq/sage-cli",
     "test": "npm test --workspace=@momentiq/dark-factory-schemas && npm test --workspace=@momentiq/dark-factory-cli && npm test --workspace=@momentiq/sage-cli",
-    "prepare": "git config core.hooksPath .husky || true"
+    "prepare": "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config --local core.hooksPath .husky || true"
   },
   "engines": {
     "node": ">=20"
