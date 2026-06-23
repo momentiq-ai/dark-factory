@@ -1343,6 +1343,43 @@ def test_source_criterion_human_reviewed_ok(tmp_path):
     assert validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF) == []
 
 
+def test_source_criterion_inferred_ok(tmp_path, capsys):
+    # An `inferred` binding is drafted-to-source but not yet ratified — it is a
+    # NON-BLOCKING note (never a gate error), and is NOT hash-verified (it is by
+    # definition not yet a ratified source criterion).
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: inferred, locator: "exit_criteria#ec1", sha256: "%s" }
+    """ % ("a" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert errors == []
+    assert "inferred" in capsys.readouterr().err
+
+
+def test_source_criterion_inferred_bad_locator(tmp_path):
+    # Structural validation still applies: a malformed locator is a hard error.
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+            sourceCriterion: { kind: inferred, locator: "bad locator", sha256: "%s" }
+    """ % ("a" * 64))
+    errors = validate_objectives(tmp_path, parse_trailers("Cycle: 21\n"), CF)
+    assert any("sourceCriterion.locator" in e for e in errors)
+
+
 def test_source_criterion_bad_locator(tmp_path):
     _write_config(tmp_path, ["targeted-test"])
     _write_manifest(tmp_path, """

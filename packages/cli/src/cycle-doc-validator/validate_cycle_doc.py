@@ -1327,9 +1327,29 @@ def validate_objectives(
                         "(v1 verifies in-repo cycle docs) — recorded, not verified",
                         file=sys.stderr,
                     )
+            elif sc_kind == "inferred":
+                # Drafted-to-source (e.g. LLM-inferred) but NOT yet ratified →
+                # structural-validate only, then a NON-BLOCKING note. Never
+                # hash-verified (it is by definition not yet a ratified criterion);
+                # ratification flips it to text-hash, which IS verified above.
+                sloc, ssha = sc.get("locator"), sc.get("sha256")
+                if not isinstance(sloc, str) or not SOURCE_LOCATOR_RE.match(sloc):
+                    errors.append(
+                        f"{loc}.sourceCriterion.locator: expected '<section-slug>#<criterion-id>', got {sloc!r}"
+                    )
+                elif not isinstance(ssha, str) or not SHA256_HEX_RE.match(ssha):
+                    errors.append(
+                        f"{loc}.sourceCriterion.sha256: expected lowercase-hex SHA-256 (64 chars), got {ssha!r}"
+                    )
+                else:
+                    print(
+                        f"[objectives] {loc}.sourceCriterion: inferred — drafted-to-source, "
+                        "awaiting ratification (recorded, not verified)",
+                        file=sys.stderr,
+                    )
             else:
                 errors.append(
-                    f"{loc}.sourceCriterion.kind: expected 'text-hash' | 'human-reviewed', got {sc_kind!r}"
+                    f"{loc}.sourceCriterion.kind: expected 'text-hash' | 'human-reviewed' | 'inferred', got {sc_kind!r}"
                 )
         elif sc is not None:
             errors.append(f"{loc}.sourceCriterion: expected a mapping")
