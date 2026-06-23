@@ -122,11 +122,13 @@ df objectives check
 
 Exit-code contract:
 - **0** — all `text-hash` bindings match the in-repo cycle doc. `inferred`
-  objectives emit an informational note (not a failure).
+  objectives emit an informational note (not a failure). Also returned when
+  no `.darkfactory/objectives.yaml` exists — missing manifest is not a
+  failure ("nothing to check").
 - **1** — one or more `text-hash` sha256 values don't match (the criterion
   text drifted from the manifest). Re-run `df objectives derive` or fix the
   manifest, then re-check.
-- **2** — usage error (bad flags, no manifest).
+- **2** — usage error (bad flags).
 
 Run this after every edit to objectives.yaml and before the final commit.
 

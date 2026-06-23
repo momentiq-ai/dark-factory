@@ -419,10 +419,28 @@ async function cmdDerive(
     return 1;
   }
 
+  // Duplicate-id guard: a cycle doc with two identically-labeled EC items
+  // (e.g. two `**EC1**` entries) produces criteria with the same id, which
+  // causes cmdCheck to silently verify the duplicate against the first entry.
+  // Emit a clear warning — still produce output (the authoring error is in the
+  // cycle doc, not here), but make it visible.
+  const seenIds = new Set<string>();
+  for (const c of criteria) {
+    const fullId = `${cycleDocId}#${c.id}`;
+    if (seenIds.has(fullId)) {
+      io.stderr(
+        `df objectives derive: warning — duplicate criterion id ${fullId} detected in ` +
+          `${cycleDocId} exit criteria; the second item will be inaccessible via check/gate. ` +
+          `Fix the cycle doc to use unique EC labels.\n`,
+      );
+    }
+    seenIds.add(fullId);
+  }
+
   // Idempotence: preserve hand-edited `attestedBy` bindings from an existing
   // manifest by objective id. Re-running refreshes text/hash + reconciles
   // added/removed criteria, but never clobbers bindings the agent authored.
-  const manifestPath = join(opts.cwd, MANIFEST_RELATIVE_PATH);
+  const manifestPath = resolve(opts.cwd, MANIFEST_RELATIVE_PATH);
   const preservedBindings = loadPreservedBindings(manifestPath, io);
 
   const objectives: Objective[] = criteria.map((c) => {
