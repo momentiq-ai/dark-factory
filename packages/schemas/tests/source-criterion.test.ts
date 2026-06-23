@@ -99,4 +99,26 @@ describe("parseObjective sourceCriterion", () => {
   it("rejects an unknown sourceCriterion kind", () => {
     expect(() => parseObjectivesManifest(objWith({ kind: "vibes" }))).toThrow(SchemaError);
   });
+  it("accepts an inferred binding (drafted-to-source, not yet ratified)", () => {
+    const m = parseObjectivesManifest(
+      objWith({ kind: "inferred", locator: "exit_criteria#ec1", sha256: HASH }),
+    );
+    expect(m.objectives[0].sourceCriterion).toEqual({
+      kind: "inferred",
+      locator: "exit_criteria#ec1",
+      sha256: HASH,
+    });
+  });
+  it("rejects an inferred binding with a malformed locator", () => {
+    expect(() =>
+      parseObjectivesManifest(objWith({ kind: "inferred", locator: "bad locator", sha256: HASH })),
+    ).toThrow(SchemaError);
+  });
+  it("rejects an inferred binding with a non-hex sha256", () => {
+    expect(() =>
+      parseObjectivesManifest(
+        objWith({ kind: "inferred", locator: "exit_criteria#ec1", sha256: "nope" }),
+      ),
+    ).toThrow(/sha256/);
+  });
 });

@@ -370,7 +370,12 @@ export const OBJECTIVE_ID_RE = /^(cycle\d+(?:\.\d+)*#ec\d+|issue\d+#ac\d+)$/;
 // agent-asserted → source-verified gap (parent spec §8).
 export type SourceCriterion =
   | { kind: "text-hash"; locator: string; sha256: string }
-  | { kind: "human-reviewed"; by?: string };
+  | { kind: "human-reviewed"; by?: string }
+  // Drafted-to-source (e.g. LLM-inferred criteria written into the cycle doc /
+  // issue) but NOT yet ratified. Same shape as text-hash; the validator treats
+  // it as a non-blocking note. Ratification flips it to text-hash (an auditable
+  // diff) once a human signs off on the criterion text.
+  | { kind: "inferred"; locator: string; sha256: string };
 
 // `<section-slug>#<criterion-id>` — e.g. "exit_criteria#ec1". The section slug is
 // the cycle-doc parser's snake_case h2 slug; the criterion id labels the item.
@@ -2434,7 +2439,11 @@ function parseEvidenceBinding(raw: unknown, path: string): EvidenceBinding {
 function parseSourceCriterion(raw: unknown, path: string): SourceCriterion | undefined {
   if (raw === undefined || raw === null) return undefined;
   const obj = need(isObject, raw, path, "object");
-  const kind = needEnum(["text-hash", "human-reviewed"] as const, obj["kind"], `${path}.kind`);
+  const kind = needEnum(
+    ["text-hash", "human-reviewed", "inferred"] as const,
+    obj["kind"],
+    `${path}.kind`,
+  );
   if (kind === "human-reviewed") {
     const by = optional(isNonEmptyString, obj["by"], `${path}.by`, "non-empty string");
     return { kind, ...(by !== undefined ? { by } : {}) };
