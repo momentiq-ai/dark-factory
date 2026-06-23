@@ -505,12 +505,19 @@ export const PROOF_STATUSES: readonly ProofStatus[] = ["proven", "pending", "fai
 
 // Cycle 331.1 2c (#207) — is the objective itself grounded in its source?
 // agent-asserted (no sourceCriterion) | human-reviewed | source-bound (a
-// text-hash binding is declared; the cycle-doc-validation gate is the verifier).
-export type SourceVerification = "agent-asserted" | "human-reviewed" | "source-bound";
+// text-hash binding is declared; the cycle-doc-validation gate is the verifier)
+// | inferred (criteria were drafted into the source but not yet ratified — the
+// lowest honest rung; flips to source-bound on ratification).
+export type SourceVerification =
+  | "agent-asserted"
+  | "human-reviewed"
+  | "source-bound"
+  | "inferred";
 export const SOURCE_VERIFICATIONS: readonly SourceVerification[] = [
   "agent-asserted",
   "human-reviewed",
   "source-bound",
+  "inferred",
 ];
 
 // One resolved evidence binding: which evidence (mirrors EvidenceBinding's kind),

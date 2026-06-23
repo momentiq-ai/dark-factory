@@ -147,7 +147,9 @@ export function buildProofRecord(inputs: ProofInputs, generatedAt: string): Boun
         ? "agent-asserted"
         : o.sourceCriterion.kind === "human-reviewed"
           ? "human-reviewed"
-          : "source-bound";
+          : o.sourceCriterion.kind === "inferred"
+            ? "inferred"
+            : "source-bound";
     return { id: o.id, text: o.text, enforced: o.enforced, status, bindings, sourceVerification };
   });
 
