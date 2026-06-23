@@ -425,4 +425,301 @@ describe("df objectives derive", () => {
     expect(code).toBe(2);
     expect(cap.stderr).toContain("--cycle is required");
   });
+
+  // M1 REMOVE-case idempotence: ec1 has a hand-added attestedBy binding; after ec2
+  // is removed from the cycle doc, re-derive should preserve ec1's binding and drop ec2.
+  it("REMOVE-case idempotence: ec1 binding preserved, ec2 dropped when ec2 removed from cycle doc", async () => {
+    const root = fixtureRepo("23", "- `EC1` First.\n- `EC2` Second.");
+    const manifestPath = join(root, ".darkfactory", "objectives.yaml");
+    const cyclesDir = join(root, "docs", "roadmap", "cycles");
+
+    // First derive → two objectives, both with empty attestedBy.
+    const cap1 = makeIo();
+    expect(await cmdObjectives(["derive", "--cycle", "23", "--cwd", root, "--apply"], cap1.io)).toBe(0);
+
+    // Hand-edit: add a binding to ec1.
+    const m1 = parseObjectivesManifest(yamlParse(readFileSync(manifestPath, "utf8")));
+    m1.objectives.find((o) => o.id === "cycle23#ec1")!.attestedBy = [
+      { kind: "critic", criticId: "codex" },
+    ];
+    writeFileSync(manifestPath, yamlStringify(m1), "utf8");
+
+    // Simulate ec2 removed from cycle doc: overwrite the fixture with only ec1.
+    writeFileSync(
+      join(cyclesDir, "cycle23-fixture.md"),
+      [
+        "---", "title: Cycle 23 — fixture", "status: active", "---", "",
+        "# Cycle 23 — fixture", "", "## Scope", "", "Some scope prose.", "",
+        "## Exit criteria", "", "- `EC1` First.", "", "## Risks", "", "None.", "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    // Re-derive against the updated doc.
+    const cap2 = makeIo();
+    expect(await cmdObjectives(["derive", "--cycle", "23", "--cwd", root, "--apply"], cap2.io)).toBe(0);
+
+    const m2 = parseObjectivesManifest(yamlParse(readFileSync(manifestPath, "utf8")));
+    // ec2 dropped: only ec1 remains.
+    expect(m2.objectives.map((o) => o.id)).toEqual(["cycle23#ec1"]);
+    // ec1's attestedBy binding is preserved.
+    expect(m2.objectives.find((o) => o.id === "cycle23#ec1")?.attestedBy).toEqual([
+      { kind: "critic", criticId: "codex" },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// df objectives check — local source-binding verification (Task 6).
+// ---------------------------------------------------------------------------
+
+describe("df objectives check", () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  // Build a throwaway repo with a cycle doc + optional objectives manifest.
+  function fixtureRepoWithManifest(opts: {
+    cycleNum: string;
+    exitCriteriaBody: string;
+    manifestOverride?: string; // raw YAML; if omitted, derive a valid one
+  }): { root: string; manifestPath: string } {
+    const root = mkdtempSync(join(tmpdir(), "df-objectives-check-"));
+    tmpDirs.push(root);
+    const cyclesDir = join(root, "docs", "roadmap", "cycles");
+    mkdirSync(cyclesDir, { recursive: true });
+    const doc = [
+      "---",
+      `title: Cycle ${opts.cycleNum} — fixture`,
+      "status: active",
+      "---",
+      "",
+      `# Cycle ${opts.cycleNum} — fixture`,
+      "",
+      "## Scope",
+      "",
+      "Some scope prose.",
+      "",
+      "## Exit criteria",
+      "",
+      opts.exitCriteriaBody,
+      "",
+      "## Risks",
+      "",
+      "None.",
+      "",
+    ].join("\n");
+    writeFileSync(join(cyclesDir, `cycle${opts.cycleNum}-fixture.md`), doc, "utf8");
+
+    const manifestPath = join(root, ".darkfactory", "objectives.yaml");
+    mkdirSync(join(root, ".darkfactory"), { recursive: true });
+
+    if (opts.manifestOverride !== undefined) {
+      writeFileSync(manifestPath, opts.manifestOverride, "utf8");
+    }
+    return { root, manifestPath };
+  }
+
+  function sha256OfCriterion(rawLine: string): string {
+    return createHash("sha256")
+      .update(canonicalizeCriterion(rawLine), "utf8")
+      .digest("hex");
+  }
+
+  // (a) A manifest whose text-hash matches its fixture cycle doc → exit 0.
+  it("(a) matching text-hash manifest → exit 0, all ok", async () => {
+    const ecBody = "- **EC1**: Route table populated.\n- **EC2**: Panel renders.";
+    const { root, manifestPath } = fixtureRepoWithManifest({ cycleNum: "23", exitCriteriaBody: ecBody });
+
+    // Derive a valid manifest, then write it.
+    const deriveCap = makeIo();
+    expect(await cmdObjectives(["derive", "--cycle", "23", "--cwd", root, "--apply"], deriveCap.io)).toBe(0);
+
+    const cap = makeIo();
+    const code = await cmdObjectives(["check", "--cwd", root], cap.io);
+    expect(code).toBe(0);
+    expect(cap.stderr).toBe("");
+    expect(cap.stdout).toContain("ok");
+    expect(cap.stdout).not.toContain("FAIL");
+    void manifestPath; // used via root
+  });
+
+  // (b) A tampered sha256 → exit 1, output names the failing objective id.
+  it("(b) tampered text-hash sha256 → exit 1, names the failing objective", async () => {
+    const ecBody = "- **EC1**: Route table populated.";
+    const tamperedManifest = yamlStringify({
+      schemaVersion: 1,
+      objectives: [
+        {
+          id: "cycle23#ec1",
+          source: { kind: "cycle", ref: "23" },
+          text: "Route table populated.",
+          attestedBy: [],
+          enforced: false,
+          sourceCriterion: {
+            kind: "text-hash",
+            locator: "exit_criteria#ec1",
+            sha256: "a".repeat(64), // deliberately wrong
+          },
+        },
+      ],
+    });
+    const { root } = fixtureRepoWithManifest({
+      cycleNum: "23",
+      exitCriteriaBody: ecBody,
+      manifestOverride: tamperedManifest,
+    });
+
+    const cap = makeIo();
+    const code = await cmdObjectives(["check", "--cwd", root], cap.io);
+    expect(code).toBe(1);
+    expect(cap.stderr).toBe("");
+    expect(cap.stdout).toContain("cycle23#ec1");
+    expect(cap.stdout).toContain("FAIL");
+    expect(cap.stdout).toContain("mismatch");
+  });
+
+  // (c) An inferred objective → exit 0 + an "awaiting ratification" note.
+  it("(c) inferred objective → exit 0, emits awaiting-ratification note", async () => {
+    const ecBody = "- **EC1**: Route table populated.";
+    const inferredManifest = yamlStringify({
+      schemaVersion: 1,
+      objectives: [
+        {
+          id: "cycle23#ec1",
+          source: { kind: "cycle", ref: "23" },
+          text: "Route table populated.",
+          attestedBy: [],
+          enforced: false,
+          sourceCriterion: {
+            kind: "inferred",
+            locator: "exit_criteria#ec1",
+            sha256: sha256OfCriterion("- **EC1**: Route table populated."),
+          },
+        },
+      ],
+    });
+    const { root } = fixtureRepoWithManifest({
+      cycleNum: "23",
+      exitCriteriaBody: ecBody,
+      manifestOverride: inferredManifest,
+    });
+
+    const cap = makeIo();
+    const code = await cmdObjectives(["check", "--cwd", root], cap.io);
+    expect(code).toBe(0);
+    expect(cap.stderr).toBe("");
+    expect(cap.stdout).toContain("awaiting ratification");
+    expect(cap.stdout).not.toContain("FAIL");
+  });
+
+  // (d) A locator whose criterion/doc is missing → exit 1.
+  it("(d) missing criterion (bad locator ec-id) → exit 1", async () => {
+    const ecBody = "- **EC1**: Route table populated.";
+    // ec99 doesn't exist in the cycle doc
+    const badLocatorManifest = yamlStringify({
+      schemaVersion: 1,
+      objectives: [
+        {
+          id: "cycle23#ec99",
+          source: { kind: "cycle", ref: "23" },
+          text: "No such criterion.",
+          attestedBy: [],
+          enforced: false,
+          sourceCriterion: {
+            kind: "text-hash",
+            locator: "exit_criteria#ec99",
+            sha256: "b".repeat(64),
+          },
+        },
+      ],
+    });
+    const { root } = fixtureRepoWithManifest({
+      cycleNum: "23",
+      exitCriteriaBody: ecBody,
+      manifestOverride: badLocatorManifest,
+    });
+
+    const cap = makeIo();
+    const code = await cmdObjectives(["check", "--cwd", root], cap.io);
+    expect(code).toBe(1);
+    expect(cap.stdout).toContain("FAIL");
+    expect(cap.stdout).toContain("cycle23#ec99");
+    expect(cap.stdout).toContain("ec99");
+  });
+
+  // (d) variant: missing cycle doc → exit 1.
+  it("(d) missing cycle doc → exit 1", async () => {
+    const badDocManifest = yamlStringify({
+      schemaVersion: 1,
+      objectives: [
+        {
+          id: "cycle999#ec1",
+          source: { kind: "cycle", ref: "999" },
+          text: "Some criterion.",
+          attestedBy: [],
+          enforced: false,
+          sourceCriterion: {
+            kind: "text-hash",
+            locator: "exit_criteria#ec1",
+            sha256: "c".repeat(64),
+          },
+        },
+      ],
+    });
+    const { root } = fixtureRepoWithManifest({
+      cycleNum: "23", // cycle doc exists for 23, not 999
+      exitCriteriaBody: "- **EC1**: Something.",
+      manifestOverride: badDocManifest,
+    });
+
+    const cap = makeIo();
+    const code = await cmdObjectives(["check", "--cwd", root], cap.io);
+    expect(code).toBe(1);
+    expect(cap.stdout).toContain("FAIL");
+    expect(cap.stdout).toContain("cycle999");
+  });
+
+  // (e) No manifest present → exit 0 + note.
+  it("(e) no manifest file → exit 0, emits a note", async () => {
+    const root = mkdtempSync(join(tmpdir(), "df-objectives-check-empty-"));
+    tmpDirs.push(root);
+    // No .darkfactory/objectives.yaml
+
+    const cap = makeIo();
+    const code = await cmdObjectives(["check", "--cwd", root], cap.io);
+    expect(code).toBe(0);
+    expect(cap.stderr).toBe("");
+    expect(cap.stdout).toContain("nothing to check");
+  });
+
+  // --json structural output.
+  it("emits structured JSON with --json (matching manifest → ok: true)", async () => {
+    const ecBody = "- **EC1**: A criterion.";
+    const { root } = fixtureRepoWithManifest({ cycleNum: "5", exitCriteriaBody: ecBody });
+
+    // Derive and write a valid manifest.
+    expect(await cmdObjectives(["derive", "--cycle", "5", "--cwd", root, "--apply"], makeIo().io)).toBe(0);
+
+    const cap = makeIo();
+    const code = await cmdObjectives(["check", "--cwd", root, "--json"], cap.io);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(cap.stdout) as { ok: boolean; results: Array<{ id: string; status: string }> };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.results).toHaveLength(1);
+    expect(parsed.results[0]?.status).toBe("ok");
+    expect(parsed.results[0]?.id).toBe("cycle5#ec1");
+  });
+
+  // Returns 2 for unknown flags (usage error).
+  it("returns exit 2 for unknown flags", async () => {
+    const cap = makeIo();
+    const code = await cmdObjectives(["check", "--unknown-flag"], cap.io);
+    expect(code).toBe(2);
+    expect(cap.stderr).toContain("unknown flag");
+  });
 });

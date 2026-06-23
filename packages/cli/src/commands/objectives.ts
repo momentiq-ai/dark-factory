@@ -9,7 +9,7 @@
 // Exit codes: 0 success / 1 semantic failure / 2 usage error.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   canonicalizeCriterion,
@@ -48,11 +48,17 @@ interface DeriveOptions {
   cwd: string;
 }
 
+interface CheckOptions {
+  subcommand: "check";
+  json: boolean;
+  cwd: string;
+}
+
 interface UnknownSubcmd {
   subcommand: undefined;
 }
 
-type ParsedOptions = HashOptions | DeriveOptions | UnknownSubcmd;
+type ParsedOptions = HashOptions | DeriveOptions | CheckOptions | UnknownSubcmd;
 
 export function parseObjectivesArgs(rest: string[]): ParsedOptions | { error: string } {
   const sub = rest[0];
@@ -70,9 +76,8 @@ export function parseObjectivesArgs(rest: string[]): ParsedOptions | { error: st
     return parseDeriveArgs(subRest);
   }
 
-  // check is not yet implemented (Task 6)
   if (sub === "check") {
-    return { error: `${sub} subcommand is not yet implemented in this release.` };
+    return parseCheckArgs(subRest);
   }
 
   return { error: `unknown subcommand: ${sub}` };
@@ -189,6 +194,38 @@ function parseDeriveArgs(rest: string[]): DeriveOptions | { error: string } {
   return { subcommand: "derive", cycle: ref, apply, json, cwd };
 }
 
+function parseCheckArgs(rest: string[]): CheckOptions | { error: string } {
+  let json = false;
+  let cwd = process.cwd();
+
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i] ?? "";
+
+    if (a === "--cwd") {
+      const next = rest[i + 1];
+      if (next === undefined || next.startsWith("--")) {
+        return { error: "--cwd requires a value." };
+      }
+      cwd = next;
+      i++;
+      continue;
+    }
+    if (a.startsWith("--cwd=")) {
+      cwd = a.slice("--cwd=".length);
+      continue;
+    }
+
+    if (a === "--json") {
+      json = true;
+      continue;
+    }
+
+    return { error: `unknown flag or positional arg: ${a}` };
+  }
+
+  return { subcommand: "check", json, cwd };
+}
+
 // ---------------------------------------------------------------------------
 // Exit-criteria extraction — the hash-consistency core.
 //
@@ -282,7 +319,7 @@ const HELP = [
   "Subcommands:",
   "  hash     Print the canonical sha256 of a criterion text.",
   "  derive   Generate .darkfactory/objectives.yaml from cycle-doc exit criteria.",
-  "  check    Verify text-hash bindings in an existing manifest. (coming soon)",
+  "  check    Verify text-hash bindings in an existing manifest.",
   "",
   "Flags (hash):",
   "  --text <criterion>  Criterion text to hash (required).",
@@ -292,6 +329,10 @@ const HELP = [
   "  --apply             Write .darkfactory/objectives.yaml (default: print to stdout).",
   "  --cwd <path>        Repository root to operate in (default: process cwd).",
   "  --json              Emit the manifest object as JSON instead of YAML.",
+  "",
+  "Flags (check):",
+  "  --cwd <path>        Repository root containing .darkfactory/objectives.yaml (default: process cwd).",
+  "  --json              Emit a structured JSON result.",
   "",
   "  --help, -h          Show this message.",
   "",
@@ -332,6 +373,10 @@ export async function cmdObjectives(
 
   if (parsed.subcommand === "derive") {
     return cmdDerive(parsed, io, deps);
+  }
+
+  if (parsed.subcommand === "check") {
+    return cmdCheck(parsed, io, deps);
   }
 
   // Should not reach here since parseObjectivesArgs handles unknown subcommands
@@ -437,6 +482,200 @@ async function cmdDerive(
     io.stdout(yaml);
   }
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// check — local pre-commit mirror of the Python gate validator's text-hash
+// verification semantics (`validate_cycle_doc.py` `_resolve_criterion` /
+// `_find_criterion` + `canonicalize_criterion`).
+//
+// For each objective with `sourceCriterion.kind === "text-hash"`:
+//   - Parse the locator (`<section>#<criterion-id>`) — section MUST be
+//     `exit_criteria` (only section exposed by `readCycleDoc`).
+//   - Resolve the cycle doc via `readCycleDoc(cwd, "cycle<N>")`.
+//   - Extract items via `extractExitCriteria` and find the one whose id
+//     matches the criterion-id from the locator.
+//   - Recompute `sha256(canonicalizeCriterion(<raw line>))` and compare to
+//     the declared sha256.  Mismatch / missing criterion / missing doc → FAIL.
+//
+// `inferred` → non-blocking informational note (mirrors the Python validator's
+// non-blocking path at validate_cycle_doc.py:1306).
+// ---------------------------------------------------------------------------
+
+interface CheckResult {
+  id: string;
+  status: "ok" | "fail" | "note";
+  message: string;
+}
+
+async function cmdCheck(
+  opts: CheckOptions,
+  io: ObjectivesIo,
+  deps: ObjectivesDeps,
+): Promise<number> {
+  const read = deps.readCycleDoc ?? readCycleDoc;
+  const manifestPath = resolve(opts.cwd, MANIFEST_RELATIVE_PATH);
+
+  if (!existsSync(manifestPath)) {
+    const msg = `No ${MANIFEST_RELATIVE_PATH} found under ${opts.cwd} — nothing to check.`;
+    if (opts.json) {
+      io.stdout(JSON.stringify({ ok: true, note: msg, results: [] }, null, 2) + "\n");
+    } else {
+      io.stdout(`note: ${msg}\n`);
+    }
+    return 0;
+  }
+
+  let manifest;
+  try {
+    const raw = readFileSync(manifestPath, "utf8");
+    manifest = parseObjectivesManifest(yamlParse(raw));
+  } catch (err) {
+    io.stderr(
+      `df objectives check: ${MANIFEST_RELATIVE_PATH} could not be parsed: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+    return 1;
+  }
+
+  const results: CheckResult[] = [];
+  let anyFail = false;
+
+  for (const obj of manifest.objectives) {
+    const sc = obj.sourceCriterion;
+
+    if (sc === undefined) {
+      results.push({ id: obj.id, status: "note", message: "no sourceCriterion binding — skipped." });
+      continue;
+    }
+
+    if (sc.kind === "human-reviewed") {
+      results.push({ id: obj.id, status: "note", message: "human-reviewed — skipped." });
+      continue;
+    }
+
+    if (sc.kind === "inferred") {
+      results.push({
+        id: obj.id,
+        status: "note",
+        message: "inferred (awaiting ratification) — skipped.",
+      });
+      continue;
+    }
+
+    // sc.kind === "text-hash"
+    // Parse the locator: `<section>#<criterion-id>`
+    const hashMatch = /^([^#]+)#(.+)$/.exec(sc.locator);
+    if (!hashMatch) {
+      results.push({ id: obj.id, status: "fail", message: `malformed locator: ${sc.locator}` });
+      anyFail = true;
+      continue;
+    }
+    const sectionSlug = hashMatch[1]!;
+    const criterionId = hashMatch[2]!;
+
+    // Only `exit_criteria` is currently resolvable.
+    if (sectionSlug !== "exit_criteria") {
+      results.push({
+        id: obj.id,
+        status: "fail",
+        message: `unsupported section in locator: ${sectionSlug} (only exit_criteria is supported).`,
+      });
+      anyFail = true;
+      continue;
+    }
+
+    // Derive cycle id from the objective id (`cycle<N>#ec<k>` → `cycle<N>`).
+    const cycleIdMatch = /^(cycle[^#]+)#/.exec(obj.id);
+    if (!cycleIdMatch || !obj.source || obj.source.kind !== "cycle") {
+      results.push({
+        id: obj.id,
+        status: "fail",
+        message: `cannot derive cycle doc id from objective id: ${obj.id}`,
+      });
+      anyFail = true;
+      continue;
+    }
+    const cycleDocId = `cycle${obj.source.ref}`;
+
+    const doc = await read(opts.cwd, cycleDocId);
+    if (doc === null) {
+      results.push({
+        id: obj.id,
+        status: "fail",
+        message: `cycle doc ${cycleDocId} not found under ${join(opts.cwd, "docs/roadmap/cycles")}.`,
+      });
+      anyFail = true;
+      continue;
+    }
+
+    const section = doc.sections[sectionSlug];
+    if (section === undefined || section.trim() === "") {
+      results.push({
+        id: obj.id,
+        status: "fail",
+        message: `cycle doc ${cycleDocId} has no '${sectionSlug}' section.`,
+      });
+      anyFail = true;
+      continue;
+    }
+
+    const criteria = extractExitCriteria(section);
+    const criterion = criteria.find((c) => c.id === criterionId);
+    if (criterion === undefined) {
+      results.push({
+        id: obj.id,
+        status: "fail",
+        message: `criterion ${criterionId} not found in ${cycleDocId} '${sectionSlug}' (${criteria.length} items found).`,
+      });
+      anyFail = true;
+      continue;
+    }
+
+    const actualSha256 = sha256Hex(canonicalizeCriterion(criterion.raw));
+    if (actualSha256 !== sc.sha256) {
+      results.push({
+        id: obj.id,
+        status: "fail",
+        message:
+          `text-hash mismatch for ${criterionId} in ${cycleDocId}: ` +
+          `declared ${sc.sha256.slice(0, 12)}… ≠ actual ${actualSha256.slice(0, 12)}… ` +
+          `(criterion text may have changed — re-run \`df objectives derive\` to refresh).`,
+      });
+      anyFail = true;
+      continue;
+    }
+
+    results.push({ id: obj.id, status: "ok", message: `text-hash verified (${sc.sha256.slice(0, 12)}…).` });
+  }
+
+  if (opts.json) {
+    io.stdout(
+      JSON.stringify(
+        { ok: !anyFail, results: results.map((r) => ({ id: r.id, status: r.status, message: r.message })) },
+        null,
+        2,
+      ) + "\n",
+    );
+  } else {
+    for (const r of results) {
+      if (r.status === "ok") {
+        io.stdout(`ok      ${r.id}: ${r.message}\n`);
+      } else if (r.status === "fail") {
+        io.stdout(`FAIL    ${r.id}: ${r.message}\n`);
+      } else {
+        io.stdout(`note    ${r.id}: ${r.message}\n`);
+      }
+    }
+    if (!anyFail && results.length > 0) {
+      io.stdout(`\nAll ${results.length} objective${results.length === 1 ? "" : "s"} ok.\n`);
+    } else if (!anyFail && results.length === 0) {
+      io.stdout("No objectives to check.\n");
+    }
+  }
+
+  return anyFail ? 1 : 0;
 }
 
 /**
