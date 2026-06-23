@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLI="./node_modules/.bin/df"
+
+# Capture pre-push stdin once so we can feed it to the CLI.
+STDIN_BUF="$(cat)"
+
+# Emergency bypass — logged to .git/agent-reviews/_runs.ndjson.
+if [[ -n "${AGENT_REVIEW_BYPASS:-}" ]]; then
+  echo "df gate-push: BYPASSED — reason: ${AGENT_REVIEW_BYPASS}" >&2
+  COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)"
+  TELEMETRY_FILE="${COMMON_DIR}/agent-reviews/_runs.ndjson"
+  mkdir -p "$(dirname "${TELEMETRY_FILE}")"
+  TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ESC_REASON=$(printf '%s' "${AGENT_REVIEW_BYPASS}" | tr -d '[:cntrl:]' | sed 's/\\/\\\\/g; s/"/\\"/g')
+  printf '{"ts":"%s","event":"gate_bypassed","source":"pre-push-hook","reason":"%s"}\n' \
+    "${TS}" "${ESC_REASON}" >> "${TELEMETRY_FILE}"
+  exit 0
+fi
+
+if [[ ! -f "${CLI}" ]]; then
+  echo "df gate-push: BLOCKED — CLI not installed at ${CLI}; run 'npm install'." >&2
+  echo "df gate-push: push with AGENT_REVIEW_BYPASS=\"reason\" only in genuine emergencies." >&2
+  exit 1
+fi
+
+# `df gate-push` reads git's pre-push protocol on stdin and (since CLI
+# 1.2.0 / Cycle 13 / dark-factory-platform#149) gates ONLY the HEAD (final)
+# commit of each push update. Intermediate commits' per-SHA artifacts at
+# `.git/agent-reviews/<sha>.json` are iteration receipts — inspect them
+# with `df findings --range <base>..<head>` but they do NOT influence the
+# gate. Legacy per-commit gating is opt-in via `--full-range` or
+# `DF_GATE_FULL_RANGE=1`; use it for forensic replay / per-commit deploy-
+# log audit. Soundness caveat: each per-SHA artifact reviews
+# `parent..commit`, NOT `base..tip` — HEAD's APPROVED verdict proves only
+# the last incremental change. For cumulative-state evidence either set
+# `DF_GATE_FULL_RANGE=1` or rely on the CI cold-path `agent-critic`
+# workflow (which runs against the full PR diff).
+printf '%s' "${STDIN_BUF}" | "${CLI}" gate-push
