@@ -59,11 +59,13 @@ const objectiveZ = z.object({
   text: z.string(),
   enforced: z.boolean(),
   status: z.string().describe("'proven' | 'pending' | 'failed' — worst-of its bindings."),
+  // Closed enum (not z.string()): the finite faithfulness ladder is the whole
+  // point of the field, so the emitted MCP JSON Schema must reject invalid rungs.
+  // Mirrors the canonical `SourceVerification` union in @momentiq/dark-factory-schemas.
   sourceVerification: z
-    .string()
+    .enum(["source-bound", "human-reviewed", "inferred", "agent-asserted"])
     .describe(
-      "Faithfulness rung (spec §4.7): 'source-bound' | 'human-reviewed' | 'inferred' | " +
-        "'agent-asserted' — how strongly the objective is bound to its source criterion.",
+      "Faithfulness rung (spec §4.7) — how strongly the objective is bound to its source criterion.",
     ),
   bindings: z.array(bindingZ),
 });

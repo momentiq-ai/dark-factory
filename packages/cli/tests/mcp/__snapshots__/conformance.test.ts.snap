@@ -1280,7 +1280,13 @@ exports[`MCP catalog conformance snapshot (cycle5 Phase 1 step 11) > pins the fu
                   "type": "string",
                 },
                 "sourceVerification": {
-                  "description": "Faithfulness rung (spec §4.7): 'source-bound' | 'human-reviewed' | 'inferred' | 'agent-asserted' — how strongly the objective is bound to its source criterion.",
+                  "description": "Faithfulness rung (spec §4.7) — how strongly the objective is bound to its source criterion.",
+                  "enum": [
+                    "source-bound",
+                    "human-reviewed",
+                    "inferred",
+                    "agent-asserted",
+                  ],
                   "type": "string",
                 },
                 "status": {
