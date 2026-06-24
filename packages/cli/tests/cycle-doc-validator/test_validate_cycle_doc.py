@@ -1010,6 +1010,27 @@ def test_objectives_ok(tmp_path):
     assert validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"]) == []
 
 
+def test_objectives_duplicate_id(tmp_path):
+    _write_config(tmp_path, ["targeted-test"])
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "First."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "Duplicate id — must be rejected."
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    trailers = parse_trailers("Cycle: 21\n")
+    errors = validate_objectives(tmp_path, trailers, [".darkfactory/objectives.yaml"])
+    assert any("duplicate objective id" in e for e in errors)
+
+
 def test_objectives_unlinked_source(tmp_path):
     _write_config(tmp_path, ["targeted-test"])
     _write_manifest(tmp_path, """
