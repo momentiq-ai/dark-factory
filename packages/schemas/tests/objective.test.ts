@@ -51,6 +51,14 @@ describe("parseObjectivesManifest", () => {
     expect(() => parseObjectivesManifest(bad)).toThrow(/inconsistent with source/);
   });
 
+  it("rejects duplicate objective ids", () => {
+    const dup = {
+      schemaVersion: 1,
+      objectives: [(valid as any).objectives[0], (valid as any).objectives[0]],
+    };
+    expect(() => parseObjectivesManifest(dup)).toThrow(/duplicate objective id: cycle21#ec1/);
+  });
+
   it("rejects an unknown evidence-binding kind", () => {
     const bad = {
       schemaVersion: 1,

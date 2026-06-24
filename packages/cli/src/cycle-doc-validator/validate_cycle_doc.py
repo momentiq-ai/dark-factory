@@ -1205,6 +1205,10 @@ def validate_objectives(
     route_ids = _route_ids(repo_root)
     declared = _declared_refs(trailers)
     errors: list[str] = []
+    # Objective ids must be UNIQUE within a manifest (mirrors the TS
+    # parseObjectivesManifest reject): a duplicate id makes proof/evidence binding
+    # ambiguous. Tracked across the loop below.
+    seen_ids: set[str] = set()
     for idx, obj in enumerate(objectives):
         loc = f"{OBJECTIVES_MANIFEST_PATH} objectives[{idx}]"
         if not isinstance(obj, dict):
@@ -1215,6 +1219,10 @@ def validate_objectives(
             errors.append(
                 f"{loc}.id: expected 'cycle<N>#ec<k>' or 'issue<N>#ac<k>', got {oid!r}"
             )
+        if isinstance(oid, str):
+            if oid in seen_ids:
+                errors.append(f"{loc}.id: duplicate objective id: {oid!r}")
+            seen_ids.add(oid)
         text = obj.get("text")
         if not isinstance(text, str) or not text:
             errors.append(f"{loc}.text: expected a non-empty string")

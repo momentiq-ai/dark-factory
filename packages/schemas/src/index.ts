@@ -2509,6 +2509,17 @@ export function parseObjectivesManifest(raw: unknown, path = "objectives-manifes
   );
   const rawObjectives = need(isArray, obj["objectives"], `${path}.objectives`, "array");
   const objectives = rawObjectives.map((o, i) => parseObjective(o, `${path}.objectives[${i}]`));
+  // Objective ids must be UNIQUE within a manifest: a duplicate id makes
+  // proof/evidence binding ambiguous (which objective does evidence for that id
+  // attest?). Reject at parse time — mirrors the duplicate-id rejection for
+  // critic ids and verification-route ids.
+  const seenIds = new Set<string>();
+  for (const o of objectives) {
+    if (seenIds.has(o.id)) {
+      throw new SchemaError(`${path}.objectives`, `duplicate objective id: ${o.id}`);
+    }
+    seenIds.add(o.id);
+  }
   return { schemaVersion, objectives };
 }
 
