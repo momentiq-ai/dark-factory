@@ -138,6 +138,9 @@ import { cmdPublish } from "./commands/publish.js";
 // readout: join the declared objectives against local evidence and report, per
 // objective, proven / pending / failed. Turns "done" into "victory with proof".
 import { cmdProve } from "./commands/prove.js";
+// Objectives authoring commands — objectives Phase 1 (momentiq-ai/dark-factory#207).
+// `df objectives hash|derive|check` — hash a criterion, derive a manifest, check bindings.
+import { cmdObjectives } from "./commands/objectives.js";
 // Cycle 13 (dark-factory-platform#149) — `df findings --range` surfaces
 // the per-commit iteration-receipt artifacts that the new (default)
 // final-commit-only `df gate-push` semantic leaves un-gated. See
@@ -466,6 +469,10 @@ const PUBLISH_SUBCOMMANDS = new Set(["publish"]);
 // `df prove` — cycle 331.1 verifiable-objectives (#207). Registered so
 // `df prove --help` reaches cmdProve's own help printer instead of printHelp.
 const PROVE_SUBCOMMANDS = new Set(["prove"]);
+
+// `df objectives` — objectives Phase 1 (#207). Registered so
+// `df objectives --help` reaches cmdObjectives's own help printer instead of printHelp.
+const OBJECTIVES_SUBCOMMANDS = new Set(["objectives"]);
 
 function cmdStatusCheck(_rest: string[]): number {
   // pr-status-check is a sentinel aggregator. As cycle 331.1 Phase E
@@ -2179,7 +2186,8 @@ async function main(argv: string[]): Promise<number> {
       !ONBOARD_SUBCOMMANDS.has(sub0) &&
       !VERIFY_SUBCOMMANDS.has(sub0) &&
       !PUBLISH_SUBCOMMANDS.has(sub0) &&
-      !PROVE_SUBCOMMANDS.has(sub0)
+      !PROVE_SUBCOMMANDS.has(sub0) &&
+      !OBJECTIVES_SUBCOMMANDS.has(sub0)
     ) {
       printHelp(meta);
       return 0;
@@ -2241,6 +2249,13 @@ async function main(argv: string[]): Promise<number> {
   // Cycle 331.1 verifiable-objectives (#207) — `df prove` closeout proof readout.
   if (sub === "prove") {
     return await cmdProve(rest, {
+      stdout: (s) => process.stdout.write(s),
+      stderr: (s) => process.stderr.write(s),
+    });
+  }
+  // Objectives authoring commands — objectives Phase 1 (#207).
+  if (sub === "objectives") {
+    return await cmdObjectives(rest, {
       stdout: (s) => process.stdout.write(s),
       stderr: (s) => process.stderr.write(s),
     });

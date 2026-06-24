@@ -230,12 +230,21 @@ describe("buildProofRecord — rollup, summary, record", () => {
         enforced: false,
         sourceCriterion: { kind: "text-hash", locator: "exit_criteria#ec3", sha256: "a".repeat(64) },
       },
+      {
+        id: "cycle21#ec4",
+        source: src,
+        text: "d",
+        attestedBy: [],
+        enforced: false,
+        sourceCriterion: { kind: "inferred", locator: "exit_criteria#ec4", sha256: "a".repeat(64) },
+      },
     ];
     const r = buildProofRecord(inputs({ objectives: objs }), AT);
     expect(r.objectives.map((o) => o.sourceVerification)).toEqual([
       "agent-asserted",
       "human-reviewed",
       "source-bound",
+      "inferred",
     ]);
   });
 });

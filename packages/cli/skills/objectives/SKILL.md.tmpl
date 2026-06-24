@@ -1,0 +1,220 @@
+---
+name: objectives
+description: Use at PLAN TIME for any PR that implements a cycle or issue's acceptance criteria — author the verifiable objectives contract before writing code. Run `df objectives derive --cycle <N> --apply` to generate .darkfactory/objectives.yaml from the linked cycle doc's Exit criteria, bind each objective's attestedBy to a real route or test, surface the manifest in your plan for agreement, then declare victory at closeout with `df prove` (not free-text "done").
+---
+
+# /objectives — plan-time verifiable objectives authoring
+
+Verifiable objectives make "this PR is done" a **derived claim backed by
+evidence**, not a free-text assertion. This skill tells you how to author
+that contract at plan time for {{REPO_NAME}} so the gate has something to
+prove — and how to close the loop at PR completion.
+
+## When this runs
+
+At **plan time** — before writing implementation code — for any PR that
+implements a cycle or issue's acceptance criteria. Objectives are the
+explicit, agreed contract of the work; they belong in the plan, not appended
+after the fact at PR close.
+
+The full flow:
+
+1. **Derive** — generate the manifest from the cycle doc's Exit criteria.
+2. **Bind** — fill each objective's `attestedBy` with real proof (route / test).
+3. **Agree** — surface objectives in the plan; plan approval is the agreement.
+4. **Check** — verify locally before committing.
+5. **Prove** — declare victory at closeout with `df prove`.
+
+## 1. Derive — don't hand-write
+
+Run `df objectives derive` to generate `.darkfactory/objectives.yaml` from
+the linked cycle doc's `## Exit criteria` section. Each criterion becomes one
+`Objective`, bound to its verbatim text via a `text-hash` `sourceCriterion`:
+
+```bash
+# Resolve the PR's linked cycle doc and derive objectives from its Exit criteria.
+# --apply writes .darkfactory/objectives.yaml (default prints to stdout).
+df objectives derive --cycle <N> --apply
+```
+
+The command reads `docs/roadmap/cycles/cycle<N>-*.md`, extracts every
+`- EC<k>: …` list item, and emits a manifest like:
+
+```yaml
+schemaVersion: 1
+objectives:
+  - id: "cycle23#ec1"
+    source: { kind: cycle, ref: "23" }
+    text: "Route table is populated from the diff in under 500 ms."
+    attestedBy: []          # ← fill this in step 2
+    enforced: false
+    sourceCriterion:
+      kind: text-hash
+      locator: exit_criteria#ec1
+      sha256: <sha256 of canonicalizeCriterion(text)>
+```
+
+**Idempotence:** re-running `derive` on an existing manifest preserves each
+objective's `attestedBy` bindings — it never clobbers evidence you filled in.
+
+## 2. Bind — real proof, not wishful labels
+
+Each objective needs an `attestedBy` entry that actually proves the criterion
+rather than just restating that the PR shipped. Two kinds of real proof:
+
+```yaml
+attestedBy:
+  # A `df verify` route — diff-bound exit code from a named producer.
+  - kind: route
+    routeId: targeted-tests          # or: terraform, playwright, docker, …
+
+  # A named test or test pattern inside a route's output.
+  - kind: test
+    testId: "services/worker/**/*.test.ts"
+```
+
+**Why `critic` bindings are a weak on-ramp only:**
+
+```yaml
+attestedBy:
+  - kind: critic
+    criticId: codex                  # ← on-ramp only — see caveat below
+```
+
+The worker reads `.darkfactory/objectives.yaml` *after* critics run and
+joins verdicts post-hoc. A `critic` binding therefore only proves "the gate
+passed" per objective — it does **not** verify that the specific criterion
+was satisfied by this change. Use it only when no route or test yet covers
+the criterion and you want the objective tracked from day one. Always label
+critic-only bindings as an on-ramp and plan to upgrade them to route/test
+evidence.
+
+**Prefer route + test:** a `route` binding is diff-bound (`df verify` stamps
+`diffHash`-bound `QualityGateEvidence`); a `test` binding names the exact
+check. Both prove the criterion independently, not merely "critic approved."
+
+## 3. Agree — plan approval is the contract
+
+Surface the derived objectives in your plan. Example plan entry:
+
+```
+## Objectives (.darkfactory/objectives.yaml)
+Generated from Cycle 23 exit criteria — 3 objectives:
+
+- cycle23#ec1 — Route table populated (attestedBy: route:targeted-tests)
+- cycle23#ec2 — Panel renders in under 500 ms (attestedBy: route:playwright)
+- cycle23#ec3 — Bypass is audited (attestedBy: test:audit-trail.test.ts)
+
+Plan approval = agreement on these objectives.
+```
+
+**Why agreement matters:** the objectives manifest is the agreed contract.
+If the plan is approved without reviewing objectives, criterion drift goes
+undetected — a critic later flags "done but not verified" precisely because
+no one agreed what "verified" meant up front.
+
+## 4. Verify locally before committing
+
+```bash
+# Mirror the gate's text-hash verification — catches criterion drift early.
+df objectives check
+```
+
+Exit-code contract:
+- **0** — all `text-hash` bindings match the in-repo cycle doc. `inferred`
+  objectives emit an informational note (not a failure). Also returned when
+  no `.darkfactory/objectives.yaml` exists — missing manifest is not a
+  failure ("nothing to check").
+- **1** — one or more `text-hash` sha256 values don't match (the criterion
+  text drifted from the manifest). Re-run `df objectives derive` or fix the
+  manifest, then re-check.
+- **2** — usage error (bad flags).
+
+Run this after every edit to objectives.yaml and before the final commit.
+
+## 5. Provenance ladder
+
+Every objective has a `sourceCriterion` that records how the binding was
+established:
+
+| `kind` | Meaning | Gate behavior |
+|---|---|---|
+| `text-hash` | Criterion text is verbatim + sha256-bound to the cycle doc. | Gate verifies the hash. |
+| `inferred` | Criteria were LLM-drafted but not yet ratified by a human. | Non-blocking note — never a gate failure. |
+| `human-reviewed` | A human reviewed the criterion text (no hash required). | Passes the provenance check. |
+| `agent-asserted` | No `sourceCriterion` set — agent-created without binding. | Weakest — upgrade to `text-hash`. |
+
+**Ratification flow (when criteria were inferred):**
+
+1. A human reads the `text:` field in `objectives.yaml` — is the criterion
+   correct and complete?
+2. If yes, flip `kind: inferred` → `kind: text-hash` (same `locator` + `sha256`).
+   This is an auditable diff: the changed line is the ratification event.
+3. Re-run `df objectives check` — it now verifies the hash.
+
+```yaml
+# Before ratification (non-blocking note):
+sourceCriterion:
+  kind: inferred
+  locator: exit_criteria#ec1
+  sha256: <sha256 of canonicalizeCriterion(text)>
+
+# After ratification (gate-verified):
+sourceCriterion:
+  kind: text-hash
+  locator: exit_criteria#ec1
+  sha256: <sha256 of canonicalizeCriterion(text)>
+```
+
+If you need the sha256 for a criterion text you have in hand:
+
+```bash
+df objectives hash --text "- **EC1**: Route table populated from diff."
+```
+
+## 6. Closeout — declare victory with proof, not "done"
+
+At PR closeout, run `df prove` to join each objective against the evidence
+and report, per objective, **proven / pending / failed**:
+
+```bash
+df prove            # human readout: per-objective proven/pending/failed
+df prove --json     # BoundProofRecord (for agents / the df_prove MCP tool)
+df prove --strict   # exit 1 if ANY objective is not proven (gate form)
+```
+
+An agent's final turn runs `df prove` and **cites that readout as the
+completion claim** — evidence-backed, not free-text "done."
+
+- **`proven`** — all `attestedBy` bindings produced passing evidence.
+- **`pending`** — a `critic` binding is pending until the fleet runs; a
+  `route` binding you can satisfy now with `df verify`. Pending is honest,
+  not a failure — fix it before declaring done.
+- **`failed`** — evidence is negative. Fix the change, re-verify, re-prove.
+
+## Quick-reference
+
+```bash
+# 1. Derive objectives from Cycle 23's exit criteria:
+df objectives derive --cycle 23 --apply
+
+# 2. Edit .darkfactory/objectives.yaml — fill attestedBy for each objective.
+
+# 3. Verify the text-hash bindings match the cycle doc:
+df objectives check
+
+# 4. Commit objectives.yaml alongside the implementation.
+
+# 5. At closeout — proven readout:
+df prove
+```
+
+## Trust boundary
+
+The `df prove` readout is *agent-attested, evidence-backed* — stronger than
+free-text "done" (every status is derived, not asserted), but not yet
+independent verification. The ratchet: v1 objectives default to
+`enforced: false` (`df prove` exits 0 and surfaces pending/failed). Flip an
+objective to `enforced: true`, or run `df prove --strict` (e.g. a
+`.husky/pre-push` step), to turn unproven objectives into a hard block with
+no code change.

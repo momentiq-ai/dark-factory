@@ -1,0 +1,17 @@
+{
+  "$schema": "../skill-schema.json",
+  "name": "objectives",
+  "version": "1.0.0",
+  "summary": "Author verifiable objectives at plan time — derive .darkfactory/objectives.yaml from cycle-doc exit criteria, bind attestedBy to real route/test evidence, agree the contract, and declare victory with df prove at closeout.",
+  "originatingRepo": "momentiq-ai/dark-factory",
+  "files": [
+    { "template": "SKILL.md.tmpl", "target": "SKILL.md" }
+  ],
+  "variables": {
+    "REPO_NAME": {
+      "description": "Display name of the consumer repo (e.g. 'Dark Factory Platform').",
+      "source": "darkfactory.yaml: repo.displayName",
+      "default": "this repo"
+    }
+  }
+}
