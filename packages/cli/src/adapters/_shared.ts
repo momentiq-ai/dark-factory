@@ -148,11 +148,12 @@ export function buildErrorResult(args: BuildErrorResultArgs): CriticResult {
 // strict ruleset (empty `bypass_actors` → no admin escape). See
 // momentiq-ai/cerebe-platform#337 / #340.
 //
-// The codex-sdk adapter already clears rHJ when it flips a verdict to
-// APPROVED (the #109 sandbox-filter path). This helper hoists the same
-// "rHJ should ride a finding, not a clean pass" rule into a single
-// source of truth so cursor-sdk + minimax-direct-sdk apply it
-// identically at the adapter boundary.
+// The codex-sdk adapter already clears rHJ on ONE path — when its #109
+// sandbox-filter flips a verdict to APPROVED. This helper generalizes
+// that same "rHJ should ride a finding, not a clean pass" rule into a
+// single source of truth so cursor-sdk + minimax-direct-sdk clear a
+// plain clean-pass rHJ at the adapter boundary. (codex's plain
+// clean-pass case is covered by the report-side demotion below.)
 //
 // Deliberately NARROW: only the APPROVED + 0-findings case is cleared
 // here. An rHJ riding ANY finding (even non-blocking) or a
