@@ -212,6 +212,33 @@ Until Phase B lands, this repo has no test corpus. Phase A commits go in directl
 - No Doppler bootstrap in this repo until Phase B brings the test/eval CLI subcommands that need vendor critic keys.
 - Never commit secrets. The `.gitignore` excludes `.env*` and `.doppler*`; the trusted-surface rebind in Phase B will add `package.json` + `package-lock.json` to the rebind allowlist so a PR cannot self-modify which package gets installed.
 
+## Verifiable objectives (author at plan time)
+
+A PR that implements a cycle or issue's acceptance criteria carries an
+**explicit, agreed objectives contract** — generated from the linked source, not
+hand-written — so "done" is a proof-bound claim, not free text.
+
+**At plan time** (before writing code), use the **`/objectives` skill** (ships
+with this CLI), or run the commands directly:
+
+1. **Derive** — `df objectives derive --cycle <N> --apply` writes
+   `.darkfactory/objectives.yaml`: one objective per `## Exit criteria` item,
+   each bound to its source by a `text-hash` `sourceCriterion` (deterministic, no
+   LLM). Re-running preserves the `attestedBy` bindings you have filled in.
+2. **Bind** — give each objective real proof in `attestedBy`: a `df verify`
+   `route` or a named `test`. A `critic` binding is a labeled **on-ramp only** —
+   the gate joins critic verdicts post-hoc, so it proves "the gate passed", not
+   that the criterion was met.
+3. **Agree** — objectives are part of the plan; **plan approval is the
+   agreement**. A plan doc carries them as its Objectives section; in a fleet
+   flow the orchestrator agrees them before dispatching implementers.
+4. **Check** — `df objectives check` verifies source-binding locally pre-commit.
+5. **Prove** — declare victory at closeout with `df prove`, not free-text "done".
+
+The committed manifest travels with the branch; the gate reads it at review time.
+Objectives are the contract of the work, surfaced up front so the loop from
+*intent → work → proof* cannot silently drift. Tracking: `#207`.
+
 ## Repo structure (target — populated through Phase F)
 
 ```

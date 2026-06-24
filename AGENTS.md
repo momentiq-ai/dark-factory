@@ -111,6 +111,24 @@ npm test --workspace=@momentiq/dark-factory-schemas
 
 There is no Makefile in this repo. Everything goes through `npm` scripts in the workspace root `package.json`. There are no containers — Node ≥20 on the host is sufficient.
 
+## Verifiable objectives (author at plan time)
+
+A PR implementing a cycle/issue's acceptance criteria carries an explicit, agreed
+objectives contract generated from the linked source — so "done" is proof-bound,
+not free text. Author it at plan time (before writing code) via the `/objectives`
+skill or directly:
+
+- `df objectives derive --cycle <N> --apply` → `.darkfactory/objectives.yaml`
+  (one objective per `## Exit criteria` item, `text-hash`-bound to its source;
+  re-runs preserve `attestedBy`).
+- Bind each objective's `attestedBy` to real proof — a `df verify` `route` or a
+  named `test`. `critic` bindings are a labeled on-ramp only (joined post-hoc;
+  they prove "the gate passed", not the criterion).
+- Plan approval is the agreement; `df objectives check` verifies binding locally;
+  declare victory at closeout with `df prove`, not free-text "done".
+
+Tracking: `#207`.
+
 ## Pre-existing Main-branch Blockers
 
 When a gate fails and the failure is **not** caused by your PR's diff (an issue inherited from `origin/main` that happens to route through your PR via path filters), do NOT chase the fix down a rabbit hole.
