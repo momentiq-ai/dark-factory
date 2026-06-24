@@ -1384,6 +1384,55 @@ def test_source_criterion_inferred_ok(tmp_path, capsys):
     assert "inferred" in capsys.readouterr().err
 
 
+def test_note_missing_objectives_fires(tmp_path, monkeypatch, capsys):
+    # A PR links a cycle doc WITH exit criteria but binds no objectives → a
+    # NON-BLOCKING note (ratchet 'note' stage, spec §4.6), printed to stderr.
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_cycle_doc(tmp_path, "21", """
+        ---
+        title: t
+        status: active
+        ---
+
+        ## Exit criteria
+        - **EC1**: Route table populated.
+        - **EC2**: Dashboard renders the panel.
+    """)
+    validator._note_missing_objectives(parse_trailers("Cycle: 21\n"))
+    err = capsys.readouterr().err
+    assert "no objectives" in err
+    assert "df objectives derive --cycle 21" in err
+
+
+def test_note_suppressed_when_objectives_present(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_cycle_doc(tmp_path, "21", """
+        ## Exit criteria
+        - **EC1**: Route table populated.
+    """)
+    _write_manifest(tmp_path, """
+        schemaVersion: 1
+        objectives:
+          - id: cycle21#ec1
+            source: { kind: cycle, ref: "21" }
+            text: "x"
+            attestedBy: [{ kind: route, routeId: targeted-test }]
+            enforced: false
+    """)
+    validator._note_missing_objectives(parse_trailers("Cycle: 21\n"))
+    assert capsys.readouterr().err == ""
+
+
+def test_note_suppressed_when_no_exit_criteria(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(validator, "REPO_ROOT", tmp_path)
+    _write_cycle_doc(tmp_path, "21", """
+        ## Scope
+        Only scope — no exit criteria section.
+    """)
+    validator._note_missing_objectives(parse_trailers("Cycle: 21\n"))
+    assert capsys.readouterr().err == ""
+
+
 def test_source_criterion_inferred_bad_locator(tmp_path):
     # Structural validation still applies: a malformed locator is a hard error.
     _write_config(tmp_path, ["targeted-test"])
