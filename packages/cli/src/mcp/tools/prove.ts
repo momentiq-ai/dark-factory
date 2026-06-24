@@ -36,7 +36,9 @@ function renderProofMarkdown(record: BoundProofRecord): string {
     `**df_prove**: ${record.commit.slice(0, 12)} — ${s.proven} proven · ${s.pending} pending · ${s.failed} failed (${s.total} total)`,
   ];
   for (const o of record.objectives) {
-    lines.push(`  ${glyph[o.status] ?? "?"} ${o.id} [${o.status}${o.enforced ? ", enforced" : ""}] — ${o.text}`);
+    lines.push(
+      `  ${glyph[o.status] ?? "?"} ${o.id} [${o.status}, ${o.sourceVerification}${o.enforced ? ", enforced" : ""}] — ${o.text}`,
+    );
     for (const b of o.bindings) {
       lines.push(`      ${b.kind}[${b.ref}] ${b.status} — ${b.detail}`);
     }
@@ -57,6 +59,14 @@ const objectiveZ = z.object({
   text: z.string(),
   enforced: z.boolean(),
   status: z.string().describe("'proven' | 'pending' | 'failed' — worst-of its bindings."),
+  // Closed enum (not z.string()): the finite faithfulness ladder is the whole
+  // point of the field, so the emitted MCP JSON Schema must reject invalid rungs.
+  // Mirrors the canonical `SourceVerification` union in @momentiq/dark-factory-schemas.
+  sourceVerification: z
+    .enum(["source-bound", "human-reviewed", "inferred", "agent-asserted"])
+    .describe(
+      "Faithfulness rung (spec §4.7) — how strongly the objective is bound to its source criterion.",
+    ),
   bindings: z.array(bindingZ),
 });
 
