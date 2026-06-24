@@ -419,20 +419,20 @@ describe("df objectives derive", () => {
     expect(cap.stderr).toContain("Exit criteria");
   });
 
-  it("emits a stderr warning (and still returns 0) when two EC items resolve to the same id", async () => {
+  it("returns exit 1 with a clear error when two EC items resolve to the same id", async () => {
     // Two items both labeled EC1 → extractExitCriteria returns id "ec1" twice.
-    // cmdDerive must warn on stderr naming the duplicate full id, but must not
-    // fail — the authoring error is in the cycle doc, not in derive.
+    // Duplicate objective ids make proof/evidence binding ambiguous and are
+    // REJECTED by parseObjectivesManifest, so derive must FAIL with an actionable
+    // message naming the duplicate id — never emit a duplicate-id manifest.
     const ecBody = "- **EC1**: First criterion.\n- **EC1**: Duplicate criterion.";
     const root = fixtureRepo("7", ecBody);
     const cap = makeIo();
     const code = await cmdObjectives(["derive", "--cycle", "7", "--cwd", root], cap.io);
-    expect(code).toBe(0);
+    expect(code).toBe(1);
     expect(cap.stderr).toContain("cycle7#ec1");
     expect(cap.stderr).toContain("duplicate criterion id");
-    // Output is still produced (two objectives with the same id, as authored).
-    const manifest = parseObjectivesManifest(yamlParse(cap.stdout));
-    expect(manifest.objectives).toHaveLength(2);
+    // No manifest is produced on failure (we fail before construction/output).
+    expect(cap.stdout).toBe("");
   });
 
   it("returns exit 2 for usage errors (missing --cycle)", async () => {

@@ -420,21 +420,25 @@ async function cmdDerive(
   }
 
   // Duplicate-id guard: a cycle doc with two identically-labeled EC items
-  // (e.g. two `**EC1**` entries) produces criteria with the same id, which
-  // causes cmdCheck to silently verify the duplicate against the first entry.
-  // Emit a clear warning — still produce output (the authoring error is in the
-  // cycle doc, not here), but make it visible.
+  // (e.g. two `**EC1**` entries) produces criteria with the same id. That is an
+  // authoring error in the cycle doc — duplicate objective ids make proof/evidence
+  // binding ambiguous and are REJECTED by `parseObjectivesManifest`. Fail here
+  // with a clear, actionable message rather than letting the self-validation
+  // round-trip below throw an opaque "internal error".
   const seenIds = new Set<string>();
+  const duplicateIds = new Set<string>();
   for (const c of criteria) {
     const fullId = `${cycleDocId}#${c.id}`;
-    if (seenIds.has(fullId)) {
-      io.stderr(
-        `df objectives derive: warning — duplicate criterion id ${fullId} detected in ` +
-          `${cycleDocId} exit criteria; the second item will be inaccessible via check/gate. ` +
-          `Fix the cycle doc to use unique EC labels.\n`,
-      );
-    }
+    if (seenIds.has(fullId)) duplicateIds.add(fullId);
     seenIds.add(fullId);
+  }
+  if (duplicateIds.size > 0) {
+    io.stderr(
+      `df objectives derive: ${cycleDocId} exit criteria has duplicate criterion ` +
+        `id(s): ${[...duplicateIds].join(", ")}. Criterion labels (e.g. \`EC1\`) must be ` +
+        `unique — fix the cycle doc to use distinct labels, then re-run.\n`,
+    );
+    return 1;
   }
 
   // Idempotence: preserve hand-edited `attestedBy` bindings from an existing
