@@ -20,6 +20,7 @@ import { parseCommitTrailers } from "../evidence/index.js";
 import { resolveArtifactDir, resolveArtifactRoot, telemetryPath } from "../paths.js";
 import {
   findingCarriesCorroborationFlag,
+  isBareRequiresHumanJudgment,
   isCorroboratedByOtherCritic,
   isCriticCompleted,
   criticVetoesGate,
@@ -563,7 +564,14 @@ function recomputeGateVerdict(
     if (!requiredCriticIds.has(r.criticId)) continue;
     if (r.status !== "complete") return "CHANGES_REQUESTED";
     if (r.verdict === "CHANGES_REQUESTED") return "CHANGES_REQUESTED";
-    if (r.requiresHumanJudgment) return "CHANGES_REQUESTED";
+    // Issue #241 — a BARE result-level requiresHumanJudgment (reached
+    // here only when the verdict is NOT CHANGES_REQUESTED, per the check
+    // above) no longer vetoes by itself. This mirrors the report.ts
+    // block-if-any verdict path so the gate-block enforcement and the
+    // artifact verdict cannot drift. The §11 safety net is intact: an
+    // rHJ riding a blocking finding still vetoes via the blocking-finding
+    // check below; an rHJ on CHANGES_REQUESTED already returned above.
+    // See momentiq-ai/cerebe-platform#337.
     if (r.findings.some((f) => blockingSeverities.includes(f.severity))) {
       return "CHANGES_REQUESTED";
     }
@@ -748,7 +756,17 @@ function evaluateCriticResults(
       continue;
     }
     if (result.requiresHumanJudgment) {
-      if (isRequired) {
+      // Issue #241 — a BARE result-level requiresHumanJudgment (non-CR
+      // verdict AND no blocking finding) is demoted to a non-blocking
+      // note even on a required critic, so a clean APPROVED critic that
+      // self-flags rHJ cannot deadlock the gate. The `block-if-any`
+      // policy carries no `unilateralVetoRules`, so the demote default
+      // ('note') applies unconditionally here. A NON-bare rHJ (riding a
+      // blocking finding or a CHANGES_REQUESTED verdict) still blocks on
+      // a required critic — the §11 safety net. See
+      // momentiq-ai/cerebe-platform#337.
+      const bare = isBareRequiresHumanJudgment(result, blockingSeverities);
+      if (isRequired && !bare) {
         blocks.push({
           reason: "requires_human_judgment",
           criticId: result.criticId,
@@ -758,7 +776,9 @@ function evaluateCriticResults(
         warnings.push({
           reason: "requires_human_judgment",
           criticId: result.criticId,
-          detail: `${result.summary} (optional)`,
+          detail: bare
+            ? `${result.summary} (bare requiresHumanJudgment — demoted to note per #241)`
+            : `${result.summary} (optional)`,
         });
       }
     }

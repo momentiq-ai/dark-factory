@@ -75,6 +75,7 @@ import {
 import type { CriticAdapter, CriticReviewOptions } from "./critic.js";
 import {
   buildErrorResult,
+  clearBareRequiresHumanJudgment,
   mergeAdapterMetadata,
   normalizeCriticEcho,
   parseAssistantJson,
@@ -592,6 +593,15 @@ export class MinimaxDirectSdkAdapter implements CriticAdapter {
       const normalized = normalizeCriticEcho(parseOutcome.value);
       const enriched = mergeAdapterMetadata(normalized, { critic });
       result = parseCriticResult(enriched, options.blockingSeverities);
+      // Issue #241 — clear a BARE result-level requiresHumanJudgment.
+      // The minimax critic empirically emits result-level rHJ on an
+      // APPROVED pass, which the downstream gate treated as an
+      // unconditional veto → deadlock on the canonical strict ruleset
+      // (momentiq-ai/cerebe-platform#337). rHJ should ride a finding, not
+      // a clean pass — mirror the codex-sdk clearing logic so the signal
+      // is sourced consistently across adapters. This is belt-and-
+      // suspenders with the report-side demotion (report.ts: #241).
+      result = clearBareRequiresHumanJudgment(result);
     } catch (err) {
       const e = err as Error;
       const diagPath = writeRedactedDiagnostic({

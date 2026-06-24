@@ -139,6 +139,43 @@ export function buildErrorResult(args: BuildErrorResultArgs): CriticResult {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #241 — clear a BARE result-level `requiresHumanJudgment`.
+//
+// A "bare" rHJ is one set on a CriticResult that returned APPROVED with
+// ZERO findings. Such a result has nothing for the critic to defend the
+// rHJ with — yet the downstream gate historically treated result-level
+// rHJ as an UNCONDITIONAL veto, deadlocking clean PRs on the canonical
+// strict ruleset (empty `bypass_actors` → no admin escape). See
+// momentiq-ai/cerebe-platform#337 / #340.
+//
+// The codex-sdk adapter already clears rHJ when it flips a verdict to
+// APPROVED (the #109 sandbox-filter path). This helper hoists the same
+// "rHJ should ride a finding, not a clean pass" rule into a single
+// source of truth so cursor-sdk + minimax-direct-sdk apply it
+// identically at the adapter boundary.
+//
+// Deliberately NARROW: only the APPROVED + 0-findings case is cleared
+// here. An rHJ riding ANY finding (even non-blocking) or a
+// non-APPROVED verdict is left untouched — the report-side demotion
+// (report.ts, issue #241) handles the broader "bare = no blocking
+// finding + non-CR verdict" case with the configured
+// `onRequiresHumanJudgment` disposition. This adapter guard is
+// belt-and-suspenders for the cleanest case so the rHJ never even
+// reaches the artifact when there is provably nothing to corroborate.
+//
+// Pure function — exported for direct unit testing.
+export function clearBareRequiresHumanJudgment(result: CriticResult): CriticResult {
+  if (
+    result.requiresHumanJudgment === true &&
+    result.verdict === "APPROVED" &&
+    result.findings.length === 0
+  ) {
+    return { ...result, requiresHumanJudgment: false };
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Context-window degradation (issue #169) — turn the "assembled diff prompt
 // exceeds the vendor's context window" case into a CLEAN, LEGIBLE structured
 // error instead of letting the raw provider 400 JSON

@@ -240,9 +240,41 @@ test("criticVetoesGate: errored critic does NOT veto (only completed critics can
   expect_eq(criticVetoesGate(errored("c2"), BLOCKING), false);
 });
 
-test("criticVetoesGate: requiresHumanJudgment alone is a veto", () => {
+test("criticVetoesGate: BARE requiresHumanJudgment (APPROVED + 0 findings) does NOT veto by default (#241)", () => {
+  // Issue #241 — a bare result-level rHJ (no CHANGES_REQUESTED verdict,
+  // no blocking finding) is demoted to a non-blocking note by default
+  // ('note'). It no longer deadlocks the gate on the canonical strict
+  // ruleset. The §11 safety net is asserted by the two tests below.
   const c = completed("c1", "APPROVED", { requiresHumanJudgment: true });
+  expect_eq(criticVetoesGate(c, BLOCKING), false);
+});
+
+test("criticVetoesGate: rHJ riding a blocking finding STILL vetoes (#241 — §11 safety net)", () => {
+  // A NON-bare rHJ — one with a blocking-severity finding to defend it —
+  // must keep vetoing regardless of the bare-rHJ demotion.
+  const c = completed("c1", "APPROVED", { requiresHumanJudgment: true, blockerFinding: true });
   expect_eq(criticVetoesGate(c, BLOCKING), true);
+});
+
+test("criticVetoesGate: rHJ on a CHANGES_REQUESTED verdict STILL vetoes (#241 — §11 safety net)", () => {
+  // A NON-bare rHJ — riding a CHANGES_REQUESTED verdict — keeps vetoing.
+  const c = completed("c1", "CHANGES_REQUESTED", { requiresHumanJudgment: true });
+  expect_eq(criticVetoesGate(c, BLOCKING), true);
+});
+
+test("criticVetoesGate: bare rHJ vetoes when onRequiresHumanJudgment='block' (#241 opt-in)", () => {
+  // Operators can restore the pre-#241 unconditional bare-rHJ veto by
+  // setting the policy knob to 'block'.
+  const c = completed("c1", "APPROVED", { requiresHumanJudgment: true });
+  const ctx = {
+    allResults: [c],
+    rules: {
+      requireCorroborationFor: [],
+      requireCorroborationOnHunkRadius: 0,
+      onRequiresHumanJudgment: "block" as const,
+    },
+  };
+  expect_eq(criticVetoesGate(c, BLOCKING, ctx), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -493,17 +525,59 @@ test("quorum: HIGH-severity finding without blocker still vetoes (HIGH in blocki
   expect_eq(out.reason, "veto");
 });
 
-test("quorum: requiresHumanJudgment from a completed critic vetoes regardless of vote", () => {
-  // RHJ requires a CHANGES_REQUESTED verdict (schema enforces 1+
-  // finding on CHANGES_REQUESTED+RHJ; an APPROVED+RHJ
-  // configuration is schema-legal but unusual). Tests the
-  // requiresHumanJudgment path with an APPROVED verdict + 0
-  // findings.
+test("quorum: BARE requiresHumanJudgment (APPROVED + 0 findings) does NOT veto → majority APPROVED (#241)", () => {
+  // Issue #241 — a bare result-level rHJ on c3 (APPROVED + 0 findings)
+  // is demoted to a non-blocking note by default, so the 3-APPROVE
+  // majority stands instead of deadlocking. This is the exact
+  // triggering shape from momentiq-ai/cerebe-platform#337 (cursor:
+  // APPROVED, 0 findings, bare rHJ).
   const out = quorumAggregateVerdict(
     [
       completed("c1", "APPROVED"),
       completed("c2", "APPROVED"),
       completed("c3", "APPROVED", { requiresHumanJudgment: true }),
+    ],
+    BLOCKING,
+    2,
+  );
+  expect_eq(out.verdict, "APPROVED");
+  expect_eq(out.reason, "majority");
+});
+
+test("quorum: bare rHJ with NON-blocking findings (the minimax shape) does NOT veto → majority (#241)", () => {
+  // Issue #241 — the minimax triggering shape: APPROVED, rHJ, and a
+  // NON-blocking (note-severity) finding. "Bare" means "no blocking
+  // finding + non-CR verdict", NOT literally zero findings, so this is
+  // still demoted. Build the result directly so a note-severity finding
+  // rides along (the `completed` helper only adds blocking findings).
+  const minimaxShape: CriticResult = {
+    ...completed("c3", "APPROVED", { requiresHumanJudgment: true }),
+    findings: [
+      {
+        severity: "note",
+        category: "style",
+        evidence: "subjective naming nit",
+        impact: "minor",
+        requiredFix: "consider renaming",
+      },
+    ],
+  };
+  const out = quorumAggregateVerdict(
+    [completed("c1", "APPROVED"), completed("c2", "APPROVED"), minimaxShape],
+    BLOCKING,
+    2,
+  );
+  // c3 has rHJ but no BLOCKING finding and an APPROVED verdict → demoted.
+  expect_eq(out.verdict, "APPROVED");
+  expect_eq(out.reason, "majority");
+});
+
+test("quorum: rHJ riding a blocking finding STILL vetoes (#241 — §11 safety net)", () => {
+  const out = quorumAggregateVerdict(
+    [
+      completed("c1", "APPROVED"),
+      completed("c2", "APPROVED"),
+      completed("c3", "APPROVED", { requiresHumanJudgment: true, blockerFinding: true }),
     ],
     BLOCKING,
     2,
@@ -594,7 +668,12 @@ test("gate-quorum: 2 APPROVE + 1 BLOCK with blocker finding → veto blocks (no 
   expect_truthy(!reasons.includes("quorum_unmet"));
 });
 
-test("gate-quorum: requiresHumanJudgment from completed critic blocks via requires_human_judgment", () => {
+test("gate-quorum: BARE requiresHumanJudgment does NOT block under quorum (#241)", () => {
+  // Issue #241 — `evaluateQuorumCriticResults` gates the
+  // requires_human_judgment block behind `criticVetoesGate`, so a bare
+  // rHJ (APPROVED + 0 findings) no longer produces a block. (The
+  // block-if-any evaluator surfaces it as a non-blocking warning; this
+  // quorum path simply does not block.)
   const blocks: GateBlock[] = [];
   const warnings: GateWarning[] = [];
   evaluateQuorumCriticResults(
@@ -602,6 +681,26 @@ test("gate-quorum: requiresHumanJudgment from completed critic blocks via requir
       completed("c1", "APPROVED"),
       completed("c2", "APPROVED"),
       completed("c3", "APPROVED", { requiresHumanJudgment: true }),
+    ]),
+    BLOCKING,
+    2,
+    blocks,
+    warnings,
+  );
+  const reasons = blocks.map((b) => b.reason);
+  expect_eq(reasons.includes("requires_human_judgment"), false);
+});
+
+test("gate-quorum: NON-bare requiresHumanJudgment (rHJ + blocking finding) STILL blocks (#241 — §11)", () => {
+  // The §11 safety net: an rHJ riding a blocking finding keeps blocking,
+  // and the block carries the requires_human_judgment reason.
+  const blocks: GateBlock[] = [];
+  const warnings: GateWarning[] = [];
+  evaluateQuorumCriticResults(
+    artifact([
+      completed("c1", "APPROVED"),
+      completed("c2", "APPROVED"),
+      completed("c3", "APPROVED", { requiresHumanJudgment: true, blockerFinding: true }),
     ]),
     BLOCKING,
     2,

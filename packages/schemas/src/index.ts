@@ -143,7 +143,8 @@ export interface UnilateralVetoRules {
    * Opaque flag-name strings (snake_case wire form). When a finding
    * carries the corresponding flag (e.g. `self_inconsistent` ↔
    * `ReviewFinding.selfInconsistent`), the corroboration requirement
-   * applies. Non-empty when present.
+   * applies. May be empty when the block is present only to set
+   * `onRequiresHumanJudgment`.
    */
   requireCorroborationFor: string[];
   /**
@@ -153,7 +154,37 @@ export interface UnilateralVetoRules {
    * recommendation.
    */
   requireCorroborationOnHunkRadius: number;
+  /**
+   * Issue #241 — how the gate treats a BARE result-level
+   * `requiresHumanJudgment` (rHJ set on a `CriticResult` whose verdict
+   * is NOT `CHANGES_REQUESTED` and which carries NO blocking-severity
+   * finding). Such an rHJ is "bare" because there is nothing the
+   * critic can defend it with — no blocking finding, no CR verdict.
+   *
+   *   - `'note'` (DEFAULT): a bare rHJ is demoted to a non-blocking
+   *     note and does NOT veto the gate. A clean APPROVED critic that
+   *     stochastically self-flags rHJ no longer deadlocks the gate.
+   *   - `'block'`: a bare rHJ vetoes unconditionally (the pre-#241
+   *     behavior — restore for operators who want a single rHJ to be
+   *     a hard block regardless of corroboration).
+   *
+   * In BOTH modes, an rHJ that rides a real signal still vetoes (the
+   * §11 single-rigorous-critic safety net): rHJ + a blocking finding,
+   * or rHJ + a `CHANGES_REQUESTED` verdict, blocks regardless of this
+   * setting. This knob ONLY governs the bare case.
+   */
+  onRequiresHumanJudgment?: "block" | "note";
 }
+
+/**
+ * Issue #241 — default disposition for a BARE result-level
+ * `requiresHumanJudgment` when `unilateralVetoRules` is absent OR the
+ * `onRequiresHumanJudgment` field is unset. `'note'` makes the gate
+ * non-blocking on a clean APPROVED critic that self-flags rHJ — the
+ * §11 safety net is unaffected because rHJ riding a blocking finding
+ * or a CHANGES_REQUESTED verdict still vetoes.
+ */
+export const DEFAULT_ON_REQUIRES_HUMAN_JUDGMENT = "note" as const;
 
 // Cycle 322.7 — Profile envelopes that let the same config drive
 // multiple aggregation postures (local pre-push vs. cloud canonical
@@ -1878,14 +1909,16 @@ export function parseAgentReviewConfig(raw: unknown): AgentReviewConfig {
       `quorum is only valid for policy="min-complete-quorum"; remove it or switch policy`,
     );
   }
-  // Issue dark-factory-platform#112 — parse the optional
+  // Issue dark-factory-platform#112 + #241 — parse the optional
   // `unilateralVetoRules` block. Validation:
-  //   - Object; both subfields required when the block is present.
-  //   - `requireCorroborationFor`: non-empty string array, no
-  //     duplicates, every entry non-empty.
+  //   - Object.
+  //   - `requireCorroborationFor`: string array (MAY be empty when the
+  //     block is present only to set `onRequiresHumanJudgment` — #241);
+  //     when non-empty, no duplicates and every entry non-empty.
   //   - `requireCorroborationOnHunkRadius`: non-negative integer
   //     (0 means exact-line match — still narrows the safety net,
   //     so we allow it).
+  //   - `onRequiresHumanJudgment` (#241): optional "block" | "note".
   // Absence parses identically to pre-#112 configs.
   const unilateralVetoRulesRaw = aggregationRaw["unilateralVetoRules"];
   let unilateralVetoRules: UnilateralVetoRules | undefined;
@@ -1914,12 +1947,9 @@ export function parseAgentReviewConfig(raw: unknown): AgentReviewConfig {
       rulesObj["requireCorroborationFor"],
       "$.aggregation.unilateralVetoRules.requireCorroborationFor",
     );
-    if (flagsRaw.length === 0) {
-      throw new SchemaError(
-        "$.aggregation.unilateralVetoRules.requireCorroborationFor",
-        "must contain at least one flag name",
-      );
-    }
+    // Issue #241 — an empty list is now legal so the block can carry
+    // only `onRequiresHumanJudgment`. When non-empty the prior
+    // non-empty/no-dup/no-blank-entry invariants still hold.
     const flagSet = new Set<string>();
     for (const f of flagsRaw) {
       if (f.length === 0) {
@@ -1948,9 +1978,20 @@ export function parseAgentReviewConfig(raw: unknown): AgentReviewConfig {
         `must be >= 0, got ${radius}`,
       );
     }
+    // Issue #241 — optional bare-rHJ disposition knob.
+    const onRhjRaw = rulesObj["onRequiresHumanJudgment"];
+    let onRequiresHumanJudgment: "block" | "note" | undefined;
+    if (onRhjRaw !== undefined && onRhjRaw !== null) {
+      onRequiresHumanJudgment = needEnum(
+        ["block", "note"] as const,
+        onRhjRaw,
+        "$.aggregation.unilateralVetoRules.onRequiresHumanJudgment",
+      );
+    }
     unilateralVetoRules = {
       requireCorroborationFor: flagsRaw,
       requireCorroborationOnHunkRadius: radius,
+      ...(onRequiresHumanJudgment !== undefined ? { onRequiresHumanJudgment } : {}),
     };
   }
 
