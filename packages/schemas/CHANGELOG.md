@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.13.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.12.0...dark-factory-schemas-v0.13.0) (2026-06-24)
+
+
+### Features
+
+* **cli:** df objectives authoring core — derive-from-source verifiable objectives (Phase 1, [#207](https://github.com/momentiq-ai/dark-factory/issues/207)) ([c810d59](https://github.com/momentiq-ai/dark-factory/commit/c810d595fb7ed177056b8d59e92b22456796f656))
+* **schemas,cli:** surface inferred source-verification in df prove — objectives Phase 1 ([c69d649](https://github.com/momentiq-ai/dark-factory/commit/c69d6490b21be50e81af4a326e244af094e434b0))
+* **schemas,validator:** reject duplicate objective ids at parse time (cross-impl) — [#207](https://github.com/momentiq-ai/dark-factory/issues/207) ([#244](https://github.com/momentiq-ai/dark-factory/issues/244)) ([da4cf20](https://github.com/momentiq-ai/dark-factory/commit/da4cf2054461a4efcd81868ed3ead3fadd917905))
+* **schemas:** add inferred source-criterion rung — objectives Phase 1 ([f8715dc](https://github.com/momentiq-ai/dark-factory/commit/f8715dc18fecc061637309026e0ad8b3d4cc7a0d))
+
 ## [0.12.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.11.0...dark-factory-schemas-v0.12.0) (2026-06-21)
 
 

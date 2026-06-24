@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.14.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.13.2...dark-factory-cli-v2.14.0) (2026-06-24)
+
+
+### Features
+
+* **cli:** /objectives skill — plan-time authoring guide — objectives Phase 1 ([68ff389](https://github.com/momentiq-ai/dark-factory/commit/68ff389fb9560a5816c1e228b77b794bb9c97c3f))
+* **cli:** df objectives authoring core — derive-from-source verifiable objectives (Phase 1, [#207](https://github.com/momentiq-ai/dark-factory/issues/207)) ([c810d59](https://github.com/momentiq-ai/dark-factory/commit/c810d595fb7ed177056b8d59e92b22456796f656))
+* **cli:** df objectives check — local source-binding verification — objectives Phase 1 ([3e0f658](https://github.com/momentiq-ai/dark-factory/commit/3e0f6585f9cc10c4f0fe25341ca12d6815041997))
+* **cli:** df objectives derive — generate manifest from cycle-doc exit criteria — objectives Phase 1 ([d3f0940](https://github.com/momentiq-ai/dark-factory/commit/d3f09407daca616d4b0b647b71772a7c0136baa3))
+* **cli:** df objectives hash + command scaffold — objectives Phase 1 ([e366166](https://github.com/momentiq-ai/dark-factory/commit/e3661669b3d32b405321e4961841860e7ead8f4b))
+* **schemas,cli:** surface inferred source-verification in df prove — objectives Phase 1 ([c69d649](https://github.com/momentiq-ai/dark-factory/commit/c69d6490b21be50e81af4a326e244af094e434b0))
+* **schemas,validator:** reject duplicate objective ids at parse time (cross-impl) — [#207](https://github.com/momentiq-ai/dark-factory/issues/207) ([#244](https://github.com/momentiq-ai/dark-factory/issues/244)) ([da4cf20](https://github.com/momentiq-ai/dark-factory/commit/da4cf2054461a4efcd81868ed3ead3fadd917905))
+* **validator:** inferred source-criterion → non-blocking note — objectives Phase 1 ([1363492](https://github.com/momentiq-ai/dark-factory/commit/1363492d6a8f73d3d9a72b82da85f02dd048459d))
+
+
+### Bug Fixes
+
+* **cli:** address final-review findings — skill exit-code doc, derive duplicate-id warning, path consistency — objectives Phase 1 ([7ab8087](https://github.com/momentiq-ai/dark-factory/commit/7ab8087b8589688b2d6f53bc72f7a866e754478e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.12.0 to 0.13.0
+
 ## [2.13.2](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.13.1...dark-factory-cli-v2.13.2) (2026-06-22)
 
 
