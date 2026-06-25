@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.15.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.14.0...dark-factory-cli-v2.15.0) (2026-06-25)
+
+
+### Features
+
+* **mcp:** surface objective sourceVerification in the df_prove readout — [#207](https://github.com/momentiq-ai/dark-factory/issues/207) ([#245](https://github.com/momentiq-ai/dark-factory/issues/245)) ([f1f19c1](https://github.com/momentiq-ai/dark-factory/commit/f1f19c16a4dc444823450f8a27e203ab7e50c1e7))
+* **validator:** non-blocking note when a criteria-bearing PR declares no objectives — [#207](https://github.com/momentiq-ai/dark-factory/issues/207) ([#247](https://github.com/momentiq-ai/dark-factory/issues/247)) ([a131931](https://github.com/momentiq-ai/dark-factory/commit/a1319313937b2467809c4c12a7d2d6cf0bd8d571))
+
+
+### Bug Fixes
+
+* **objectives:** df objectives derive fails loud on multi-line exit criteria (no silent first-line-only binding) ([#249](https://github.com/momentiq-ai/dark-factory/issues/249)) ([5e3f56c](https://github.com/momentiq-ai/dark-factory/commit/5e3f56cb0933f4720f7ce01a4588a090c989f57a)), closes [#248](https://github.com/momentiq-ai/dark-factory/issues/248)
+
 ## [2.14.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.13.2...dark-factory-cli-v2.14.0) (2026-06-24)
 
 

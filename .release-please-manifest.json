@@ -1,5 +1,5 @@
 {
-  "packages/cli": "2.14.0",
+  "packages/cli": "2.15.0",
   "packages/schemas": "0.13.0",
   "packages/sage-cli": "0.2.2"
 }
