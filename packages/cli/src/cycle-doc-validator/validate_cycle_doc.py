@@ -1151,6 +1151,65 @@ def _resolve_criterion(cycle_id: str, locator: str) -> tuple[str, str | None]:
     return ("ok", text) if text is not None else ("no-criterion", None)
 
 
+def _manifest_source_refs(repo_root: Path) -> set[str]:
+    """The '<kind>:<ref>' sources an EXISTING objectives manifest declares (empty
+    if absent/unreadable). Normalized like ``_declared_refs`` so they compare equal.
+    Read unconditionally (NOT gated on the manifest being in changed_files) — the
+    note below must fire even when a PR ships no manifest at all."""
+    path = repo_root / OBJECTIVES_MANIFEST_PATH
+    if not path.exists():
+        return set()
+    try:
+        import yaml  # deferred: pyyaml not guaranteed in all CI environments
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    refs: set[str] = set()
+    for o in data.get("objectives") or []:
+        if not isinstance(o, dict):
+            continue
+        src = o.get("source")
+        if not isinstance(src, dict):
+            continue
+        kind, ref = src.get("kind"), src.get("ref")
+        if kind == "cycle" and isinstance(ref, str):
+            cid = normalize_cycle_id(ref)
+            if cid:
+                refs.add(f"cycle:{cid}")
+        elif kind == "issue" and isinstance(ref, str):
+            refs.add(f"issue:{re.sub(r'^#', '', ref).strip()}")
+    return refs
+
+
+def _note_missing_objectives(trailers: "Trailers") -> None:
+    """Ratchet 'note' stage (spec §4.6, #207): a NON-BLOCKING note when a PR links a
+    criteria-bearing cycle doc (a ``## Exit criteria`` section with list items) but
+    binds no objectives to it. Visible pressure — never appends to errors, never
+    fails the gate. Cycle sources only: issue acceptance criteria aren't resolvable
+    in-repo here (cross-repo source verification stays a non-blocking note, 2c §2)."""
+    if not trailers.cycle:
+        return
+    cycle_id = normalize_cycle_id(trailers.cycle)
+    if not cycle_id:
+        return
+    doc = find_cycle_doc(cycle_id)
+    if doc is None:
+        return
+    section = _h2_sections(_doc_body(doc.path)).get("exit_criteria", "")
+    n = len(_list_items(section))
+    if n == 0:
+        return  # no structured criteria → nothing to nudge about
+    if f"cycle:{cycle_id}" in _manifest_source_refs(REPO_ROOT):
+        return  # objectives already bound to this cycle → no nudge
+    print(
+        f"[objectives] cycle {cycle_id} declares {n} exit criteria but this PR binds "
+        f"no objectives to them — run `df objectives derive --cycle {cycle_id}` to "
+        f"author the contract (non-blocking; spec §4.6 note stage).",
+        file=sys.stderr,
+    )
+
+
 def validate_objectives(
     repo_root: Path, trailers: "Trailers", changed_files: Iterable[str]
 ) -> list[str]:
@@ -1387,6 +1446,7 @@ def validate(
     trailers = parse_trailers(body)
     changed_files = list(changed_files)
     errors.extend(validate_objectives(REPO_ROOT, trailers, changed_files))
+    _note_missing_objectives(trailers)  # ratchet 'note' stage (#207) — non-blocking
     plan = is_plan_pr(title, labels_list, changed_files)
     pr_type = "plan-pr" if plan else "code-pr"
 
