@@ -213,6 +213,47 @@ describe("extractExitCriteria — id assignment + text extraction", () => {
     ].join("\n");
     expect(extractExitCriteria(body).map((c) => c.id)).toEqual(["ec1", "ec2"]);
   });
+
+  it("collects non-marker continuation lines (multi-line bullet) per item", () => {
+    // EC1 spans two lines: the marker line + an indented continuation. EC2 is
+    // single-line. The continuation belongs to EC1 only, and the raw hash unit
+    // is still the FIRST line — the continuation is what makes the binding
+    // unsound, which is why derive fails loud on it.
+    const body = [
+      "- **EC1**: Route table populated.",
+      "  Verified by the integration suite.",
+      "- **EC2**: Panel renders.",
+    ].join("\n");
+    const criteria = extractExitCriteria(body);
+    expect(criteria.map((c) => c.id)).toEqual(["ec1", "ec2"]);
+    expect(criteria[0]?.raw).toBe("- **EC1**: Route table populated.");
+    expect(criteria[0]?.continuationLines).toEqual(["  Verified by the integration suite."]);
+    expect(criteria[1]?.continuationLines).toEqual([]);
+  });
+
+  it("does not treat post-blank-line prose as a continuation line", () => {
+    // A blank line terminates the item, so inter-item prose is NOT a
+    // continuation — single-line items have empty continuationLines.
+    const body = [
+      "- `EC1` First.",
+      "",
+      "More prose explaining a thing.",
+      "- `EC2` Second.",
+    ].join("\n");
+    const criteria = extractExitCriteria(body);
+    expect(criteria.map((c) => c.continuationLines)).toEqual([[], []]);
+  });
+
+  it("treats a marker-led nested sub-bullet as its OWN item, not a continuation", () => {
+    // Nested sub-bullets match ITEM_RE, so they enumerate as their own items
+    // (the phantom-objective case tracked in dark-factory#248) — they are NOT
+    // collected as continuation lines, so the multi-line fail-loud guard does
+    // not fire on them.
+    const body = ["- `EC1` Parent.", "  - nested sub-bullet."].join("\n");
+    const criteria = extractExitCriteria(body);
+    expect(criteria.map((c) => c.id)).toEqual(["ec1", "ec2"]);
+    expect(criteria.every((c) => c.continuationLines.length === 0)).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -440,6 +481,71 @@ describe("df objectives derive", () => {
     const code = await cmdObjectives(["derive"], cap.io);
     expect(code).toBe(2);
     expect(cap.stderr).toContain("--cycle is required");
+  });
+
+  // Fail-loud on multi-line criteria: the hash unit is the single marker line,
+  // so a continuation line would be silently excluded from the binding (editing
+  // it would not change the sha256). The design intends single-line atomic
+  // criteria (§4.3), so derive must REFUSE rather than emit an unsound manifest.
+  it("FAILS LOUD (exit 1) on a multi-line exit criterion — no silent first-line-only binding", async () => {
+    const ecBody = [
+      "- **EC1**: Route table populated.",
+      "  Verified by the integration suite — load-bearing continuation.",
+      "- **EC2**: Panel renders.",
+    ].join("\n");
+    const root = fixtureRepo("23", ecBody);
+    const cap = makeIo();
+
+    const code = await cmdObjectives(["derive", "--cycle", "23", "--cwd", root], cap.io);
+    expect(code).toBe(1);
+    // Actionable: names the offending criterion id + tells the author what to do.
+    expect(cap.stderr).toContain("cycle23#ec1");
+    expect(cap.stderr).toContain("multi-line");
+    expect(cap.stderr).toContain("single");
+    expect(cap.stderr).toContain("§4.3");
+    // Surfaces the continuation content so the author sees what was excluded.
+    expect(cap.stderr).toContain("Verified by the integration suite");
+    // No manifest is produced on failure (we fail before construction/output).
+    expect(cap.stdout).toBe("");
+  });
+
+  it("error message names the OFFENDING criterion id (not an innocent single-line one)", async () => {
+    // EC1 single-line, EC2 multi-line: only ec2 is named as the offender.
+    const ecBody = [
+      "- **EC1**: Single line, fine.",
+      "- **EC2**: Multi line head.",
+      "  spilled continuation that would be dropped.",
+    ].join("\n");
+    const root = fixtureRepo("31", ecBody);
+    const cap = makeIo();
+
+    const code = await cmdObjectives(["derive", "--cycle", "31", "--cwd", root], cap.io);
+    expect(code).toBe(1);
+    expect(cap.stderr).toContain("cycle31#ec2");
+    expect(cap.stderr).not.toContain("cycle31#ec1");
+    expect(cap.stdout).toBe("");
+  });
+
+  it("regression: single-line criteria (incl. inter-item prose) still derive cleanly", async () => {
+    // Prose AFTER a blank line is not a continuation, so a doc with single-line
+    // bullets + intervening prose derives fine — the guard does not over-fire.
+    const ecBody = [
+      "Intro prose about the criteria.",
+      "",
+      "- **EC1**: First criterion.",
+      "",
+      "Some prose between the two criteria.",
+      "",
+      "- **EC2**: Second criterion.",
+    ].join("\n");
+    const root = fixtureRepo("23", ecBody);
+    const cap = makeIo();
+
+    const code = await cmdObjectives(["derive", "--cycle", "23", "--cwd", root], cap.io);
+    expect(code).toBe(0);
+    expect(cap.stderr).toBe("");
+    const manifest = parseObjectivesManifest(yamlParse(cap.stdout));
+    expect(manifest.objectives.map((o) => o.id)).toEqual(["cycle23#ec1", "cycle23#ec2"]);
   });
 
   // M1 REMOVE-case idempotence: ec1 has a hand-added attestedBy binding; after ec2

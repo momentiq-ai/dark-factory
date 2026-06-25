@@ -284,22 +284,57 @@ export interface ExtractedCriterion {
   text: string;
   /** The verbatim source line — the canonical hash input. */
   raw: string;
+  /**
+   * Non-blank, NON-marker lines that follow this item's `raw` line before the
+   * next blank line or list item — i.e. the item's continuation lines.
+   *
+   * The hash unit is the single `raw` line only (see the block comment above),
+   * so any continuation line here is content that is SILENTLY excluded from the
+   * binding: editing it would not change the sha256. `df objectives derive`
+   * treats a non-empty value as a fail-loud condition (design §4.3 mandates
+   * single-line atomic criteria) rather than mis-binding. Marker-led nested
+   * sub-bullets (`  - foo`) match `ITEM_RE` and are therefore enumerated as
+   * their OWN items, NOT collected here (that phantom-objective case is tracked
+   * separately in dark-factory#248).
+   */
+  continuationLines: string[];
 }
 
 /**
  * Enumerate a `## Exit criteria` section body's items and assign each a
  * validator-compatible criterion id. See the block comment above for the
  * cross-impl-consistency contract this upholds.
+ *
+ * Each item also carries the non-marker continuation lines that follow it (up
+ * to the next blank line / list item), so callers can detect multi-line
+ * criteria — see `continuationLines`.
  */
 export function extractExitCriteria(sectionBody: string): ExtractedCriterion[] {
   const out: ExtractedCriterion[] = [];
   const lines = sectionBody.split(/\r?\n/);
-  const items = lines.filter((ln) => ITEM_RE.test(ln));
-  for (let i = 0; i < items.length; i++) {
-    const raw = items[i] ?? "";
+  let itemIndex = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (!ITEM_RE.test(line)) continue;
+
+    const raw = line;
     const labelMatch = EC_LABEL_RE.exec(raw);
-    const id = labelMatch ? `ec${parseInt(labelMatch[1] ?? "", 10)}` : `ec${i + 1}`;
-    out.push({ id, text: criterionDisplayText(raw), raw });
+    const id = labelMatch ? `ec${parseInt(labelMatch[1] ?? "", 10)}` : `ec${itemIndex + 1}`;
+    itemIndex++;
+
+    // Collect continuation lines: subsequent lines until a blank line or the
+    // next list item. A blank line terminates the item; a marker line is the
+    // next item (so it is NOT a continuation and stays available to the outer
+    // loop). Only non-marker, non-blank lines are continuations.
+    const continuationLines: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j] ?? "";
+      if (next.trim() === "") break; // blank line terminates the item
+      if (ITEM_RE.test(next)) break; // next list item (incl. nested sub-bullets)
+      continuationLines.push(next);
+    }
+
+    out.push({ id, text: criterionDisplayText(raw), raw, continuationLines });
   }
   return out;
 }
@@ -415,6 +450,40 @@ async function cmdDerive(
     io.stderr(
       `df objectives derive: cycle doc ${cycleDocId} '## Exit criteria' section has no ` +
         "list items — nothing to derive.\n",
+    );
+    return 1;
+  }
+
+  // Multi-line-criterion guard (fail-loud). The hash unit is the single `raw`
+  // item line, so any continuation line is content SILENTLY excluded from the
+  // source binding: editing it would not change the sha256, yet `df objectives
+  // check` and the dashboard `source-bound` rung would still pass — an unsound
+  // binding. The design intends SINGLE-LINE atomic exit criteria (spec §4.3),
+  // so REFUSE to mis-bind rather than dropping the continuation silently. The
+  // author must make the criterion a single line (or split it into multiple
+  // single-line criteria). This catches only NON-marker continuations; a
+  // marker-led nested sub-bullet is enumerated as its own item (the distinct
+  // phantom-objective case, tracked at dark-factory#248).
+  const multiLine = criteria.filter((c) => c.continuationLines.length > 0);
+  if (multiLine.length > 0) {
+    const detail = multiLine
+      .map(
+        (c) =>
+          `  - ${cycleDocId}#${c.id}: ${JSON.stringify(c.raw.trim())} ` +
+          `has ${c.continuationLines.length} continuation line` +
+          `${c.continuationLines.length === 1 ? "" : "s"} (first: ` +
+          `${JSON.stringify((c.continuationLines[0] ?? "").trim())})`,
+      )
+      .join("\n");
+    io.stderr(
+      `df objectives derive: ${cycleDocId} '## Exit criteria' has multi-line ` +
+        `criterion/criteria — refusing to mis-bind.\n${detail}\n` +
+        `Each exit criterion must be a SINGLE line: only that line is hashed into ` +
+        `the source binding, so a continuation line would be silently excluded ` +
+        `(editing it would not change the binding). Rewrite each offending ` +
+        `criterion as one line (or split it into multiple single-line criteria), ` +
+        `then re-run. See the derive-from-source design §4.3 (single-line atomic ` +
+        `criteria).\n`,
     );
     return 1;
   }
