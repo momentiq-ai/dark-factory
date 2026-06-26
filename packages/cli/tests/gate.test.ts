@@ -208,6 +208,74 @@ test("gate blocks on requiresHumanJudgment", async () => {
   expect_truthy(result.blocks.some((b) => b.reason === "requires_human_judgment"));
 });
 
+test("gate does NOT block on a BARE requiresHumanJudgment — demotes to a warning (#241, block-if-any)", async () => {
+  // Issue #241 — under `block-if-any` (the gate.test fixture policy) a
+  // BARE result-level rHJ on a REQUIRED critic (APPROVED + 0 blocking
+  // findings) must NOT block: it is demoted to a non-blocking
+  // requires_human_judgment WARNING. This is the exact deadlock shape
+  // from momentiq-ai/cerebe-platform#337 routed through the block-if-any
+  // gate evaluator (the quorum path is covered in quorum-policy.test.ts).
+  const r = await setupRepo();
+  await writePerShaEvidence(r, [{ command: "true", exitCode: 0 }]);
+  await writeArtifactWith(r, [
+    approved(r.diffHashStr, {
+      requiresHumanJudgment: true,
+      verdict: "APPROVED",
+      summary: "clean pass but self-flagged",
+      findings: [],
+    }),
+  ]);
+  const result = await evaluateCommitGate({
+    loaded: r.loaded,
+    commit: r.sha,
+    cwd: r.dir,
+    bypassReason: "",
+  });
+  expect_eq(result.blocked, false);
+  expect_eq(
+    result.blocks.some((b) => b.reason === "requires_human_judgment"),
+    false,
+  );
+  expect_truthy(
+    result.warnings.some((w) => w.reason === "requires_human_judgment"),
+  );
+});
+
+test("gate STILL blocks on a NON-bare requiresHumanJudgment riding a blocking finding (#241 — §11)", async () => {
+  // The §11 safety net under block-if-any: an rHJ with a blocking
+  // finding to defend it keeps blocking on a required critic.
+  const r = await setupRepo();
+  await writePerShaEvidence(r, [{ command: "true", exitCode: 0 }]);
+  await writeArtifactWith(r, [
+    approved(r.diffHashStr, {
+      requiresHumanJudgment: true,
+      verdict: "APPROVED",
+      summary: "needs a human eye",
+      findings: [
+        {
+          severity: "blocker",
+          category: "design",
+          file: "x.txt",
+          line: 1,
+          evidence: "ambiguous contract",
+          impact: "callers may misuse",
+          requiredFix: "clarify the contract",
+        },
+      ],
+    }),
+  ]);
+  const result = await evaluateCommitGate({
+    loaded: r.loaded,
+    commit: r.sha,
+    cwd: r.dir,
+    bypassReason: "",
+  });
+  expect_eq(result.blocked, true);
+  expect_truthy(
+    result.blocks.some((b) => b.reason === "requires_human_judgment"),
+  );
+});
+
 test("gate blocks on blocking finding even when verdict is approved (defense in depth)", async () => {
   const r = await setupRepo();
   await writeArtifactWith(r, [

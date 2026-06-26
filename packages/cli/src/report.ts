@@ -8,6 +8,7 @@ import {
   resolveArtifactDir,
 } from "./paths.js";
 import {
+  DEFAULT_ON_REQUIRES_HUMAN_JUDGMENT,
   parseReviewArtifact,
   REVIEW_SEVERITIES,
   type CriticResult,
@@ -280,7 +281,14 @@ function aggregateVerdict(
     // informational only — they cannot flip the aggregate.
     if (!requiredIds.has(r.criticId)) continue;
     if (r.verdict === "CHANGES_REQUESTED") return "CHANGES_REQUESTED";
-    if (r.requiresHumanJudgment) return "CHANGES_REQUESTED";
+    // Issue #241 — a BARE result-level requiresHumanJudgment (reached
+    // here only when the verdict is NOT CHANGES_REQUESTED, per the check
+    // above) no longer vetoes by itself. The §11 safety net is intact:
+    // an rHJ that rides a blocking finding still vetoes via the
+    // hasBlockingFinding check below, and an rHJ on a CHANGES_REQUESTED
+    // verdict already returned above. The `block-if-any` policy carries
+    // no `unilateralVetoRules`, so the demote-bare-rHJ default ('note')
+    // applies unconditionally here. See momentiq-ai/cerebe-platform#337.
     if (hasBlockingFinding(r.findings, blockingSeverities)) return "CHANGES_REQUESTED";
   }
   return "APPROVED";
@@ -288,6 +296,35 @@ function aggregateVerdict(
 
 function hasBlockingFinding(findings: ReviewFinding[], blockingSeverities: ReviewSeverity[]): boolean {
   return findings.some((f) => blockingSeverities.includes(f.severity));
+}
+
+/**
+ * Issue #241 — a BARE result-level `requiresHumanJudgment`: rHJ is set
+ * but there is nothing for the critic to defend it with — the verdict
+ * is NOT `CHANGES_REQUESTED` AND no blocking-severity finding rides
+ * along. A bare rHJ is the deadlock case (a clean APPROVED critic that
+ * stochastically self-flags rHJ); it is demoted to a non-blocking note
+ * by default (see `UnilateralVetoRules.onRequiresHumanJudgment`).
+ *
+ * A NON-bare rHJ — one riding a blocking finding or a
+ * `CHANGES_REQUESTED` verdict — still vetoes through the existing §11
+ * checks, so this predicate is the single definition every veto/block
+ * site keys on to decide "is there anything here besides the rHJ flag?"
+ *
+ * SINGLE SOURCE OF TRUTH: `report.ts` (verdict computation) and
+ * `gate.ts` (block enforcement) both import this so the two sides
+ * cannot drift on what "bare" means. Exported for that reason and for
+ * direct unit testing.
+ */
+export function isBareRequiresHumanJudgment(
+  r: { requiresHumanJudgment: boolean; verdict?: ReviewVerdict; findings: ReviewFinding[] },
+  blockingSeverities: ReviewSeverity[],
+): boolean {
+  return (
+    r.requiresHumanJudgment === true &&
+    r.verdict !== "CHANGES_REQUESTED" &&
+    !hasBlockingFinding(r.findings, blockingSeverities)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -370,14 +407,36 @@ export function criticVetoesGate(
   corroborationCtx?: VetoCorroborationContext,
 ): boolean {
   if (!isCriticCompleted(r)) return false;
-  // requiresHumanJudgment is a coarser-grained signal than per-finding
-  // flags; the spec narrows corroboration to per-finding triggers
-  // only. A critic that flags requiresHumanJudgment vetoes
-  // unconditionally regardless of policy.
-  if (r.requiresHumanJudgment) return true;
+  // Issue #241 — a BARE result-level `requiresHumanJudgment` (rHJ with
+  // a non-CHANGES_REQUESTED verdict AND no blocking-severity finding —
+  // see `isBareRequiresHumanJudgment`) no longer vetoes unconditionally.
+  // A clean APPROVED critic that stochastically self-flags rHJ otherwise
+  // deadlocks the gate with no escape on the canonical strict ruleset
+  // (empty `bypass_actors`). See momentiq-ai/cerebe-platform#337 / #340.
+  //
+  // The §11 single-rigorous-critic safety net is PRESERVED: an rHJ that
+  // rides a real signal still vetoes through the checks below —
+  //   - rHJ + a blocking finding → `hasBlockingFinding` (back-compat) or
+  //     `anyUnflaggedBlocking` (policy path) catches it.
+  //   - rHJ + a CHANGES_REQUESTED verdict → the CR-verdict check catches
+  //     it.
+  // Only the bare case (rHJ with nothing to defend it) is demoted, and
+  // only when `onRequiresHumanJudgment` is 'note' (the default). Set it
+  // to 'block' to restore the pre-#241 unconditional bare-rHJ veto.
+  const onBareRhj =
+    corroborationCtx?.rules.onRequiresHumanJudgment ?? DEFAULT_ON_REQUIRES_HUMAN_JUDGMENT;
+  if (
+    onBareRhj === "block" &&
+    isBareRequiresHumanJudgment(r, blockingSeverities)
+  ) {
+    return true;
+  }
 
   // Back-compat path: no policy → check verdict OR any blocking
-  // finding (the pre-#112 §11 semantic).
+  // finding (the pre-#112 §11 semantic). A bare rHJ falls through to
+  // these checks: it only vetoes if the verdict is CHANGES_REQUESTED or
+  // a blocking finding rides along (#241 — the bare case is non-blocking
+  // by default; `onRequiresHumanJudgment: 'block'` was handled above).
   if (corroborationCtx === undefined) {
     if (r.verdict === "CHANGES_REQUESTED") return true;
     return hasBlockingFinding(r.findings, blockingSeverities);
