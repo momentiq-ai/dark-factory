@@ -10,8 +10,8 @@ Sage CLI — scaffold a production-ready agentic AI product in one command. Pre-
 npm install -g @momentiq/sage-cli
 sage init hireflow --primary-persona employer --domain hireflow.ai
 cd hireflow
-make k8s-up
-make k8s-build-deploy-smart
+make k3d-up
+make k3d-build-deploy-smart
 ```
 
 Or one-shot:

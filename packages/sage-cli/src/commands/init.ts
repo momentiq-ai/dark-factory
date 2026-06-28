@@ -248,8 +248,8 @@ function printNextSteps(data: ResolvedData, opts: InitOptions): void {
     lines.push(``);
   }
   lines.push(`  # ${data.enableAgentReview ? "4" : "3"}. Start the local cluster`);
-  lines.push(`  make k8s-up`);
-  lines.push(`  make k8s-build-deploy-smart`);
+  lines.push(`  make k3d-up`);
+  lines.push(`  make k3d-build-deploy-smart`);
   lines.push(``);
   if (opts.noPostInstall) {
     lines.push(`(post-scaffold automation skipped via --no-post-install)`);
