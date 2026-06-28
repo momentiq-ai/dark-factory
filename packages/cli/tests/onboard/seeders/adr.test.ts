@@ -160,6 +160,32 @@ describe("adrSeeder", () => {
     expect(first.tailored_content).toContain("vitest@2.1.0");
   });
 
+  it("renders the real framework name (not 'Repo') and no '(pinned at (unpinned))' when the dep is outside the captured dependency set (#152 Gap-2)", async () => {
+    const a: RepoAnalysis = {
+      ...BASE_ANALYSIS,
+      // Mirror real sage3c: Pytest is the test framework, but it falls outside
+      // the top-20 `dependencies[]` cap, so NO dep entry matches the decision
+      // title. This is the exact condition that produced "This repo uses Repo
+      // (pinned at (unpinned) per backend/poetry.lock)" on sage3c.
+      dependencies: [{ name: "react", version: "18.3.1", manifestPath: "package-lock.json" }],
+      decisions: [
+        { title: "Repo uses Pytest as test framework", surface: "test-framework", evidence: ["backend/poetry.lock"] },
+      ],
+    };
+    const files = await adrSeeder.seed({ analysis: a, existingAdrs: [], now: new Date("2026-06-03") });
+    const first = files[0]!;
+    if (first.action !== "emit" && first.action !== "merge") throw new Error("expected emit");
+    const body = first.tailored_content;
+    // The REAL framework token is recovered from the title, not its first word.
+    expect(body).toContain("This repo uses Pytest");
+    // The pre-fix substitution artifacts must be gone.
+    expect(body).not.toContain("uses Repo");
+    expect(body).not.toContain("pinned at (unpinned)");
+    expect(body).not.toContain("(unpinned)");
+    // Evidence is still cited even on the no-captured-version path.
+    expect(body).toContain("backend/poetry.lock");
+  });
+
   it("skips with a structured reason when an ADR with the same slug already exists", async () => {
     const a: RepoAnalysis = {
       ...BASE_ANALYSIS,

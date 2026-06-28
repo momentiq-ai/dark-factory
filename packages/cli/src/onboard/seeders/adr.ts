@@ -31,7 +31,7 @@ const TEMPLATE_PATH = resolve(HERE, "templates", "adr.md.tmpl");
 
 const RATIONALE_TEMPLATES: Record<Decision["surface"], string> = {
   "test-framework":
-    "This repo uses {test_runner_name} (pinned at {test_runner_version} per {evidence_path}) as the test framework. " +
+    "This repo uses {test_runner_name} ({version_provenance}) as the test framework. " +
     "New tests should be written against {test_runner_name}'s API; integration tests follow the same harness convention.",
   "deploy-target":
     "This repo deploys via {target_name} ({command}, configured in {workflow_path}). " +
@@ -88,6 +88,17 @@ function applyTemplate(template: string, bindings: Record<string, string>): stri
   );
 }
 
+// Recover the framework token from a test-framework decision title. The lockfile
+// analyzer emits these titles as "Repo uses <Name> as test framework" (see
+// analyzers/lockfile.ts DECISION_MARKERS), so the real name is the token after
+// "uses", NOT `title.split(" ")[0]` — which yields the literal word "Repo" and
+// renders the nonsensical "This repo uses Repo" (#152 Gap-2). Returns undefined
+// when the title doesn't follow the marker phrasing.
+function testFrameworkNameFromTitle(title: string): string | undefined {
+  const m = /\buses\s+(.+?)\s+as\s+test\s+framework\b/i.exec(title);
+  return m?.[1]?.trim();
+}
+
 function bindRationale(d: Decision, analysis: RepoAnalysis): Record<string, string> {
   const evidence_path = d.evidence[0] ?? "(unknown)";
   switch (d.surface) {
@@ -96,9 +107,18 @@ function bindRationale(d: Decision, analysis: RepoAnalysis): Record<string, stri
       const dep = analysis.dependencies.find((dep) =>
         d.title.toLowerCase().includes(dep.name.toLowerCase()),
       );
-      const test_runner_name = dep?.name ?? d.title.split(" ")[0] ?? "the test framework";
-      const test_runner_version = dep?.version ?? "(unpinned)";
-      return { test_runner_name, test_runner_version, evidence_path };
+      // When the framework dep falls outside the top-20 `dependencies[]` cap
+      // (e.g. pytest on a large repo like sage3c), recover the real framework
+      // token from the title rather than its first whitespace word ("Repo").
+      const test_runner_name =
+        dep?.name ?? testFrameworkNameFromTitle(d.title) ?? "the test framework";
+      // Only claim "pinned at <version>" when a captured dep version exists;
+      // otherwise the unpinned/uncaptured case rendered "(pinned at (unpinned))".
+      // Fall back to citing the evidence path without a pinning claim (#152 Gap-2).
+      const version_provenance = dep
+        ? `pinned at ${dep.version} per ${evidence_path}`
+        : `surfaced in ${evidence_path}`;
+      return { test_runner_name, version_provenance, evidence_path };
     }
     case "deploy-target": {
       const ds = analysis.ci.deployStory;
