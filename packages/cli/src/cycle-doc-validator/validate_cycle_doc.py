@@ -1485,29 +1485,64 @@ def validate(
     doc: CycleDoc | None = None
     if cycle_id:
         doc = find_cycle_doc(cycle_id)
-        if doc is None:
-            errors.append(
-                f"[cycle-doc] FAIL ({pr_type}): cycle `{cycle_id}` not found in "
-                f"any of: {', '.join(f'`{d}/`' for d in CYCLE_DOC_DIRS)}. "
-                "Either fix the trailer or open a plan PR that creates the "
-                "cycle doc first."
-            )
-            return errors
 
-        # Terminal statuses that mean "do not cite this cycle from a new PR."
-        # Spelling drift across older docs is reality: ``complete`` (no
-        # ``-ed``) and ``Complete`` (capitalized) appear alongside the
-        # canonical ``completed``. ``absorbed`` / ``abandoned`` are also
-        # terminal. Treat all of these as block-cite.
-        if error := terminal_status_error(cycle_id, doc, pr_type, "the PR checkout"):
-            errors.append(error)
-
-        # The PR can edit the cited cycle doc itself. In CI we therefore
-        # also validate the protected base-ref copy; otherwise a PR could
-        # change `status: completed` back to `in-progress` and cite the
-        # stale cycle in the same diff.
+        # Base-ref terminal-status gate. The protected base ref is checked
+        # FIRST and INDEPENDENTLY of whether the PR checkout resolves the cited
+        # doc. Otherwise a PR could dodge the completed/superseded-cycle block
+        # by deleting or renaming the cited doc in its own diff so that
+        # ``find_cycle_doc`` returns None for head while the cycle is plainly
+        # terminal in the base ref (the cross-repo forward-reference soften
+        # below would then warn-and-pass — codex local critic on #257). Spelling
+        # drift across older docs is reality (``complete`` / ``Complete``
+        # alongside the canonical ``completed``; ``absorbed`` / ``abandoned``
+        # are also terminal) — ``terminal_status_error`` normalizes all of them.
         if base_doc is not None:
             if error := terminal_status_error(cycle_id, base_doc, pr_type, "the base ref"):
+                errors.append(error)
+
+        if doc is None:
+            if not plan and trailers.issue and base_doc is None:
+                # Cross-repo forward-reference (#257). The cited ``Cycle: N``
+                # resolves in NEITHER this PR checkout NOR the protected base
+                # ref, and a code PR carries an ``Issue:``/``Closes`` anchor.
+                # That is the precise definition of a forward-reference: the
+                # cycle doc lives in *another* repo (or isn't created yet), so
+                # it is absent from both head and base of *this* repo. The
+                # common case is a consumer repo implementing a slice of a
+                # *platform* cycle. The anchor keeps the PR traceable, so warn
+                # to stderr and continue (non-blocking) instead of failing.
+                #
+                # Both extra guards are load-bearing:
+                #   * ``base_doc is None`` — if the cycle still exists in the
+                #     base ref it is a *local* cycle the PR is hiding (its doc
+                #     deleted/renamed in the same diff), not a cross-repo one,
+                #     so it must keep hard-failing and let the base-ref terminal
+                #     check above gate a completed/superseded cycle.
+                #   * ``not plan`` — an unresolvable cycle on a plan PR is always
+                #     a hard error (a plan PR must create the very doc it cites),
+                #     even when an Issue anchor is present.
+                # Consumer motivation: momentiq-ai/dark-factory-dashboard#150.
+                print(
+                    f"[cycle-doc] WARN (code-pr): cycle `{cycle_id}` not found in "
+                    f"any of: {', '.join(f'`{d}/`' for d in CYCLE_DOC_DIRS)}; "
+                    "treating as a cross-repo forward-reference because an "
+                    "`Issue:`/`Closes` anchor is present and the cycle is absent "
+                    "from the base ref too. Continuing (non-blocking).",
+                    file=sys.stderr,
+                )
+            else:
+                errors.append(
+                    f"[cycle-doc] FAIL ({pr_type}): cycle `{cycle_id}` not found in "
+                    f"any of: {', '.join(f'`{d}/`' for d in CYCLE_DOC_DIRS)}. "
+                    "Either fix the trailer or open a plan PR that creates the "
+                    "cycle doc first."
+                )
+                return errors
+        else:
+            # Terminal statuses that mean "do not cite this cycle from a new
+            # PR." Reachable only when the cited doc resolved in the PR checkout
+            # (``terminal_status_error`` dereferences ``doc.status``).
+            if error := terminal_status_error(cycle_id, doc, pr_type, "the PR checkout"):
                 errors.append(error)
 
     if plan:

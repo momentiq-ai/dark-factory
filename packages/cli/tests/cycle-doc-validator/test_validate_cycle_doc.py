@@ -503,15 +503,105 @@ def test_validate_code_pr_missing_issue_and_project_item_fails():
     assert any("Issue:" in e and "ProjectItem:" in e for e in errors)
 
 
-def test_validate_code_pr_nonexistent_cycle_fails():
+def test_validate_code_pr_nonexistent_cycle_without_issue_anchor_fails():
+    """Code PR citing an unresolvable ``Cycle: N`` with NO ``Issue:``/``Closes``
+    anchor still hard-fails. The cross-repo forward-reference softening (#257)
+    requires the anchor (``AND an Issue:/Closes anchor is present``); without
+    it, the unresolvable cycle remains a real error.
+    """
     errors = validate(
         title="feat(999): pretend",
-        body="Cycle: 99999\nIssue: #1\n",
+        body="Cycle: 99999\n",  # unresolvable cycle, no issue/closes anchor
         labels=[],
         changed_files=["backend/app/foo.py"],
         diff="",
     )
     assert any("cycle `99999` not found" in e for e in errors)
+
+
+def test_validate_code_pr_unresolvable_cycle_with_issue_anchor_is_forward_ref(capsys):
+    """#257 (a): a code PR citing an unresolvable ``Cycle: N`` PLUS an
+    ``Issue:`` anchor is a non-blocking cross-repo forward-reference. The
+    consumer repo implements a slice of a *platform* cycle whose doc lives in
+    another repo, so the gate warns to stderr and PASSES instead of failing.
+    Consumer motivation: momentiq-ai/dark-factory-dashboard#150.
+    """
+    errors = validate(
+        title="feat(dashboard): implement slice of platform cycle 18",
+        body="Cycle: 18\nIssue: #150\n",  # cycle 18 lives in the platform repo
+        labels=[],
+        changed_files=["src/app/page.tsx"],
+        diff="",
+    )
+    assert errors == [], f"forward-reference must not error: {errors}"
+    err = capsys.readouterr().err
+    assert "cross-repo forward-reference" in err
+    assert "cycle `18` not found" in err
+
+
+def test_validate_plan_pr_unresolvable_cycle_still_fails():
+    """#257 (b): the forward-reference softening is code-PR-only. A plan PR
+    citing an unresolvable cycle is still a hard error even WITH an ``Issue:``
+    anchor present — a plan PR must create the very doc it cites and cannot
+    delegate to a cross-repo reference. Exercises the ``not plan`` guard.
+    """
+    errors = validate(
+        title="docs(roadmap): plan an as-yet-uncreated cycle",
+        body="Cycle: 99999\nIssue: #150\n",  # issue present, but this is a plan PR
+        labels=["plan-pr"],
+        changed_files=["docs/roadmap/cycles/cycle99999-new.md"],
+        diff="",
+    )
+    assert any("cycle `99999` not found" in e for e in errors), (
+        f"plan PR must still hard-fail on an unresolvable cycle: {errors}"
+    )
+
+
+def test_validate_forward_ref_does_not_crash_on_terminal_status_path(capsys):
+    """#257 (c): None-deref guard. When the forward-reference path falls
+    through with ``doc is None``, the terminal-status block (which dereferences
+    ``doc.status``) must be skipped, not crash. Supplying ``terminal_transitions``
+    that name the cited cycle also drives the status-completion block — both
+    must no-op safely because the cycle never resolved locally.
+    """
+    errors = validate(
+        title="feat(dashboard): slice of platform cycle 18",
+        body="Cycle: 18\nIssue: #150\n",
+        labels=[],
+        changed_files=["src/app/page.tsx"],
+        diff="",
+        terminal_transitions=["docs/roadmap/cycles/cycle18-platform.md"],
+    )
+    assert errors == [], f"softened forward-ref path must not error/crash: {errors}"
+    assert "cross-repo forward-reference" in capsys.readouterr().err
+
+
+def test_validate_forward_ref_does_not_mask_terminal_base_cycle():
+    """#257 security guard (codex local critic): the cross-repo
+    forward-reference softening must NOT let a PR hide a terminal *local*
+    cycle. If the cited cycle is gone from the PR checkout (e.g. its doc was
+    deleted/renamed in the same diff) but is still ``completed`` in the
+    protected base ref, the gate must still FAIL on the base-ref terminal
+    status — not warn-and-pass as a forward-reference. A genuine cross-repo
+    forward-reference is absent from the base ref too, so ``base_doc is None``
+    is the precise discriminator; ``base_doc is not None`` means the cycle is
+    local and the soften must not apply.
+    """
+    errors = validate(
+        title="feat(dashboard): cite a completed local cycle and hide its doc",
+        body="Cycle: 18\nIssue: #150\n",  # issue anchor present, but cycle is local
+        labels=[],
+        changed_files=["src/app/page.tsx"],
+        diff="",
+        base_doc=CycleDoc(
+            path=REPO_ROOT / "docs/roadmap/cycles/cycle18-platform.md",
+            status="completed",
+            superseded_by=None,
+        ),
+    )
+    assert any("base ref" in e and "status: completed" in e for e in errors), (
+        f"terminal base-ref cycle must block a forward-ref soften: {errors}"
+    )
 
 
 def test_validate_code_pr_completed_cycle_fails():
