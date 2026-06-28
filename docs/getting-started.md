@@ -403,15 +403,15 @@ verify the expected outcome, then move on. If anything fails, diagnose with
 3. Local cluster up. Run:
      doppler login
      doppler setup --project <slug>
-     make k8s-up
-     make k8s-build-deploy-smart
+     make k3d-up
+     make k3d-build-deploy-smart
    Tail the deploy until the dashboard URL is live, then surface it to me
    (default: http://<slug>.localhost:8082).
 
 4. Cerebe + first agent call. If I do not already have a Cerebe API key,
    open https://cerebe.ai in my browser so I can grab one. Then:
      doppler secrets set CEREBE_API_KEY=<key> --project <slug> --config dev
-     make k8s-build-deploy-smart  # restart pods so the key is picked up
+     make k3d-build-deploy-smart  # restart pods so the key is picked up
    Open the dashboard URL and have me send a chat message. Confirm the
    agent's response includes a tool call to Cerebe (visible in the trace).
 
@@ -540,8 +540,8 @@ for the `dev` config). You'll add the Cerebe API key itself in Step 3.
 #### k3d cluster + deploy
 
 ```bash
-make k8s-up                              # creates the k3d cluster (~30s)
-make k8s-build-deploy-smart              # builds images + helms in (~90s on first run)
+make k3d-up                              # creates the k3d cluster (~30s)
+make k3d-build-deploy-smart              # builds images + helms in (~90s on first run)
 ```
 
 Once both finish, your dashboard is live:
@@ -562,7 +562,7 @@ development key from the dashboard. Free tier is fine for the walkthrough.
 ```bash
 doppler secrets set CEREBE_API_KEY=ck_xxxxxxxxxxxxxxxxxxxx \
   --project my-product --config dev
-make k8s-build-deploy-smart              # restart pods so the key is picked up
+make k3d-build-deploy-smart              # restart pods so the key is picked up
 ```
 
 Doppler injects secrets at runtime, but k3d pods need to restart to re-read them.
