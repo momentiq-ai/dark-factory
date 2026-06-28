@@ -201,7 +201,12 @@ function resolveEffectiveSignal(callerSignal: AbortSignal | undefined): {
 // per-critic deadline still fires near-instantly (200ms) — a fixed +30s
 // grace would make the deadline un-observable inside a unit test's default
 // timeout.
-const PER_CRITIC_DEADLINE_GRACE_MS = 30_000;
+// Exported (issue #255) so a hosted embedder can derive the EFFECTIVE
+// per-critic deadline from the same constant + formula the runner uses,
+// instead of mirroring the `30_000` grace in its own config validation —
+// a drift seam where a CLI grace change would silently invalidate the
+// embedder's `CRITIC_TIMEOUT_MS` / `JOB_TIMEOUT_MS` fail-fast (dfp #428).
+export const PER_CRITIC_DEADLINE_GRACE_MS = 30_000;
 
 export function computePerCriticDeadlineMs(internalDeadlineMs: number): number {
   return internalDeadlineMs + Math.min(PER_CRITIC_DEADLINE_GRACE_MS, internalDeadlineMs);

@@ -41,6 +41,14 @@ import {
   dispatchWithDeadline,
   runReview,
 } from "../src/runner.js";
+// Issue #255 — the same two symbols reached through the PUBLIC package root
+// barrel (the npm-published `import { … } from "@momentiq/dark-factory-cli"`
+// path embedders use) rather than the deep `../src/runner.js` module. Aliased
+// to avoid a duplicate binding with the runner import above.
+import {
+  computePerCriticDeadlineMs as computePerCriticDeadlineMsFromBarrel,
+  PER_CRITIC_DEADLINE_GRACE_MS,
+} from "../src/index.js";
 import {
   parseAgentReviewConfig,
   type AgentReviewConfig,
@@ -204,6 +212,33 @@ describe("computePerCriticDeadlineMs — ordering invariant (issue #180)", () =>
     // yields a 200ms deadline.
     expect(computePerCriticDeadlineMs(100)).toBe(200);
     expect(computePerCriticDeadlineMs(50)).toBe(100);
+  });
+});
+
+describe("issue #255 — per-critic deadline symbols reachable from the package root barrel", () => {
+  test("computePerCriticDeadlineMs is re-exported from the package root (same symbol)", () => {
+    expect(typeof computePerCriticDeadlineMsFromBarrel).toBe("function");
+    // Referential identity: the barrel re-exports the very symbol the runner
+    // defines, not a copy — mirrors the merge-queue barrel-reachability test.
+    expect(computePerCriticDeadlineMsFromBarrel).toBe(computePerCriticDeadlineMs);
+  });
+
+  test("PER_CRITIC_DEADLINE_GRACE_MS is re-exported from the package root as a number", () => {
+    expect(typeof PER_CRITIC_DEADLINE_GRACE_MS).toBe("number");
+    expect(PER_CRITIC_DEADLINE_GRACE_MS).toBe(30_000);
+  });
+
+  test("an embedder derives the effective per-critic deadline from the exported symbols (no mirrored constant)", () => {
+    // The drift seam #255 closes: instead of hardcoding 30_000, an embedder
+    // reconstructs the effective deadline from the EXPORTED grace + the
+    // EXPORTED formula — so a future grace change can't silently invalidate
+    // its CRITIC_TIMEOUT_MS / JOB_TIMEOUT_MS fail-fast (dfp #428). The issue's
+    // own example: 590_000 raw passes a naive `< 600_000` check yet the
+    // EFFECTIVE deadline fires at 620_000 > 600_000 — back into #428.
+    const base = 590_000;
+    const derived = base + Math.min(PER_CRITIC_DEADLINE_GRACE_MS, base);
+    expect(computePerCriticDeadlineMsFromBarrel(base)).toBe(derived);
+    expect(computePerCriticDeadlineMsFromBarrel(base)).toBe(620_000);
   });
 });
 
