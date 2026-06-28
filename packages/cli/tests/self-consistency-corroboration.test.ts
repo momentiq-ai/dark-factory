@@ -221,7 +221,11 @@ describe("schema: AggregationConfig.unilateralVetoRules", () => {
     expect_eq(parsed.aggregation.unilateralVetoRules, undefined);
   });
 
-  test("rejects empty requireCorroborationFor array", () => {
+  test("accepts empty requireCorroborationFor array (#241 — block may carry only onRequiresHumanJudgment)", () => {
+    // Issue #241 — an empty `requireCorroborationFor` is now legal so
+    // the `unilateralVetoRules` block can be present solely to set
+    // `onRequiresHumanJudgment`. (Pre-#241 this threw "at least one
+    // flag".)
     const cfg = {
       ...SCHEMA_BASE,
       aggregation: {
@@ -231,10 +235,30 @@ describe("schema: AggregationConfig.unilateralVetoRules", () => {
         unilateralVetoRules: {
           requireCorroborationFor: [],
           requireCorroborationOnHunkRadius: 5,
+          onRequiresHumanJudgment: "block",
         },
       },
     };
-    expect_throws(() => parseAgentReviewConfig(cfg), /at least one flag/);
+    const parsed = parseAgentReviewConfig(cfg);
+    expect_deep([...parsed.aggregation.unilateralVetoRules!.requireCorroborationFor], []);
+    expect_eq(parsed.aggregation.unilateralVetoRules!.onRequiresHumanJudgment, "block");
+  });
+
+  test("rejects invalid onRequiresHumanJudgment value (#241)", () => {
+    const cfg = {
+      ...SCHEMA_BASE,
+      aggregation: {
+        policy: "min-complete-quorum",
+        blockingSeverities: ["blocker", "high"],
+        quorum: 2,
+        unilateralVetoRules: {
+          requireCorroborationFor: ["self_inconsistent"],
+          requireCorroborationOnHunkRadius: 5,
+          onRequiresHumanJudgment: "warn",
+        },
+      },
+    };
+    expect_throws(() => parseAgentReviewConfig(cfg), /onRequiresHumanJudgment|one of/);
   });
 
   test("rejects duplicate flag names", () => {
