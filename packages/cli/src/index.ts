@@ -178,9 +178,16 @@ export {
 } from "./compact/index.js";
 
 // Runner — drives the orchestrator end-to-end.
+//
+// `computePerCriticDeadlineMs` + `PER_CRITIC_DEADLINE_GRACE_MS` (issue #255):
+// re-exported from the package root so embedders derive the effective
+// per-critic deadline (raw timeout + grace) instead of mirroring the grace
+// constant and formula in their own config fail-fast.
 export {
   runReview,
   runCommitGate,
+  computePerCriticDeadlineMs,
+  PER_CRITIC_DEADLINE_GRACE_MS,
   type ReviewRunOptions,
   type ReviewRunOutcome,
   type GateRunOptions,
