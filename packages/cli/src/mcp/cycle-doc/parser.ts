@@ -26,7 +26,7 @@
 // MCP server needs; the cycle5 spec calls out that a TS parser will
 // be added here and reused by Phase 2's remote MCP gateway.
 //
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { parse as parseYaml } from "yaml";
@@ -149,6 +149,10 @@ function safeAbsoluteCyclesDir(repoRoot: string): string | null {
     const realResolved = realpathSync(resolved);
     const realRepoRoot = realpathSync(repoRoot);
     if (!isInsideRepo(realResolved, realRepoRoot)) return null;
+    // A misconfigured cycles dir may point at a file (or other non-directory).
+    // Treat that the same as "no cycle docs found" instead of letting
+    // readdirSync throw.
+    if (!statSync(realResolved).isDirectory()) return null;
     return realResolved;
   } catch {
     return null;
