@@ -20,7 +20,7 @@ import {
 } from "@momentiq/dark-factory-schemas";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 
-import { readCycleDoc } from "../mcp/cycle-doc/parser.js";
+import { readCycleDoc, cycleDocsDir } from "../mcp/cycle-doc/parser.js";
 
 export interface ObjectivesIo {
   stdout: (s: string) => void;
@@ -431,7 +431,7 @@ async function cmdDerive(
   if (doc === null) {
     io.stderr(
       `df objectives derive: cycle doc ${cycleDocId} not found under ` +
-        `${join(opts.cwd, "docs/roadmap/cycles")} — nothing to derive.\n`,
+        `${cycleDocsDir(opts.cwd)} — nothing to derive.\n`,
     );
     return 1;
   }
@@ -695,7 +695,7 @@ async function cmdCheck(
       results.push({
         id: obj.id,
         status: "fail",
-        message: `cycle doc ${cycleDocId} not found under ${join(opts.cwd, "docs/roadmap/cycles")}.`,
+        message: `cycle doc ${cycleDocId} not found under ${cycleDocsDir(opts.cwd)}.`,
       });
       anyFail = true;
       continue;

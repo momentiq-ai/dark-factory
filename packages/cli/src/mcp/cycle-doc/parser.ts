@@ -1,10 +1,16 @@
 // Cycle doc parser — cycle5 Phase 1 step 3a.
 //
-// Reads cycle docs from `docs/roadmap/cycles/cycleN[.M]-slug.md` and
-// returns:
+// Reads cycle docs from the repo's cycle-doc directory and returns:
 //   - listCycleDocs(repoRoot) → summary per file (id, title, status, ...)
 //   - readCycleDoc(repoRoot, id) → full structured representation
 //     (id, frontmatter, sections)
+//
+// The cycle-doc directory is resolved in this precedence:
+//   1. `darkfactory.yaml#docs.cycleDocsDir` (consumer override)
+//   2. `docs/roadmap/cycles/` when it exists (sage-blueprint / default convention)
+//   3. `docs/cycles/` when it exists (hand-built repos, e.g. dark-factory-dashboard)
+//   4. `docs/roadmap/cycles/` as the final fallback (so missing-dir errors point
+//      at the canonical default).
 //
 // Note on overlap with `src/cycle-doc-validator/`: that module is the
 // Python-backed PR-trailer CI gate (different concern). Its
@@ -18,12 +24,48 @@ import { join, resolve } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 
-const CYCLES_RELATIVE_PATH = "docs/roadmap/cycles";
+import { loadDarkFactoryConfig } from "../../skills/config.js";
+
+const DEFAULT_CYCLES_RELATIVE_PATH = "docs/roadmap/cycles";
+const ALT_CYCLES_RELATIVE_PATH = "docs/cycles";
 // Matches: `cycle1-foo.md`, `cycle331.6-slug.md`, `cycle10-something.md`
 // Captures the id portion (e.g., `cycle1`, `cycle331.6`).
 const CYCLE_FILE_PATTERN = /^(cycle\d+(?:\.\d+)?)(?:-.+)?\.md$/;
 
 const FRONTMATTER_DELIMITER = "---";
+
+/**
+ * Resolve the relative cycle-docs directory for a repo.
+ *
+ * Precedence:
+ *   1. `darkfactory.yaml#docs.cycleDocsDir` when the file parses cleanly.
+ *   2. `docs/roadmap/cycles` when it exists.
+ *   3. `docs/cycles` when it exists.
+ *   4. `docs/roadmap/cycles` as the canonical fallback.
+ *
+ * A malformed `darkfactory.yaml` is intentionally non-fatal here: the cycle-doc
+ * parser is a low-level utility used by MCP resources and `df objectives`, and
+ * a YAML/schema typo in consumer config should not obscure cycle-doc reads.
+ * Callers that need strict config validation already validate via other paths.
+ */
+export function resolveCyclesDir(repoRoot: string): string {
+  try {
+    const config = loadDarkFactoryConfig(repoRoot);
+    if (config.config.docs?.cycleDocsDir) {
+      return config.config.docs.cycleDocsDir;
+    }
+  } catch {
+    // Fall through to convention-based auto-detection.
+  }
+
+  if (existsSync(resolve(repoRoot, DEFAULT_CYCLES_RELATIVE_PATH))) {
+    return DEFAULT_CYCLES_RELATIVE_PATH;
+  }
+  if (existsSync(resolve(repoRoot, ALT_CYCLES_RELATIVE_PATH))) {
+    return ALT_CYCLES_RELATIVE_PATH;
+  }
+  return DEFAULT_CYCLES_RELATIVE_PATH;
+}
 
 export interface CycleSummary {
   /** Stable id derived from filename, e.g. "cycle5" or "cycle331.6". */
@@ -134,8 +176,8 @@ function splitSections(body: string): Record<string, string> {
   return sections;
 }
 
-function listCycleFiles(repoRoot: string): string[] {
-  const dir = resolve(repoRoot, CYCLES_RELATIVE_PATH);
+function listCycleFiles(repoRoot: string, cyclesDir?: string): string[] {
+  const dir = resolve(repoRoot, cyclesDir ?? resolveCyclesDir(repoRoot));
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isFile() && CYCLE_FILE_PATTERN.test(e.name))
@@ -149,11 +191,12 @@ function fileToCycleId(filename: string): string | null {
 }
 
 export async function listCycleDocs(repoRoot: string): Promise<CycleSummary[]> {
+  const cyclesDir = resolveCyclesDir(repoRoot);
   const out: CycleSummary[] = [];
-  for (const filename of listCycleFiles(repoRoot)) {
+  for (const filename of listCycleFiles(repoRoot, cyclesDir)) {
     const id = fileToCycleId(filename);
     if (!id) continue;
-    const fullPath = resolve(repoRoot, CYCLES_RELATIVE_PATH, filename);
+    const fullPath = resolve(repoRoot, cyclesDir, filename);
     const source = readFileSync(fullPath, "utf8");
     const { frontmatter } = splitFrontmatter(source);
     const summary: CycleSummary = {
@@ -176,9 +219,10 @@ export async function readCycleDoc(
   repoRoot: string,
   cycleId: string,
 ): Promise<ParsedCycleDoc | null> {
-  for (const filename of listCycleFiles(repoRoot)) {
+  const cyclesDir = resolveCyclesDir(repoRoot);
+  for (const filename of listCycleFiles(repoRoot, cyclesDir)) {
     if (fileToCycleId(filename) !== cycleId) continue;
-    const fullPath = resolve(repoRoot, CYCLES_RELATIVE_PATH, filename);
+    const fullPath = resolve(repoRoot, cyclesDir, filename);
     const source = readFileSync(fullPath, "utf8");
     const { frontmatter, body } = splitFrontmatter(source);
     const sections = splitSections(body);
@@ -205,9 +249,9 @@ export const __test = {
 // constant the python validator uses (CONFIG-shaped duplication is
 // fine — the path is a public convention, not an implementation
 // detail.).
-export const CYCLE_DOCS_RELATIVE_PATH = CYCLES_RELATIVE_PATH;
+export const CYCLE_DOCS_RELATIVE_PATH = DEFAULT_CYCLES_RELATIVE_PATH;
 
 // Path helper for test fixtures + production code.
 export function cycleDocsDir(repoRoot: string): string {
-  return join(repoRoot, CYCLES_RELATIVE_PATH);
+  return join(repoRoot, resolveCyclesDir(repoRoot));
 }

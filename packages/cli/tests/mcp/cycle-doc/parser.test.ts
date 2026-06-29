@@ -2,9 +2,14 @@
 //
 // Pins:
 //   - listCycleDocs returns summaries (id, title, status, owner?, target?)
-//     for every `docs/roadmap/cycles/cycleN[.M]-slug.md`.
+//     for every cycle doc in the resolved cycle-docs directory.
 //   - readCycleDoc returns { id, frontmatter, sections } where sections
 //     keys are the h2 section names lowercased and snake_cased.
+//   - resolveCyclesDir picks the directory by precedence:
+//       1. darkfactory.yaml#docs.cycleDocsDir
+//       2. docs/roadmap/cycles/ (when it exists)
+//       3. docs/cycles/ (when it exists)
+//       4. docs/roadmap/cycles/ (fallback)
 //   - Filenames matching cycleN-slug.md OR cycleN.M-slug.md parse the
 //     cycle id correctly (dotted variants used by sage-style cycles).
 //   - Frontmatter parses YAML scalars + arrays + null/booleans.
@@ -24,6 +29,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   listCycleDocs,
   readCycleDoc,
+  resolveCyclesDir,
 } from "../../../src/mcp/cycle-doc/parser.js";
 
 let workdir: string;
@@ -297,5 +303,66 @@ Just body text, no h2 headers.
     const doc = await readCycleDoc(workdir, "cycle7");
     expect(doc?.frontmatter).toMatchObject({ title: "No sections" });
     expect(doc?.sections).toEqual({});
+  });
+});
+
+describe("resolveCyclesDir (gh#252)", () => {
+  let workdir: string;
+
+  beforeEach(() => {
+    workdir = mkdtempSync(join(tmpdir(), "df-cycle-doc-resolve-"));
+  });
+
+  afterEach(() => {
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  function writeConfig(content: string): void {
+    writeFileSync(join(workdir, "darkfactory.yaml"), content, "utf8");
+  }
+
+  it("defaults to docs/roadmap/cycles when no config and no directories exist", () => {
+    expect(resolveCyclesDir(workdir)).toBe("docs/roadmap/cycles");
+  });
+
+  it("defaults to docs/roadmap/cycles when only that directory exists", () => {
+    mkdirSync(join(workdir, "docs", "roadmap", "cycles"), { recursive: true });
+    expect(resolveCyclesDir(workdir)).toBe("docs/roadmap/cycles");
+  });
+
+  it("auto-detects docs/cycles when docs/roadmap/cycles is absent", () => {
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("prefers docs/roadmap/cycles when both conventions exist", () => {
+    mkdirSync(join(workdir, "docs", "roadmap", "cycles"), { recursive: true });
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    expect(resolveCyclesDir(workdir)).toBe("docs/roadmap/cycles");
+  });
+
+  it("honors darkfactory.yaml#docs.cycleDocsDir override", () => {
+    mkdirSync(join(workdir, "custom", "cycles"), { recursive: true });
+    writeConfig(["docs:", '  cycleDocsDir: "custom/cycles"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("custom/cycles");
+  });
+
+  it("config override wins even when docs/roadmap/cycles exists", () => {
+    mkdirSync(join(workdir, "docs", "roadmap", "cycles"), { recursive: true });
+    mkdirSync(join(workdir, "custom", "cycles"), { recursive: true });
+    writeConfig(["docs:", '  cycleDocsDir: "custom/cycles"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("custom/cycles");
+  });
+
+  it("falls back to auto-detection when darkfactory.yaml is malformed", () => {
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    writeConfig("not: valid: yaml: [");
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("falls back to auto-detection when darkfactory.yaml schema lacks docs", () => {
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    writeConfig(["repo:", '  slug: "test"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
   });
 });
