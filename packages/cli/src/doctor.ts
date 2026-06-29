@@ -32,8 +32,10 @@ import {
   accessSync,
   constants,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
   statSync,
   unlinkSync,
@@ -232,6 +234,13 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorCheck[]> 
   });
   checks.push(...agentContextChecks);
 
+  // 7c. AGENTS.md canonical-source check. Most coding agents (OpenCode, Codex,
+  //     Cursor, Copilot, Gemini) read ONLY AGENTS.md and ignore CLAUDE.md when
+  //     both exist — so CLAUDE.md-only doctrine is invisible to them, while the
+  //     critic gate still judges their output against it. Warn (non-blocking)
+  //     when CLAUDE.md carries standalone doctrine instead of importing AGENTS.md.
+  checks.push(checkAgentsCanonical(root));
+
   // 8. per-adapter doctor() — this is where subscription-auth verification
   // actually lives. Each adapter's doctor() checks ITS own credentials
   // (env var, ~/.cursor auth, ~/.codex auth, etc.). When a profile is
@@ -349,6 +358,155 @@ export function detectCloudEnv(
 
 const CLOUD_ENV_BYPASS_REMEDIATION =
   'cloud env: local subscription quorum is structurally unavailable. Push with `AGENT_REVIEW_BYPASS="cloud env — local quorum unavailable; W3 critic is the gate" git push`; the hosted W3 critic remains the merge gate via branch protection.';
+
+// AGENTS.md as the canonical universal contract.
+//
+// Claude Code reads CLAUDE.md; every OTHER coding agent (OpenCode, Codex,
+// Cursor, Copilot, Gemini) reads ONLY AGENTS.md and ignores CLAUDE.md when both
+// exist. A CLAUDE.md that carries standalone doctrine — rather than importing
+// AGENTS.md — is therefore invisible to non-Claude agents, while the critic gate
+// still loads it (via `context.guidanceFiles`) and judges their output against
+// it. The Claude-Code-recommended shape (per its memory docs' AGENTS.md section)
+// is `CLAUDE.md = @AGENTS.md import + Claude-only overlay`; this check is the
+// distributed surfacing mechanism that flags any consumer repo not yet on it.
+// Non-blocking (`optional`): a hygiene warning, not a gate failure.
+export function checkAgentsCanonical(repoRoot: string): DoctorCheck {
+  const name = "agent_context.agents_md_canonical";
+  const agentsPath = resolve(repoRoot, "AGENTS.md");
+  const claudePath = resolve(repoRoot, "CLAUDE.md");
+
+  // AGENTS.md absent: the canonical file itself is missing — the required-files
+  // walk already fails on that, so nothing to add here.
+  if (!existsSync(agentsPath)) {
+    return {
+      name,
+      passed: true,
+      optional: true,
+      detail: "AGENTS.md absent; canonical-source check not applicable.",
+    };
+  }
+  // No CLAUDE.md: AGENTS.md is the sole contract; every agent reads it.
+  if (!existsSync(claudePath)) {
+    return {
+      name,
+      passed: true,
+      detail: "AGENTS.md is the sole agent contract (no CLAUDE.md to diverge).",
+    };
+  }
+  // A symlink CLAUDE.md -> AGENTS.md is the strongest form: identical content,
+  // drift is impossible. Short-circuit PASS BEFORE the duplication check below —
+  // that check reads through the symlink, so it would see identical content and
+  // flag every AGENTS.md heading as "duplicated". The symlink and the
+  // text-import-plus-overlay shape are two distinct concerns; keep them separate.
+  try {
+    if (
+      lstatSync(claudePath).isSymbolicLink() &&
+      /(^|\/)AGENTS\.md$/.test(readlinkSync(claudePath))
+    ) {
+      return {
+        name,
+        passed: true,
+        detail:
+          "CLAUDE.md is a symlink to AGENTS.md — identical content, no drift possible.",
+      };
+    }
+  } catch {
+    // not a symlink, or an unreadable link target — fall through to the
+    // content-based import check.
+  }
+  const claudeContent = readFileSync(claudePath, "utf8");
+  const importsAgents = claudeImportsAgents(claudeContent);
+  if (!importsAgents) {
+    return {
+      name,
+      passed: false,
+      optional: true,
+      detail:
+        "CLAUDE.md does not import AGENTS.md. Non-Claude agents (OpenCode, Codex, " +
+        "Cursor, Copilot, Gemini) read ONLY AGENTS.md and ignore CLAUDE.md, so any " +
+        "doctrine living only in CLAUDE.md is invisible to them — while the critic " +
+        "gate still judges their output against it.",
+      remediation:
+        "Make AGENTS.md the canonical universal contract; reduce CLAUDE.md to " +
+        "`@AGENTS.md` (import) + Claude-Code-specific config only.",
+    };
+  }
+
+  // The import is necessary but NOT sufficient: a large standalone CLAUDE.md
+  // with `@AGENTS.md` prepended still carries duplicated/contradictory doctrine
+  // below it, reopening the exact drift this check exists to close. The
+  // deterministic drift signal is a section heading shared with AGENTS.md — if
+  // both files carry a "## Change Discipline", the import didn't make CLAUDE.md
+  // a thin overlay; it just prefixed a line to a still-standalone doctrine file.
+  // A proper overlay's headings are all Claude-only ("Model + thinking
+  // defaults", "Claude Code tooling", …) and overlap nothing in AGENTS.md.
+  const restated = sharedDoctrineHeadings(claudeContent, readFileSync(agentsPath, "utf8"));
+  if (restated.length > 0) {
+    return {
+      name,
+      passed: false,
+      optional: true,
+      detail:
+        `CLAUDE.md imports AGENTS.md but still restates ${restated.length} ` +
+        `section(s) also defined in AGENTS.md (${restated.join(", ")}). Importing ` +
+        "alone is not the thin-overlay contract — duplicated doctrine drifts, and " +
+        "non-Claude agents (which read only AGENTS.md) follow the AGENTS.md copy " +
+        "while Claude Code may follow the divergent CLAUDE.md copy.",
+      remediation:
+        "Remove the duplicated sections from CLAUDE.md; keep only the `@AGENTS.md` " +
+        "import + Claude-Code-specific config. Universal doctrine belongs in AGENTS.md.",
+    };
+  }
+  return {
+    name,
+    passed: true,
+    detail:
+      "CLAUDE.md imports AGENTS.md and restates none of its sections — universal " +
+      "doctrine reaches non-Claude agents from a single source.",
+  };
+}
+
+// Detect an `@AGENTS.md` import in CLAUDE.md, ignoring fenced code blocks and
+// inline code spans (mirrors Claude Code's own import parser, which skips both).
+function claudeImportsAgents(content: string): boolean {
+  const withoutCode = content
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`[^`]*`/g, "");
+  return /(^|\s)@AGENTS\.md(\s|$)/m.test(withoutCode);
+}
+
+// Normalize a heading to a comparison key: case- and punctuation-insensitive.
+function normalizeHeading(h: string): string {
+  return h
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+// Section headings (H2–H6; the H1 title is excluded) present in BOTH files,
+// returned in CLAUDE.md's original casing. Fenced code blocks are stripped so a
+// `## foo` inside an example doesn't register as a real section. A non-empty
+// result means CLAUDE.md restates AGENTS.md doctrine rather than overlaying it.
+function sharedDoctrineHeadings(
+  claudeContent: string,
+  agentsContent: string,
+): string[] {
+  const headingsOf = (content: string): Map<string, string> => {
+    const withoutCode = content.replace(/```[\s\S]*?```/g, "");
+    const out = new Map<string, string>();
+    for (const m of withoutCode.matchAll(/^#{2,6}[ \t]+(.+?)[ \t]*$/gm)) {
+      const raw = m[1]?.trim();
+      if (raw) out.set(normalizeHeading(raw), raw);
+    }
+    return out;
+  };
+  const agents = headingsOf(agentsContent);
+  const shared: string[] = [];
+  for (const [key, raw] of headingsOf(claudeContent)) {
+    if (agents.has(key)) shared.push(raw);
+  }
+  return shared;
+}
 
 function cloudEnvCheck(detection: CloudEnvDetection): DoctorCheck {
   if (!detection.detected) {

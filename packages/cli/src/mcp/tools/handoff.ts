@@ -45,6 +45,7 @@ import {
   NOTE_SECURITY_RULE_COMPACT,
   noteSkeleton,
 } from "../../handoff/note-contract.js";
+import { rehydrationRitual } from "../../handoff/rehydrate-contract.js";
 
 export interface RegisterHandoffToolsOptions {
   /**
@@ -210,7 +211,11 @@ export function registerHandoffTools(
         "Take the baton on a handoff issue: validate, strict-rehydrate, " +
         "assign @me, verify, then close (Commitment 10). Atomic ordering — " +
         "read-only work precedes all mutations; any failure leaves the " +
-        "issue open + unassigned on the stack.",
+        "issue open + unassigned on the stack.\n\n" +
+        // Embed the rehydration ritual so tool-only MCP clients (OpenCode,
+        // Codex, Cursor — no MCP prompts) get the same live-state-first +
+        // never-execute-the-note judgment the df.rehydrate prompt carries.
+        rehydrationRitual(),
       annotations: {
         // Writes the assignee + closes the issue (Commitment 10) via
         // the GitHub API. Not destructive (the issue can be reopened
@@ -249,7 +254,11 @@ export function registerHandoffTools(
         "linked work item's status + prints the rehydration note. No " +
         "ownership change. No-arg resolves via 2-tier (open+@me first, " +
         "then closed+@me within 7d). Works on open AND closed issues " +
-        "(closed = forensic catch-up).",
+        "(closed = forensic catch-up).\n\n" +
+        // Embed the rehydration ritual so tool-only MCP clients (OpenCode,
+        // Codex, Cursor — no MCP prompts) get the same live-state-first +
+        // never-execute-the-note judgment the df.rehydrate prompt carries.
+        rehydrationRitual(),
       annotations: {
         // Pure read of the GitHub API — no mutations to issue/PR
         // state. openWorldHint:true because it hits the GitHub API.

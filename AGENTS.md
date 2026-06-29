@@ -2,14 +2,18 @@
 
 Universal guidance for AI coding agents working in the `momentiq-ai/dark-factory` repository.
 
-This file targets ALL agent-assisted development tools: Claude Code, GitHub Copilot, Cursor, Codex, Gemini CLI, Windsurf, Cline, and any future AI coding agent. For Claude Code-specific overrides, see [`CLAUDE.md`](CLAUDE.md).
+This file targets ALL agent-assisted development tools: Claude Code, GitHub Copilot, Cursor, Codex, OpenCode, Gemini CLI, Windsurf, Cline, and any future AI coding agent. It is the **canonical, self-contained contract** — everything an agent needs to work here lives in this file.
 
 ## Source of Truth Hierarchy
 
+**`AGENTS.md` (this file) is the canonical, universal contract.** Tool-specific files (`CLAUDE.md`, `GEMINI.md`) are thin **overlays**: they import this file (Claude Code expands `@AGENTS.md`) or point to it (`GEMINI.md`, since Gemini CLI has no import mechanism) and add only tool-specific configuration (model defaults, tool names). They never restate or override universal doctrine.
+
+> **Why universal doctrine MUST live here, not in `CLAUDE.md`:** most coding agents — OpenCode, Codex, Cursor, Copilot, Gemini — read **only `AGENTS.md`**. When both `AGENTS.md` and `CLAUDE.md` exist, they load `AGENTS.md` and **ignore `CLAUDE.md` entirely**. Any load-bearing rule that lives only in `CLAUDE.md` is therefore invisible to every non-Claude agent — yet the critic gate still judges their output against it. So this file must be a complete superset; `CLAUDE.md` adds Claude-only config and nothing else.
+
 When guidance conflicts, follow this priority order (1 = highest):
 
-1. **CLAUDE.md** — Claude Code-specific overrides
-2. **AGENTS.md** — Universal agent guidance (this file)
+1. **AGENTS.md** — universal agent contract (this file)
+2. **Tool-specific overlay** (`CLAUDE.md` / `GEMINI.md`) — adds tool config only; must not contradict this file
 3. **Inline code comments and docstrings**
 4. **Established codebase conventions** (inferred from existing patterns)
 5. **Framework documentation** (TypeScript, Node, Ajv, etc.)
@@ -36,9 +40,31 @@ Every agent, every change, every time. No exceptions.
 3. **No secret exposure**: Never hardcode secrets, API keys, or credentials. The `.gitignore` excludes `.env*` and `.doppler*`. CI uses `MOMENTIQ_NPM_READ_TOKEN` for the private `@momentiq` npm scope (until 331.3 public-flip) — never echo, log, or commit it.
 4. **No destructive git without confirmation**: Never run `git push --force`, `git reset --hard`, or `git clean -fd` without explicit user approval.
 5. **Auto-merge is the default**: Immediately after `gh pr create` for a non-draft PR, run `gh pr merge --auto --squash`. Plan PRs start as `--draft` and only get auto-merge after `gh pr ready`.
-6. **Cite the cycle**: Until W2 onset, every code PR includes a `Cycle: 331.1` trailer (or sub-cycle as W1 progresses). Post-closure follow-up PRs use `Issue: #<N>` or `Closes #<N>` instead.
+6. **Cite the cycle — but never a closed one.** Until W2 onset, a code PR that drives **active** cycle work includes a `Cycle: 331.1` trailer (or sub-cycle as W1 progresses). A **follow-up** PR — a bug fix, a post-closure correction, or any work not advancing a *live* cycle's exit criteria — uses `Issue: #<N>` / `Closes #<N>` and carries **NO `Cycle:` trailer pointing at a terminal/closed cycle** (it trips cycle-doc validation and misattributes the work). A bug found *during* a cycle but fixed as its own PR is a follow-up → use `Closes`. When unsure whether the cycle is still live, use `Closes #<N>`.
 7. **Accurate code examples**: All code in docs, comments, and planning materials must be compilable and use real API signatures. Bad pseudocode gets copy-pasted into production.
 8. **N=2 iteration ceiling**: If you've made 2 rounds of fixes and a third round of findings on the **same finding-class** is appearing, STOP and surface to PJ. "Same finding-class" does not require literally the same finding text — *any* new critic finding introduced by a fix is a thrash signal, regardless of severity drop (`[high]` → `[medium]` is not convergence), location change (a finding in a different file is not progress), or vendor agreement (cross-vendor consensus is real signal but the right response is **restructure**, not **patch**). **Mandatory response at the 2nd consecutive round of fix-introduced findings**: call `advisor` (Claude Code) or the equivalent independent-reviewer capability in your tool + identify the structural cause + apply DRY / restructure to the doctrine or content being iterated on, **before** any further FIX attempt. **Mandatory advisor cadence**: at 2+ critic-iteration rounds with zero advisor calls, the advisor call is mandatory by round 3. Motivating evidence: `momentiq-ai/dark-factory-platform#218` took 14 rounds because the agent rationalized past the prior (looser) "same critic finding" framing.
+
+## No-human-review Posture (merge flow)
+
+This repo runs under the `main1` ruleset (committed at `.github/rulesets/main.json`, **active** on `main`), the same Dark Factory ruleset family as sage3c:
+
+- `required_approving_review_count: 0`, `require_code_owner_review: false`, `require_last_push_approval: false`.
+- `required_review_thread_resolution: true` — **every bot review thread (Cursor Bugbot, OpenAI Codex, Copilot, `@claude`) MUST be marked Resolved before the merge queue admits the PR.**
+- The merge queue is gated on five **required status checks** — `pr-status-check`, `schema-check`, `agent-critic`, `cycle-doc-validation`, `branch-protection-audit` — plus review-thread resolution and `copilot_code_review`. The hosted `dark-factory/critic` check is **NOT** required; its failures don't block. A required check that fails OR cancels (e.g. an `agent-critic` timeout) blocks the queue until re-run. Changing the live ruleset is a PJ-only org-write action.
+
+Auto-merge (rule 5) is what carries a non-draft PR into this queue; plan PRs stay `--draft` until reviewed.
+
+**"No human review required" does NOT mean "no human reads."** Architecture changes, new cycle phases, and breaking changes still surface to PJ — see [Working with the Orchestrator](#working-with-the-orchestrator-pj).
+
+## Working with the Orchestrator (PJ)
+
+PJ operates as **lead architect and orchestrator, not a hands-on engineer.** Every agent here should:
+
+1. **Own codebase navigation.** PJ gives architectural direction, not file paths — explore and understand current state before implementing.
+2. **Be autonomous for routine work** (established patterns: new adapter shim, schema field, mechanical refactor) — implement end-to-end, present a concise summary.
+3. **Be collaborative for novel/risky work** (new architectural patterns, complex debugging, risky changes) — present a brief root-cause analysis or design proposal (2-3 sentences + trade-offs) and get approval before implementing.
+4. **Run gates autonomously.** Validate before declaring complete; never ask PJ to validate what you can validate yourself.
+5. **Keep communication concise.** Lead with the result, not the process.
 
 ## Consumer-vs-author Posture
 
@@ -180,18 +206,20 @@ This repo's [`docs/roadmap/dark-factory-roadmap.md`](docs/roadmap/dark-factory-r
 
 ## Tool-specific Configuration
 
-Each AI tool reads its own configuration format. `AGENTS.md` (this file) is the canonical source of truth — tool-specific configs are projections of these rules adapted to each tool's format.
+Each AI tool reads its own configuration format. `AGENTS.md` (this file) is the canonical source of truth; tool-specific files **import** it and add only tool-specific config — they never restate doctrine (see [Source of Truth Hierarchy](#source-of-truth-hierarchy)).
 
 | Tool | Config location | Purpose |
 |------|----------------|---------|
-| **Claude Code** | `CLAUDE.md`, `.claude/settings.json`, `.claude/agents/` | Primary guidance + model defaults + specialist agents |
+| **Claude Code** | `CLAUDE.md`, `.claude/settings.json`, `.claude/agents/` | `@AGENTS.md` import + Claude-only config (model defaults, specialist agents) |
 | **Gemini CLI** | `GEMINI.md` | Pointer to AGENTS.md for Gemini |
-| **All tools** | `AGENTS.md` (this file) | Universal authority — non-negotiable rules, architecture, patterns |
+| **All other agents** | `AGENTS.md` (this file) | Universal authority — non-negotiable rules, architecture, patterns |
 
-**Maintenance rule**: When updating guidance, update `AGENTS.md` first, then propagate to tool-specific files. Tool configs must never contradict this file.
+**Maintenance rule**: put universal guidance in `AGENTS.md`; tool files import it. Never copy doctrine into a tool file — that re-creates the drift this structure exists to prevent.
 
 ## Change Discipline
 
-Do not: silently alter public API contracts, weaken the trusted-surface security model, ship reusable workflow changes without bumping the exact-semver tag, pad a PR with unrelated cleanup, or commit secrets.
+**Push forward to SOTA.** No backward-compatibility shortcuts unless explicitly requested — rename/replace legacy paths and remove dead code *in scope*. The exception is the public surface: see [Consumer-vs-author Posture](#consumer-vs-author-posture) (breaking changes there are version-gated, not free).
 
-When in doubt, read the parent cycle doc on sage3c (`docs/roadmap/cycles/cycle331.1-extract-from-sage3c.md`). It is the spec. If the spec doesn't cover the situation, surface a concise design question (2-3 sentences + trade-offs) before guessing.
+Do not: silently alter public API contracts, weaken the trusted-surface security model, ship reusable workflow changes without bumping the exact-semver tag, pad a PR with *unrelated* cleanup, or commit secrets.
+
+When in doubt, read the parent cycle doc on sage3c (`docs/roadmap/cycles/cycle331.1-extract-from-sage3c.md`) — it is the spec. If the spec doesn't cover the situation, surface the question to PJ (see [Working with the Orchestrator](#working-with-the-orchestrator-pj)) before guessing.

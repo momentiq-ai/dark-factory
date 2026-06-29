@@ -55,6 +55,19 @@ For every file in the input template, choose exactly ONE action:
    When `analysis.docs.hasClaudeMd === true`, use `merge` for `CLAUDE.md`;
    otherwise use `emit`. Same for `AGENTS.md`.
 
+3b. **`AGENTS.md` is canonical; `CLAUDE.md` is a thin overlay.** Put ALL universal
+   agent doctrine (build/test commands, conventions, workflow, merge posture,
+   architecture) in `AGENTS.md` — it must stand alone. Most coding agents
+   (OpenCode, Codex, Cursor, Copilot, Gemini) read ONLY `AGENTS.md` and ignore
+   `CLAUDE.md` when both exist, so doctrine placed only in `CLAUDE.md` is invisible
+   to them. The `CLAUDE.md` content you emit must therefore be a thin overlay:
+   an `@AGENTS.md` import line (Claude Code expands it at load) followed by ONLY
+   genuinely Claude-Code-specific config (model defaults, Claude-only tool names).
+   Never restate universal doctrine in `CLAUDE.md` — that duplicates `AGENTS.md`
+   and drifts. For a `merge` into an existing `CLAUDE.md`, append a short overlay
+   section that points to `AGENTS.md` as canonical; for an `emit`, the body is
+   `@AGENTS.md` + the Claude-only section.
+
 4. **Skip when the target already covers it.** If `analysis.dfPresence.configJson === true`,
    skip `.agent-review/config.json` — don't fight the existing gate. If
    `analysis.dfPresence.prWorkflow === true`, skip `dark-factory-pr.yml`. Cite
