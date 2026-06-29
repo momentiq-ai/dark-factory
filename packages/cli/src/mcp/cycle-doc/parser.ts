@@ -6,11 +6,18 @@
 //     (id, frontmatter, sections)
 //
 // The cycle-doc directory is resolved in this precedence:
-//   1. `darkfactory.yaml#docs.cycleDocsDir` (consumer override)
-//   2. `docs/roadmap/cycles/` when it exists (sage-blueprint / default convention)
-//   3. `docs/cycles/` when it exists (hand-built repos, e.g. dark-factory-dashboard)
-//   4. `docs/roadmap/cycles/` as the final fallback (so missing-dir errors point
-//      at the canonical default).
+//   1. `darkfactory.yaml#docs.cycleDocsDir` (consumer override, must stay inside
+//      repoRoot lexically and via realpath).
+//   2. `docs/roadmap/cycles/` when it exists and is not a symlink escape.
+//   3. `docs/cycles/` when it exists and is not a symlink escape.
+//   4. `docs/roadmap/cycles/` as the canonical fallback when neither convention
+//      exists.
+//   5. A locked fallback path (`.darkfactory/cycle-docs-locked`) when both
+//      conventional directories exist only as symlinks that escape repoRoot, so
+//      reads fail closed instead of following an unsafe symlink.
+//
+// Actual reads are additionally guarded by `safeAbsoluteCyclesDir`, which
+// re-validates the resolved directory via `realpathSync` before `readdirSync`.
 //
 // Note on overlap with `src/cycle-doc-validator/`: that module is the
 // Python-backed PR-trailer CI gate (different concern). Its
@@ -18,7 +25,7 @@
 // to validation flow. This module is the TypeScript-side parser the
 // MCP server needs; the cycle5 spec calls out that a TS parser will
 // be added here and reused by Phase 2's remote MCP gateway.
-
+//
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
@@ -41,19 +48,22 @@ const FRONTMATTER_DELIMITER = "---";
  *   1. `darkfactory.yaml#docs.cycleDocsDir` when the file parses cleanly and
  *      the configured path stays inside `repoRoot` (lexically and via realpath,
  *      so symlinks to outside the repo are rejected).
- *   2. `docs/roadmap/cycles` when it exists.
- *   3. `docs/cycles` when it exists.
- *   4. `docs/roadmap/cycles` as the canonical fallback.
+ *   2. `docs/roadmap/cycles` when it exists and is not a symlink escape.
+ *   3. `docs/cycles` when it exists and is not a symlink escape.
+ *   4. `docs/roadmap/cycles` as the canonical fallback when neither convention
+ *      exists safely.
+ *   5. `.darkfactory/cycle-docs-locked` as a final fallback when both
+ *      conventional directories exist only as symlinks escaping `repoRoot`.
  *
  * A malformed `darkfactory.yaml` is intentionally non-fatal here: the cycle-doc
  * parser is a low-level utility used by MCP resources and `df objectives`, and
  * a YAML/schema typo in consumer config should not obscure cycle-doc reads.
  * Callers that need strict config validation already validate via other paths.
  *
- * Security: the configured `docs.cycleDocsDir` is resolved and validated to be
- * within `repoRoot`. Paths that escape the repo (absolute outside paths, `..`
- * segments, or symlinks pointing outside) are ignored, falling back to
- * convention-based auto-detection.
+ * Security: all candidate paths are validated to stay inside `repoRoot`. Paths
+ * that escape (absolute outside paths, `..` segments, or symlinks pointing
+ * outside) are ignored, falling back to the next option. Actual reads are
+ * guarded again by `safeAbsoluteCyclesDir`.
  */
 export function resolveCyclesDir(repoRoot: string): string {
   try {
