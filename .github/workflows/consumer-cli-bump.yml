@@ -1,0 +1,167 @@
+name: Consumer — bump @momentiq/dark-factory-cli
+
+# Reusable workflow (`workflow_call`) that bumps a CONSUMER repo's pinned
+# @momentiq/dark-factory-cli version to a target, co-bumping BOTH pin sites
+# (root package.json devDep + the `cli-version` literals and provenance comment
+# in the consumer's dark-factory PR workflow) in a single PR, then opens it.
+#
+# This is the RECEIVER half of the publish-triggered auto-bump (#280):
+#
+#   dark-factory release (sdk-release.yml) publishes @momentiq/dark-factory-cli
+#     -> dispatch-consumers job POSTs repository_dispatch{df-cli-released, version}
+#        to every repo in .github/consumers.json
+#     -> the consumer's thin .github/workflows/df-cli-bump.yml `uses:` THIS file
+#     -> this workflow opens a chore(deps) bump PR in the consumer's own context
+#
+# It does deterministically what the inert Renovate config on dark-factory-
+# dashboard (#214) would have done, but ON PUBLISH instead of on a weekly poll,
+# and with no dependency on the hosted Mend app. Vanilla Renovate cannot trigger
+# on a publish event; for a first-party package whose release cadence we control,
+# the dispatch pattern is strictly better.
+#
+# Consumers reference this by FULL COMMIT SHA — matching the pin convention for
+# every other dark-factory reusable workflow (pr-status-check, agent-critic,
+# cycle-doc-validation, branch-protection-audit), so a moving upstream can never
+# silently alter consumer CI:
+#   uses: momentiq-ai/dark-factory/.github/workflows/consumer-cli-bump.yml@<sha>
+#
+# Security note: all `${{ ... }}` values used inside `run:` blocks are routed
+# through `env:` and dereferenced as `$VAR` to prevent shell-injection.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Target @momentiq/dark-factory-cli version (no leading v), e.g. 2.17.0"
+        required: true
+        type: string
+      pr-workflow-file:
+        description: "Path to the consumer workflow holding the cli-version literals."
+        required: false
+        type: string
+        default: .github/workflows/dark-factory-pr.yml
+    secrets:
+      MOMENTIQ_NPM_READ_TOKEN:
+        description: "Read token for the private @momentiq npm scope; updates the lockfile entry."
+        required: true
+      CI_BOT_APP_ID:
+        description: "Optional GitHub App id used to AUTHOR the bump PR so downstream required checks run (GITHUB_TOKEN-authored PRs do not trigger workflows). Falls back to GITHUB_TOKEN if absent."
+        required: false
+      CI_BOT_PRIVATE_KEY:
+        description: "Private key paired with CI_BOT_APP_ID."
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version input
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version input '$VERSION' is not a valid semver"
+            exit 1
+          fi
+
+      # The `secrets` context is not usable directly in step-level `if:`, so —
+      # mirroring sdk-release.yml — route presence through `env:` and emit an
+      # output the App-token step gates on.
+      - name: Detect PR-author App credentials
+        id: detect-app
+        env:
+          APP_CREDS_SET: ${{ secrets.CI_BOT_APP_ID != '' && secrets.CI_BOT_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$APP_CREDS_SET" = "true" ]; then
+            echo "has_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_app=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CI_BOT_APP_ID/CI_BOT_PRIVATE_KEY not passed; the bump PR will be authored by GITHUB_TOKEN and will NOT trigger downstream required checks until re-run or pushed by a human. Pass the App creds via the consumer caller's secrets to fix."
+          fi
+
+      - name: Mint App token (PR author)
+        id: app-token
+        if: steps.detect-app.outputs.has_app == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CI_BOT_APP_ID }}
+          private-key: ${{ secrets.CI_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token || github.token }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Co-bump package.json + lockfile + workflow literals
+        id: bump
+        env:
+          VERSION: ${{ inputs.version }}
+          PR_WF: ${{ inputs.pr-workflow-file }}
+          NODE_AUTH_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          PKG="@momentiq/dark-factory-cli"
+
+          CURRENT=$(node -p "const p=require('./package.json'); (p.devDependencies&&p.devDependencies['$PKG'])||(p.dependencies&&p.dependencies['$PKG'])||''")
+          echo "current pin: '$CURRENT'"
+          if [ "$CURRENT" = "$VERSION" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Already pinned at $VERSION; no PR needed."
+            exit 0
+          fi
+
+          # 1) package.json devDep + package-lock.json, kept consistent by npm.
+          #    --package-lock-only avoids a full node_modules install; the
+          #    private-scope auth comes from setup-node's NODE_AUTH_TOKEN .npmrc.
+          npm install --save-dev --save-exact --package-lock-only "$PKG@$VERSION"
+
+          # 2) Workflow literals: the `cli-version:` reusable-workflow inputs and
+          #    the `@momentiq/dark-factory-cli@X.Y.Z` provenance comment. These
+          #    are the second pin site Renovate's custom manager also co-bumps;
+          #    skipping them reintroduces the exact local-vs-CI critic drift the
+          #    whole pattern exists to prevent.
+          if [ -f "$PR_WF" ]; then
+            sed -i -E "s|(cli-version:[[:space:]]*['\"])[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(['\"])|\1${VERSION}\3|g" "$PR_WF"
+            sed -i -E "s|(${PKG}@)[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?|\1${VERSION}|g" "$PR_WF"
+          else
+            echo "::warning::pr-workflow-file '$PR_WF' not found; only package.json + lockfile bumped. If this consumer pins cli-version elsewhere, that site will drift."
+          fi
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open bump PR
+        if: steps.bump.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ steps.app-token.outputs.token || github.token }}
+          branch: chore/bump-df-cli-${{ inputs.version }}
+          delete-branch: true
+          commit-message: "chore(deps): bump @momentiq/dark-factory-cli to ${{ inputs.version }}"
+          title: "chore(deps): bump @momentiq/dark-factory-cli to ${{ inputs.version }}"
+          labels: dependencies
+          body: |
+            Automated on-publish bump of `@momentiq/dark-factory-cli` from
+            `${{ steps.bump.outputs.current }}` → `${{ inputs.version }}`.
+
+            Co-bumps both pin sites so local Husky and CI critic CLI versions
+            stay in lockstep (the drift this pattern exists to prevent):
+
+            - root `package.json` devDep (+ `package-lock.json`)
+            - `${{ inputs.pr-workflow-file }}`: `cli-version:` inputs + the
+              `@momentiq/dark-factory-cli@X.Y.Z` provenance comment
+
+            Triggered by `repository_dispatch{df-cli-released}` from the
+            dark-factory release workflow. Equivalent to what the Renovate
+            config (#214) would open, but on-publish rather than on-poll.
