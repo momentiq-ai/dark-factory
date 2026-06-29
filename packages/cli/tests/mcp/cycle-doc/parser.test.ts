@@ -20,7 +20,7 @@
 // the parser's contract IS "read these files," and a fixture-on-disk
 // test catches encoding/glob/path edge cases real-world consumers hit.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -308,6 +308,7 @@ Just body text, no h2 headers.
 
 describe("resolveCyclesDir (gh#252)", () => {
   let workdir: string;
+  const outsideDirs: string[] = [];
 
   beforeEach(() => {
     workdir = mkdtempSync(join(tmpdir(), "df-cycle-doc-resolve-"));
@@ -315,6 +316,9 @@ describe("resolveCyclesDir (gh#252)", () => {
 
   afterEach(() => {
     rmSync(workdir, { recursive: true, force: true });
+    for (const d of outsideDirs.splice(0)) {
+      rmSync(d, { recursive: true, force: true });
+    }
   });
 
   function writeConfig(content: string): void {
@@ -375,5 +379,14 @@ describe("resolveCyclesDir (gh#252)", () => {
   it("allows configured cycleDocsDir resolving to repoRoot itself", () => {
     writeConfig(["docs:", '  cycleDocsDir: "."'].join("\n"));
     expect(resolveCyclesDir(workdir)).toBe(".");
+  });
+
+  it("falls back to auto-detection when configured cycleDocsDir is a symlink to outside repoRoot", () => {
+    const outside = mkdtempSync(join(tmpdir(), "df-cycle-doc-outside-"));
+    outsideDirs.push(outside);
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    symlinkSync(outside, join(workdir, "symlinked-cycles"), "dir");
+    writeConfig(["docs:", '  cycleDocsDir: "symlinked-cycles"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
   });
 });

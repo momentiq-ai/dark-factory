@@ -19,7 +19,7 @@
 // MCP server needs; the cycle5 spec calls out that a TS parser will
 // be added here and reused by Phase 2's remote MCP gateway.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { parse as parseYaml } from "yaml";
@@ -39,7 +39,8 @@ const FRONTMATTER_DELIMITER = "---";
  *
  * Precedence:
  *   1. `darkfactory.yaml#docs.cycleDocsDir` when the file parses cleanly and
- *      the configured path stays inside `repoRoot`.
+ *      the configured path stays inside `repoRoot` (lexically and via realpath,
+ *      so symlinks to outside the repo are rejected).
  *   2. `docs/roadmap/cycles` when it exists.
  *   3. `docs/cycles` when it exists.
  *   4. `docs/roadmap/cycles` as the canonical fallback.
@@ -50,8 +51,9 @@ const FRONTMATTER_DELIMITER = "---";
  * Callers that need strict config validation already validate via other paths.
  *
  * Security: the configured `docs.cycleDocsDir` is resolved and validated to be
- * within `repoRoot`. Paths that escape the repo (absolute outside paths or `..`
- * segments) are ignored, falling back to convention-based auto-detection.
+ * within `repoRoot`. Paths that escape the repo (absolute outside paths, `..`
+ * segments, or symlinks pointing outside) are ignored, falling back to
+ * convention-based auto-detection.
  */
 export function resolveCyclesDir(repoRoot: string): string {
   try {
@@ -59,10 +61,24 @@ export function resolveCyclesDir(repoRoot: string): string {
     const configured = config.config.docs?.cycleDocsDir;
     if (configured) {
       const resolved = resolve(repoRoot, configured);
-      const rel = relative(repoRoot, resolved);
-      const staysInsideRepo = !rel.startsWith("..") && !isAbsolute(rel);
-      if (staysInsideRepo) {
-        return rel || ".";
+      if (isInsideRepo(resolved, repoRoot)) {
+        // Also follow symlinks: an in-repo path that is a symlink to an outside
+        // directory must not be honored.
+        if (existsSync(resolved)) {
+          try {
+            const realResolved = realpathSync(resolved);
+            const realRepoRoot = realpathSync(repoRoot);
+            if (isInsideRepo(realResolved, realRepoRoot)) {
+              return relative(repoRoot, resolved) || ".";
+            }
+          } catch {
+            // realpath failed (e.g. broken symlink) — fall through to fallback.
+          }
+        } else {
+          // Non-existent configured dir: lexical containment is enough because
+          // there is no symlink target to read yet.
+          return relative(repoRoot, resolved) || ".";
+        }
       }
       // Configured path escapes repoRoot — fall through to auto-detection.
     }
@@ -77,6 +93,17 @@ export function resolveCyclesDir(repoRoot: string): string {
     return ALT_CYCLES_RELATIVE_PATH;
   }
   return DEFAULT_CYCLES_RELATIVE_PATH;
+}
+
+/**
+ * Return true when `candidate` is the same as, or a descendant of, `repoRoot`.
+ * Both arguments are expected to be absolute paths. The check is lexical (does
+ * not follow symlinks) — callers that need symlink containment must also
+ * compare `realpathSync` results.
+ */
+function isInsideRepo(candidate: string, repoRoot: string): boolean {
+  const rel = relative(repoRoot, candidate);
+  return !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 export interface CycleSummary {
