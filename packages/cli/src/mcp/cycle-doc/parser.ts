@@ -78,9 +78,18 @@ export function resolveCyclesDir(repoRoot: string): string {
   const altRel = findSafeCyclesDir(repoRoot, ALT_CYCLES_RELATIVE_PATH, true);
   if (altRel !== null) return altRel;
 
-  // Neither convention exists (or both are symlink-unsafe). Return the lexical
-  // default path so missing-dir errors point at the canonical convention.
-  return DEFAULT_CYCLES_RELATIVE_PATH;
+  // Neither convention exists safely. Return a lexical path that is guaranteed
+  // not to exist as a symlink so reads fail closed instead of following an
+  // unsafe symlink.
+  const fallbackDefault = findSafeCyclesDir(repoRoot, DEFAULT_CYCLES_RELATIVE_PATH, false);
+  if (fallbackDefault !== null && !existsSync(resolve(repoRoot, fallbackDefault))) {
+    return fallbackDefault;
+  }
+  const fallbackAlt = findSafeCyclesDir(repoRoot, ALT_CYCLES_RELATIVE_PATH, false);
+  if (fallbackAlt !== null && !existsSync(resolve(repoRoot, fallbackAlt))) {
+    return fallbackAlt;
+  }
+  return join(".darkfactory", "cycle-docs-locked");
 }
 
 /**
@@ -109,6 +118,31 @@ function findSafeCyclesDir(repoRoot: string, candidateRel: string, requireExists
   }
 
   return relative(repoRoot, resolved) || ".";
+}
+
+/**
+ * Resolve the current cycle-docs directory to an absolute path and verify it
+ * does not escape `repoRoot` (lexically and via realpath). Returns `null` when
+ * the resolved directory is missing or unsafe, so callers read nothing.
+ *
+ * This is the read-time guard that complements `resolveCyclesDir`'s selection
+ * logic with defense-in-depth symlink containment.
+ */
+function safeAbsoluteCyclesDir(repoRoot: string): string | null {
+  const rel = resolveCyclesDir(repoRoot);
+  const resolved = resolve(repoRoot, rel);
+  if (!isInsideRepo(resolved, repoRoot)) return null;
+
+  if (!existsSync(resolved)) return null;
+
+  try {
+    const realResolved = realpathSync(resolved);
+    const realRepoRoot = realpathSync(repoRoot);
+    if (!isInsideRepo(realResolved, realRepoRoot)) return null;
+    return realResolved;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -231,9 +265,9 @@ function splitSections(body: string): Record<string, string> {
   return sections;
 }
 
-function listCycleFiles(repoRoot: string, cyclesDir?: string): string[] {
-  const dir = resolve(repoRoot, cyclesDir ?? resolveCyclesDir(repoRoot));
-  if (!existsSync(dir)) return [];
+function listCycleFiles(repoRoot: string): string[] {
+  const dir = safeAbsoluteCyclesDir(repoRoot);
+  if (dir === null) return [];
   return readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isFile() && CYCLE_FILE_PATTERN.test(e.name))
     .map((e) => e.name)
@@ -246,12 +280,14 @@ function fileToCycleId(filename: string): string | null {
 }
 
 export async function listCycleDocs(repoRoot: string): Promise<CycleSummary[]> {
-  const cyclesDir = resolveCyclesDir(repoRoot);
+  const cyclesDir = safeAbsoluteCyclesDir(repoRoot);
+  if (cyclesDir === null) return [];
+
   const out: CycleSummary[] = [];
-  for (const filename of listCycleFiles(repoRoot, cyclesDir)) {
+  for (const filename of listCycleFiles(repoRoot)) {
     const id = fileToCycleId(filename);
     if (!id) continue;
-    const fullPath = resolve(repoRoot, cyclesDir, filename);
+    const fullPath = resolve(cyclesDir, filename);
     const source = readFileSync(fullPath, "utf8");
     const { frontmatter } = splitFrontmatter(source);
     const summary: CycleSummary = {
@@ -274,10 +310,12 @@ export async function readCycleDoc(
   repoRoot: string,
   cycleId: string,
 ): Promise<ParsedCycleDoc | null> {
-  const cyclesDir = resolveCyclesDir(repoRoot);
-  for (const filename of listCycleFiles(repoRoot, cyclesDir)) {
+  const cyclesDir = safeAbsoluteCyclesDir(repoRoot);
+  if (cyclesDir === null) return null;
+
+  for (const filename of listCycleFiles(repoRoot)) {
     if (fileToCycleId(filename) !== cycleId) continue;
-    const fullPath = resolve(repoRoot, cyclesDir, filename);
+    const fullPath = resolve(cyclesDir, filename);
     const source = readFileSync(fullPath, "utf8");
     const { frontmatter, body } = splitFrontmatter(source);
     const sections = splitSections(body);
