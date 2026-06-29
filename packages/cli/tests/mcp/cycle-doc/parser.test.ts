@@ -417,4 +417,16 @@ describe("resolveCyclesDir (gh#252)", () => {
     const doc = await readCycleDoc(workdir, "cycle99");
     expect(doc).toBeNull();
   });
+
+  it("reads nothing when the conventional directory is a symlink to outside repoRoot", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "df-cycle-doc-outside-"));
+    outsideDirs.push(outside);
+    mkdirSync(join(workdir, "docs", "roadmap"), { recursive: true });
+    symlinkSync(outside, join(workdir, "docs", "roadmap", "cycles"), "dir");
+    writeFileSync(join(outside, "cycle99-outside.md"), "---\ntitle: Outside\nstatus: active\n---\n\n## Exit criteria\n\n- `EC1` Outside.\n", "utf8");
+    const docs = await listCycleDocs(workdir);
+    expect(docs).toEqual([]);
+    const doc = await readCycleDoc(workdir, "cycle99");
+    expect(doc).toBeNull();
+  });
 });
