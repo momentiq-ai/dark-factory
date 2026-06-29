@@ -7,7 +7,7 @@
 // gate judges against them. The warning is non-blocking (`optional: true`).
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,6 +85,24 @@ describe("checkAgentsCanonical", () => {
     );
     await symlink("AGENTS.md", join(dir, "CLAUDE.md"));
     expect(checkAgentsCanonical(dir).passed).toBe(true);
+  });
+
+  it("does NOT false-pass when CLAUDE.md symlinks to a DIFFERENT AGENTS.md", async () => {
+    // The symlink fast-path must confirm CLAUDE.md resolves to THIS repo's
+    // AGENTS.md — not merely a file whose basename is "AGENTS.md". A symlink to
+    // some other AGENTS.md (with its own standalone doctrine) must fall through
+    // to the content check, not short-circuit to pass.
+    await writeFile(join(dir, "AGENTS.md"), "# AGENTS\nuniversal doctrine\n");
+    const otherDir = join(dir, "vendor");
+    await mkdir(otherDir, { recursive: true });
+    await writeFile(
+      join(otherDir, "AGENTS.md"),
+      "# Other AGENTS\nstandalone rule not in the repo AGENTS.md\n",
+    );
+    await symlink(join(otherDir, "AGENTS.md"), join(dir, "CLAUDE.md"));
+    const check = checkAgentsCanonical(dir);
+    expect(check.passed).toBe(false); // basename matches, but realpath does not
+    expect(check.optional).toBe(true); // still non-blocking
   });
 
   it("passes when AGENTS.md is the sole contract (no CLAUDE.md)", async () => {

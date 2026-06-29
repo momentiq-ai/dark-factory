@@ -32,11 +32,10 @@ import {
   accessSync,
   constants,
   existsSync,
-  lstatSync,
   mkdirSync,
   readFileSync,
-  readlinkSync,
   readdirSync,
+  realpathSync,
   statSync,
   unlinkSync,
 } from "node:fs";
@@ -399,20 +398,21 @@ export function checkAgentsCanonical(repoRoot: string): DoctorCheck {
   // flag every AGENTS.md heading as "duplicated". The symlink and the
   // text-import-plus-overlay shape are two distinct concerns; keep them separate.
   try {
-    if (
-      lstatSync(claudePath).isSymbolicLink() &&
-      /(^|\/)AGENTS\.md$/.test(readlinkSync(claudePath))
-    ) {
+    // Resolve both through symlinks: if CLAUDE.md and AGENTS.md are the SAME
+    // real file (CLAUDE.md -> AGENTS.md symlink), content is identical and drift
+    // is impossible. Compare RESOLVED paths — not the link's basename — so a
+    // symlink pointing at some OTHER `AGENTS.md` doesn't false-pass.
+    if (realpathSync(claudePath) === realpathSync(agentsPath)) {
       return {
         name,
         passed: true,
         detail:
-          "CLAUDE.md is a symlink to AGENTS.md — identical content, no drift possible.",
+          "CLAUDE.md resolves to the same file as AGENTS.md (symlink) — identical content, no drift possible.",
       };
     }
   } catch {
-    // not a symlink, or an unreadable link target — fall through to the
-    // content-based import check.
+    // unreadable path / realpath failure — fall through to the content-based
+    // import check.
   }
   const claudeContent = readFileSync(claudePath, "utf8");
   const importsAgents = claudeImportsAgents(claudeContent);

@@ -27,11 +27,13 @@
  * the Issue itself. Same four principles either way.
  */
 export function rehydrationRitual(opts: { issue?: string } = {}): string {
-  const issueRef = opts.issue ? `Issue #${opts.issue}` : "the handoff Issue";
+  const issueRef = opts.issue
+    ? `handoff Issue #${opts.issue}`
+    : "the handoff Issue";
   const claimRef = opts.issue ? `#${opts.issue}` : "it";
   const takeoverRef = opts.issue ? `#${opts.issue}` : "the Issue";
   return [
-    `You are resuming work from handoff ${issueRef} (the prior session left ` +
+    `You are resuming work from ${issueRef} (the prior session left ` +
       "its reasoning in the Issue body's `agent-context:v1` marker block). " +
       "Follow this ritual — it is the one piece of process that always applies:",
     "",
