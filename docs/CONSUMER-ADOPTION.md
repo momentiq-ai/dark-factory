@@ -67,7 +67,8 @@ After the PR lands, verify the agent-context set is wired:
 ./node_modules/.bin/df doctor
 # Should show 6+ green `agent_context.*` checks (CLAUDE.md, AGENTS.md,
 # .claude/settings.json, docs/PRINCIPLES.md, the cycle1-*.md bootstrap, and
-# .agent-review/config.json).
+# .agent-review/config.json), plus `agent_context.agents_md_canonical` —
+# a non-blocking warning if CLAUDE.md doesn't import AGENTS.md (see §1.5).
 ```
 
 The `agent_context.*` check group fails loudly if any required file goes
@@ -81,14 +82,40 @@ additional per-path check — that's the way to opt repository-specific
 guidance docs (e.g. `docs/architecture/critic-fleet.md`) into the same
 fail-loudly contract as the cycle 15 D3 required set.
 
-### 1.5 Skip with care
+### 1.5 `AGENTS.md` is canonical; `CLAUDE.md` is a thin overlay
+
+**Put all universal agent doctrine in `AGENTS.md`, and make `CLAUDE.md` import it.**
+Most coding agents — OpenCode, Codex, Cursor, Copilot, Gemini — read **only
+`AGENTS.md`**; when both `AGENTS.md` and `CLAUDE.md` exist they load `AGENTS.md`
+and **ignore `CLAUDE.md` entirely**. So any rule that lives only in `CLAUDE.md`
+is invisible to every non-Claude harness — while the critic gate still loads it
+via `context.guidanceFiles` and judges those agents' output against it. That gap
+silently penalizes authors for doctrine they could never read.
+
+The fix is the shape Claude Code itself recommends:
+
+```markdown
+@AGENTS.md
+
+## Claude Code
+<!-- model defaults, tool names, and other genuinely Claude-only config -->
+```
+
+`CLAUDE.md` imports `AGENTS.md` (Claude Code expands `@AGENTS.md` at load) and
+adds *only* Claude-specific config; `AGENTS.md` carries the full universal
+contract. One source of truth, no drift, every harness covered. Point
+`context.guidanceFiles` at `AGENTS.md` (or both) so the critic reads what every
+author reads. `df doctor`'s `agent_context.agents_md_canonical` check warns
+(non-blocking) when a repo hasn't adopted this shape.
+
+### 1.6 Skip with care
 
 If you're a single-package script repo with no services and no CI, you can skip
-the full agent-context set. In that case, write a thin `CLAUDE.md` and
-`AGENTS.md` by hand — they're cheaper than a full `df onboard` run and the
-critic doesn't need the deeper context for trivial repos. But: when in doubt,
-run `df onboard`. The cost is one PR review; the benefit is consistent agent
-behavior on every PR going forward.
+the full agent-context set. In that case, write a self-contained `AGENTS.md` by
+hand and make `CLAUDE.md` a one-line `@AGENTS.md` import (per §1.5) — cheaper
+than a full `df onboard` run and the critic doesn't need the deeper context for
+trivial repos. But: when in doubt, run `df onboard`. The cost is one PR review;
+the benefit is consistent agent behavior on every PR going forward.
 
 ---
 
@@ -122,7 +149,7 @@ Dark Factory runs the **same** multi-vendor adversarial critic fleet against you
 
 ## 4. Install the CLI
 
-The CLI is published to the public npm registry at [`@momentiq/dark-factory-cli`](https://www.npmjs.com/package/@momentiq/dark-factory-cli). Pin to an exact version — floating ranges are not supported (per [`CLAUDE.md` § Consumer-vs-author posture](../CLAUDE.md)).
+The CLI is published to the public npm registry at [`@momentiq/dark-factory-cli`](https://www.npmjs.com/package/@momentiq/dark-factory-cli). Pin to an exact version — floating ranges are not supported (per [`AGENTS.md` § Consumer-vs-author Posture](../AGENTS.md#consumer-vs-author-posture)).
 
 **a. Root `package.json`** — exact pin in `devDependencies`:
 
@@ -155,7 +182,7 @@ npm install
 ./node_modules/.bin/df --help
 ```
 
-The lockfile (`package-lock.json`) must be committed so CI installs the same version (see `CLAUDE.md` § Reusable workflow conventions — "two paths converge on the same version pin").
+The lockfile (`package-lock.json`) must be committed so CI installs the same version (see [`AGENTS.md` § Reusable Workflow Conventions](../AGENTS.md#reusable-workflow-conventions-consumer-contract) — "two paths converge on the same version pin").
 
 ## 5. Husky hooks — local critic with subscription auth (the load-bearing piece)
 
@@ -413,9 +440,9 @@ Copy the [dark-factory canonical config](../.agent-review/config.json) into your
 
 - **`tdd.classifier.productionGlobs` / `testGlobs`** — point at your repo's actual source/test layout.
 - **`profiles.local.criticIds`** — the minimum quorum-2 envelope is `["cursor-local-chief-engineer", "codex-local-chief-engineer"]` per the canonical config's `aggregation.quorum: 2`. Add more critics if you want stricter consensus.
-- **`context.guidanceFiles`** — list your repo's CLAUDE.md / ENGINEERING.md / equivalent files. The critic loads these into its prompt envelope.
+- **`context.guidanceFiles`** — list `AGENTS.md` first (the canonical contract every agent reads — see §1.5), optionally followed by `CLAUDE.md` / tool-overlay / equivalent files. The critic loads these into its prompt envelope, so pointing it at `AGENTS.md` is what makes it judge against the same doctrine non-Claude authors see.
 
-`min-complete-quorum: 2` is the recommended aggregation policy: a verdict is binding only when at least 2 critics complete; per-critic errors (rate limits, expired subs) don't block the gate. See `CLAUDE.md` § Iteration-trap for the N=2 ceiling — same policy applies to consumer repos.
+`min-complete-quorum: 2` is the recommended aggregation policy: a verdict is binding only when at least 2 critics complete; per-critic errors (rate limits, expired subs) don't block the gate. See [`AGENTS.md` § Non-Negotiable Rules](../AGENTS.md#non-negotiable-rules) (rule 8, the N=2 iteration ceiling) — same policy applies to consumer repos.
 
 Also drop a critic-prompt fragment at `.agent-review/prompts/local-critic.md` with your repo-specific quality bar. See [dark-factory's own](../.agent-review/prompts/local-critic.md) as a starting template.
 
@@ -605,7 +632,7 @@ Subsequent PRs in your repo cite `Cycle: 1` or, for tactical follow-ups after cl
 
 > **Legacy / transitional for W3-enrolled repos.** If you adopt the **W3 hosted App** (§2, recommended) you do **not** need this CI workflow as a permanent gate — `dark-factory/critic` is your authoritative gate. Wire `dark-factory-pr.yml` only if you self-host the critic (not on the hosted App), or *transiently* to validate the hosted critic before deleting it. Running both the CI critic and the hosted critic on one repo is a duplicate gate (see §2).
 
-Pin each reusable workflow to an exact **commit SHA** (NOT a `@v0` tag — per `CLAUDE.md` § Reusable workflow conventions, only `@vX.Y.Z` semver tags and commit SHAs are supported; floating `@v0`/`@v0.1` tags don't exist).
+Pin each reusable workflow to an exact **commit SHA** (NOT a `@v0` tag — per [`AGENTS.md` § Reusable Workflow Conventions](../AGENTS.md#reusable-workflow-conventions-consumer-contract), only `@vX.Y.Z` semver tags and commit SHAs are supported; floating `@v0`/`@v0.1` tags don't exist).
 
 ```yaml
 # .github/workflows/dark-factory-pr.yml
@@ -1422,5 +1449,5 @@ The originating cycle is [`momentiq-ai/dark-factory-platform` → Cycle 13](http
 - **AI-Native Manifesto:** [sage3c:docs/engineering/ai-native-manifesto.md](https://github.com/momentiq-ai/sage3c/blob/main/docs/engineering/ai-native-manifesto.md) — foundational principles, especially §10 Spec-Driven Traceability.
 - **Cross-repo subagent isolation:** when dispatching Claude Code subagents across multiple consumer repos in one session, each subagent MUST clone to a unique path (`/Users/<you>/projects/<repo>-wt-<task>`). Otherwise concurrent subagents trample each other's git state. This is documented in the `feedback_cross_repo_subagent_isolation` memory pattern (private to PJ's Claude Code memory).
 - **A2 follow-up — CLI adapter dynamic loading:** the CLI dynamically imports vendor adapters inside `buildDefaultAdapterRegistry()` (`packages/cli/src/cli.ts` lines ~70-80) so the binary loads under `--ignore-scripts` for non-`df critic` subcommands. Don't trip over this when debugging install issues.
-- **Reusable workflow security model:** `CLAUDE.md` § Reusable workflow conventions explains the trusted-surface rebind (workflow-baked `EXPECTED_INTEGRITY` + `$RUNNER_TEMP/df-trusted-*` extraction) for paranoid consumers.
+- **Reusable workflow security model:** [`AGENTS.md` § Reusable Workflow Conventions](../AGENTS.md#reusable-workflow-conventions-consumer-contract) explains the trusted-surface rebind (workflow-baked `EXPECTED_INTEGRITY` + `$RUNNER_TEMP/df-trusted-*` extraction) for paranoid consumers.
 - **Docker build evidence shim contract (§5.5):** [`dark-factory-platform#141`](https://github.com/momentiq-ai/dark-factory-platform/issues/141) — host-side `scripts/check-dockerfile.sh` shim spec; the upstream half (CLI evidence consumption + SHA binding + injection-resistant prompt section) shipped in `dark-factory#115`.

@@ -86,6 +86,7 @@
   },
   "context": {
     "guidanceFiles": [
+      "AGENTS.md",
       "CLAUDE.md"
     ],
     "promptFragments": [
