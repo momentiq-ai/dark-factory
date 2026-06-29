@@ -60,39 +60,55 @@ export function resolveCyclesDir(repoRoot: string): string {
     const config = loadDarkFactoryConfig(repoRoot);
     const configured = config.config.docs?.cycleDocsDir;
     if (configured) {
-      const resolved = resolve(repoRoot, configured);
-      if (isInsideRepo(resolved, repoRoot)) {
-        // Also follow symlinks: an in-repo path that is a symlink to an outside
-        // directory must not be honored.
-        if (existsSync(resolved)) {
-          try {
-            const realResolved = realpathSync(resolved);
-            const realRepoRoot = realpathSync(repoRoot);
-            if (isInsideRepo(realResolved, realRepoRoot)) {
-              return relative(repoRoot, resolved) || ".";
-            }
-          } catch {
-            // realpath failed (e.g. broken symlink) — fall through to fallback.
-          }
-        } else {
-          // Non-existent configured dir: lexical containment is enough because
-          // there is no symlink target to read yet.
-          return relative(repoRoot, resolved) || ".";
-        }
-      }
-      // Configured path escapes repoRoot — fall through to auto-detection.
+      // Consumer override is honored even when the directory does not yet exist,
+      // so a mis-typed config surfaces a clear "not found" error at the right
+      // path rather than silently falling back to a different convention.
+      const rel = findSafeCyclesDir(repoRoot, configured, false);
+      if (rel !== null) return rel;
     }
   } catch {
     // Fall through to convention-based auto-detection.
   }
 
-  if (existsSync(resolve(repoRoot, DEFAULT_CYCLES_RELATIVE_PATH))) {
-    return DEFAULT_CYCLES_RELATIVE_PATH;
-  }
-  if (existsSync(resolve(repoRoot, ALT_CYCLES_RELATIVE_PATH))) {
-    return ALT_CYCLES_RELATIVE_PATH;
-  }
+  // Convention-based auto-detection only considers directories that actually
+  // exist, matching the behavior before #252.
+  const defaultRel = findSafeCyclesDir(repoRoot, DEFAULT_CYCLES_RELATIVE_PATH, true);
+  if (defaultRel !== null) return defaultRel;
+
+  const altRel = findSafeCyclesDir(repoRoot, ALT_CYCLES_RELATIVE_PATH, true);
+  if (altRel !== null) return altRel;
+
+  // Neither convention exists (or both are symlink-unsafe). Return the lexical
+  // default path so missing-dir errors point at the canonical convention.
   return DEFAULT_CYCLES_RELATIVE_PATH;
+}
+
+/**
+ * Validate that `candidateRel` resolves to a path contained within `repoRoot`.
+ * Returns the relative path (relative to `repoRoot`) when safe, or `null` when
+ * the path escapes the repo lexically or via symlinks.
+ *
+ * @param requireExists - When true, only accept paths that already exist on
+ *   disk. Used for convention-based auto-detection so we prefer an existing
+ *   alternative directory instead of a non-existent default.
+ */
+function findSafeCyclesDir(repoRoot: string, candidateRel: string, requireExists: boolean): string | null {
+  const resolved = resolve(repoRoot, candidateRel);
+  if (!isInsideRepo(resolved, repoRoot)) return null;
+
+  if (requireExists && !existsSync(resolved)) return null;
+
+  if (existsSync(resolved)) {
+    try {
+      const realResolved = realpathSync(resolved);
+      const realRepoRoot = realpathSync(repoRoot);
+      if (!isInsideRepo(realResolved, realRepoRoot)) return null;
+    } catch {
+      return null;
+    }
+  }
+
+  return relative(repoRoot, resolved) || ".";
 }
 
 /**

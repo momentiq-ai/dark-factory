@@ -389,4 +389,23 @@ describe("resolveCyclesDir (gh#252)", () => {
     writeConfig(["docs:", '  cycleDocsDir: "symlinked-cycles"'].join("\n"));
     expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
   });
+
+  it("falls back to docs/cycles when docs/roadmap/cycles is a symlink to outside repoRoot", () => {
+    const outside = mkdtempSync(join(tmpdir(), "df-cycle-doc-outside-"));
+    outsideDirs.push(outside);
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    mkdirSync(join(workdir, "docs", "roadmap"), { recursive: true });
+    symlinkSync(outside, join(workdir, "docs", "roadmap", "cycles"), "dir");
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("falls back to lexical default when both conventional dirs are symlinks to outside repoRoot", () => {
+    const outside = mkdtempSync(join(tmpdir(), "df-cycle-doc-outside-"));
+    outsideDirs.push(outside);
+    mkdirSync(join(workdir, "docs"), { recursive: true });
+    mkdirSync(join(workdir, "docs", "roadmap"), { recursive: true });
+    symlinkSync(outside, join(workdir, "docs", "cycles"), "dir");
+    symlinkSync(outside, join(workdir, "docs", "roadmap", "cycles"), "dir");
+    expect(resolveCyclesDir(workdir)).toBe("docs/roadmap/cycles");
+  });
 });
