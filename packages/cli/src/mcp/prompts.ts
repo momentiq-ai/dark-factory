@@ -32,6 +32,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { readTelemetryEvents } from "../evidence/audit-trail.js";
+import { noteSkeleton } from "../handoff/note-contract.js";
 import { resolveArtifactDir, telemetryPath } from "../paths.js";
 import { loadAgentReviewConfig } from "../policy/config.js";
 
@@ -471,28 +472,7 @@ export function registerPrompts(
           "Issue body):",
         "",
         "```markdown",
-        "<!-- agent-context:v1 -->",
-        "> 🤖 **Agent rehydration context** — transient working memory, NOT a source of truth.",
-        "> State is whatever `gh`/the linked work items say now; this is the *reasoning*. Stale by nature.",
-        `> _Updated: ${today()} by <your model/session>_`,
-        "",
-        `**Work-stream:** \`${title}\` · the dedicated handoff Issue's title.`,
-        "",
-        "**Why this approach (and what I rejected):**",
-        "- <the decision + the alternative you did NOT take, and why>",
-        "",
-        "**Traps I hit:**   ← setup-shaped only; see the Security rule below",
-        "- <the gotcha + the setup step that avoids it>",
-        "",
-        "**Where I was mid-thought:**",
-        "- <the thing you'd tell yourself if you walked back in 10 minutes later>",
-        "",
-        "**Derive current state (don't trust the above as current):**",
-        "    Run df_rehydrate on this Issue — it derives live state safely",
-        "    (Issue + each linked work item). Or, generically: gh issue view",
-        "    <N> for the Issue body + timeline; gh pr view / gh pr checks",
-        "    for any linked PR.",
-        "<!-- /agent-context:v1 -->",
+        noteSkeleton({ date: today(), title }),
         "```",
         "",
         "Rules while you write:",

@@ -41,6 +41,10 @@ import {
   type RehydrateData,
 } from "../../handoff/index.js";
 import { requireIssueNumber } from "../../handoff/args.js";
+import {
+  NOTE_SECURITY_RULE_COMPACT,
+  noteSkeleton,
+} from "../../handoff/note-contract.js";
 
 export interface RegisterHandoffToolsOptions {
   /**
@@ -104,8 +108,22 @@ export function registerHandoffTools(
           .string()
           .min(1)
           .describe(
-            "The composed rehydration note body, bounded by the v1 " +
-              "markers (<!-- agent-context:v1 --> … <!-- /agent-context:v1 -->).",
+            "The rehydration note body, composed from your ACTUAL working " +
+              "memory (the reasoning a fresh session can NOT recover from " +
+              "`gh` / the linked PRs — live state is recoverable, reasoning " +
+              "evaporates). Compose it in this marker-bounded format — the " +
+              "`agent-context:v1` markers are load-bearing (the upsert finds " +
+              "the block by them); set the `_Updated:_` line to today's date " +
+              "(an unparseable date disables the staleness guard):\n\n" +
+              noteSkeleton() +
+              "\n\n" +
+              NOTE_SECURITY_RULE_COMPACT +
+              "\n\nThis schema carries the note format + the hard secrets " +
+              "rule so tool-only clients (OpenCode, Codex, Cursor) get them " +
+              "without the `df.handoff` MCP prompt — which Claude Code uses " +
+              "for the full authoring doctrine (omit what the Issue/links " +
+              "already track; link, don't copy; the derive-state line stays " +
+              "generic).",
           ),
         issue: z
           .string()
