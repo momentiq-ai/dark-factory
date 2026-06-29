@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.13.0...dark-factory-schemas-v0.13.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* **cli:** demote bare result-level requiresHumanJudgment from unconditional gate veto ([#241](https://github.com/momentiq-ai/dark-factory/issues/241)) ([#242](https://github.com/momentiq-ai/dark-factory/issues/242)) ([0382e24](https://github.com/momentiq-ai/dark-factory/commit/0382e2443a18aec5ba32795dc929300ca88ad4df))
+
 ## [0.13.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-schemas-v0.12.0...dark-factory-schemas-v0.13.0) (2026-06-24)
 
 
