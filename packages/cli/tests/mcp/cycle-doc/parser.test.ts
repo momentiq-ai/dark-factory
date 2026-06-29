@@ -354,15 +354,26 @@ describe("resolveCyclesDir (gh#252)", () => {
     expect(resolveCyclesDir(workdir)).toBe("custom/cycles");
   });
 
-  it("falls back to auto-detection when darkfactory.yaml is malformed", () => {
+  it("falls back to auto-detection when configured cycleDocsDir escapes repoRoot", () => {
     mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
-    writeConfig("not: valid: yaml: [");
+    writeConfig(["docs:", '  cycleDocsDir: "../outside"'].join("\n"));
     expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
   });
 
-  it("falls back to auto-detection when darkfactory.yaml schema lacks docs", () => {
+  it("falls back to auto-detection when configured cycleDocsDir is an absolute outside path", () => {
     mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
-    writeConfig(["repo:", '  slug: "test"'].join("\n"));
+    writeConfig(["docs:", '  cycleDocsDir: "/tmp/outside"'].join("\n"));
     expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("falls back to auto-detection when configured cycleDocsDir uses '..' mid-path", () => {
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    writeConfig(["docs:", '  cycleDocsDir: "foo/../../outside"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("allows configured cycleDocsDir resolving to repoRoot itself", () => {
+    writeConfig(["docs:", '  cycleDocsDir: "."'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe(".");
   });
 });

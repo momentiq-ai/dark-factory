@@ -20,7 +20,7 @@
 // be added here and reused by Phase 2's remote MCP gateway.
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 
@@ -38,7 +38,8 @@ const FRONTMATTER_DELIMITER = "---";
  * Resolve the relative cycle-docs directory for a repo.
  *
  * Precedence:
- *   1. `darkfactory.yaml#docs.cycleDocsDir` when the file parses cleanly.
+ *   1. `darkfactory.yaml#docs.cycleDocsDir` when the file parses cleanly and
+ *      the configured path stays inside `repoRoot`.
  *   2. `docs/roadmap/cycles` when it exists.
  *   3. `docs/cycles` when it exists.
  *   4. `docs/roadmap/cycles` as the canonical fallback.
@@ -47,12 +48,23 @@ const FRONTMATTER_DELIMITER = "---";
  * parser is a low-level utility used by MCP resources and `df objectives`, and
  * a YAML/schema typo in consumer config should not obscure cycle-doc reads.
  * Callers that need strict config validation already validate via other paths.
+ *
+ * Security: the configured `docs.cycleDocsDir` is resolved and validated to be
+ * within `repoRoot`. Paths that escape the repo (absolute outside paths or `..`
+ * segments) are ignored, falling back to convention-based auto-detection.
  */
 export function resolveCyclesDir(repoRoot: string): string {
   try {
     const config = loadDarkFactoryConfig(repoRoot);
-    if (config.config.docs?.cycleDocsDir) {
-      return config.config.docs.cycleDocsDir;
+    const configured = config.config.docs?.cycleDocsDir;
+    if (configured) {
+      const resolved = resolve(repoRoot, configured);
+      const rel = relative(repoRoot, resolved);
+      const staysInsideRepo = !rel.startsWith("..") && !isAbsolute(rel);
+      if (staysInsideRepo) {
+        return rel || ".";
+      }
+      // Configured path escapes repoRoot — fall through to auto-detection.
     }
   } catch {
     // Fall through to convention-based auto-detection.
