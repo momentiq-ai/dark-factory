@@ -195,8 +195,9 @@ approach: vanilla Renovate cannot trigger on a publish event, and for a
 first-party package whose release cadence we control, dispatch is tighter.)
 
 To opt in, add a thin receiver workflow that delegates to the authored reusable
-workflow (pinned by **full commit SHA**, like every other dark-factory reusable
-workflow):
+workflow, pinned with the **same exact ref you already use for the other
+dark-factory reusable workflows** in your `dark-factory-pr.yml` (a full commit
+SHA in current practice):
 
 ```yaml
 # .github/workflows/df-cli-bump.yml
@@ -214,8 +215,8 @@ on:
 
 jobs:
   bump:
-    # Pin to a dark-factory commit SHA (never a moving tag) — same convention
-    # as pr-status-check / agent-critic / cycle-doc-validation.
+    # Pin to the same exact dark-factory ref as your existing pr-status-check /
+    # agent-critic / cycle-doc-validation entries (a commit SHA in current practice).
     uses: momentiq-ai/dark-factory/.github/workflows/consumer-cli-bump.yml@<dark-factory-sha>
     with:
       # client_payload.version is validated as strict semver inside the
