@@ -1,10 +1,23 @@
 // Cycle doc parser — cycle5 Phase 1 step 3a.
 //
-// Reads cycle docs from `docs/roadmap/cycles/cycleN[.M]-slug.md` and
-// returns:
+// Reads cycle docs from the repo's cycle-doc directory and returns:
 //   - listCycleDocs(repoRoot) → summary per file (id, title, status, ...)
 //   - readCycleDoc(repoRoot, id) → full structured representation
 //     (id, frontmatter, sections)
+//
+// The cycle-doc directory is resolved in this precedence:
+//   1. `darkfactory.yaml#docs.cycleDocsDir` (consumer override, must stay inside
+//      repoRoot lexically and via realpath).
+//   2. `docs/roadmap/cycles/` when it exists and is not a symlink escape.
+//   3. `docs/cycles/` when it exists and is not a symlink escape.
+//   4. `docs/roadmap/cycles/` when it is lexically safe and does not exist.
+//   5. `docs/cycles/` when it is lexically safe and does not exist.
+//   6. `.darkfactory/cycle-docs-locked` when both conventional directories exist
+//      only as symlinks that escape repoRoot, so reads fail closed instead of
+//      following an unsafe symlink.
+//
+// Actual reads are additionally guarded by `safeAbsoluteCyclesDir`, which
+// re-validates the resolved directory via `realpathSync` before `readdirSync`.
 //
 // Note on overlap with `src/cycle-doc-validator/`: that module is the
 // Python-backed PR-trailer CI gate (different concern). Its
@@ -12,18 +25,150 @@
 // to validation flow. This module is the TypeScript-side parser the
 // MCP server needs; the cycle5 spec calls out that a TS parser will
 // be added here and reused by Phase 2's remote MCP gateway.
-
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+//
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 
-const CYCLES_RELATIVE_PATH = "docs/roadmap/cycles";
+import { loadDarkFactoryConfig } from "../../skills/config.js";
+
+const DEFAULT_CYCLES_RELATIVE_PATH = "docs/roadmap/cycles";
+const ALT_CYCLES_RELATIVE_PATH = "docs/cycles";
 // Matches: `cycle1-foo.md`, `cycle331.6-slug.md`, `cycle10-something.md`
 // Captures the id portion (e.g., `cycle1`, `cycle331.6`).
 const CYCLE_FILE_PATTERN = /^(cycle\d+(?:\.\d+)?)(?:-.+)?\.md$/;
 
 const FRONTMATTER_DELIMITER = "---";
+
+/**
+ * Resolve the relative cycle-docs directory for a repo.
+ *
+ * Precedence:
+ *   1. `darkfactory.yaml#docs.cycleDocsDir` when the file parses cleanly and
+ *      the configured path stays inside `repoRoot` (lexically and via realpath,
+ *      so symlinks to outside the repo are rejected).
+ *   2. `docs/roadmap/cycles` when it exists and is not a symlink escape.
+ *   3. `docs/cycles` when it exists and is not a symlink escape.
+ *   4. `docs/roadmap/cycles` when it is lexically safe and does not exist.
+ *   5. `docs/cycles` when it is lexically safe and does not exist.
+ *   6. `.darkfactory/cycle-docs-locked` when both conventional directories exist
+ *      but fail the realpath containment check.
+ *
+ * A malformed `darkfactory.yaml` is intentionally non-fatal here: the cycle-doc
+ * parser is a low-level utility used by MCP resources and `df objectives`, and
+ * a YAML/schema typo in consumer config should not obscure cycle-doc reads.
+ * Callers that need strict config validation already validate via other paths.
+ *
+ * Security: all candidate paths are validated to stay inside `repoRoot`. Paths
+ * that escape (absolute outside paths, `..` segments, or symlinks pointing
+ * outside) are ignored, falling back to the next option. Actual reads are
+ * guarded again by `safeAbsoluteCyclesDir`.
+ */
+export function resolveCyclesDir(repoRoot: string): string {
+  try {
+    const config = loadDarkFactoryConfig(repoRoot);
+    const configured = config.config.docs?.cycleDocsDir;
+    if (configured) {
+      // Consumer override is honored even when the directory does not yet exist,
+      // so a mis-typed config surfaces a clear "not found" error at the right
+      // path rather than silently falling back to a different convention.
+      const rel = findSafeCyclesDir(repoRoot, configured, false);
+      if (rel !== null) return rel;
+    }
+  } catch {
+    // Fall through to convention-based auto-detection.
+  }
+
+  // Convention-based auto-detection only considers directories that actually
+  // exist, matching the behavior before #252.
+  const defaultRel = findSafeCyclesDir(repoRoot, DEFAULT_CYCLES_RELATIVE_PATH, true);
+  if (defaultRel !== null) return defaultRel;
+
+  const altRel = findSafeCyclesDir(repoRoot, ALT_CYCLES_RELATIVE_PATH, true);
+  if (altRel !== null) return altRel;
+
+  // Neither convention exists safely. Return a lexical path that is guaranteed
+  // not to exist as a symlink so reads fail closed instead of following an
+  // unsafe symlink.
+  const fallbackDefault = findSafeCyclesDir(repoRoot, DEFAULT_CYCLES_RELATIVE_PATH, false);
+  if (fallbackDefault !== null && !existsSync(resolve(repoRoot, fallbackDefault))) {
+    return fallbackDefault;
+  }
+  const fallbackAlt = findSafeCyclesDir(repoRoot, ALT_CYCLES_RELATIVE_PATH, false);
+  if (fallbackAlt !== null && !existsSync(resolve(repoRoot, fallbackAlt))) {
+    return fallbackAlt;
+  }
+  return join(".darkfactory", "cycle-docs-locked");
+}
+
+/**
+ * Validate that `candidateRel` resolves to a path contained within `repoRoot`.
+ * Returns the relative path (relative to `repoRoot`) when safe, or `null` when
+ * the path escapes the repo lexically or via symlinks.
+ *
+ * @param requireExists - When true, only accept paths that already exist on
+ *   disk. Used for convention-based auto-detection so we prefer an existing
+ *   alternative directory instead of a non-existent default.
+ */
+function findSafeCyclesDir(repoRoot: string, candidateRel: string, requireExists: boolean): string | null {
+  const resolved = resolve(repoRoot, candidateRel);
+  if (!isInsideRepo(resolved, repoRoot)) return null;
+
+  if (requireExists && !existsSync(resolved)) return null;
+
+  if (existsSync(resolved)) {
+    try {
+      const realResolved = realpathSync(resolved);
+      const realRepoRoot = realpathSync(repoRoot);
+      if (!isInsideRepo(realResolved, realRepoRoot)) return null;
+    } catch {
+      return null;
+    }
+  }
+
+  return relative(repoRoot, resolved) || ".";
+}
+
+/**
+ * Resolve the current cycle-docs directory to an absolute path and verify it
+ * does not escape `repoRoot` (lexically and via realpath). Returns `null` when
+ * the resolved directory is missing or unsafe, so callers read nothing.
+ *
+ * This is the read-time guard that complements `resolveCyclesDir`'s selection
+ * logic with defense-in-depth symlink containment.
+ */
+function safeAbsoluteCyclesDir(repoRoot: string): string | null {
+  const rel = resolveCyclesDir(repoRoot);
+  const resolved = resolve(repoRoot, rel);
+  if (!isInsideRepo(resolved, repoRoot)) return null;
+
+  if (!existsSync(resolved)) return null;
+
+  try {
+    const realResolved = realpathSync(resolved);
+    const realRepoRoot = realpathSync(repoRoot);
+    if (!isInsideRepo(realResolved, realRepoRoot)) return null;
+    // A misconfigured cycles dir may point at a file (or other non-directory).
+    // Treat that the same as "no cycle docs found" instead of letting
+    // readdirSync throw.
+    if (!statSync(realResolved).isDirectory()) return null;
+    return realResolved;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return true when `candidate` is the same as, or a descendant of, `repoRoot`.
+ * Both arguments are expected to be absolute paths. The check is lexical (does
+ * not follow symlinks) — callers that need symlink containment must also
+ * compare `realpathSync` results.
+ */
+function isInsideRepo(candidate: string, repoRoot: string): boolean {
+  const rel = relative(repoRoot, candidate);
+  return !rel.startsWith("..") && !isAbsolute(rel);
+}
 
 export interface CycleSummary {
   /** Stable id derived from filename, e.g. "cycle5" or "cycle331.6". */
@@ -135,8 +280,8 @@ function splitSections(body: string): Record<string, string> {
 }
 
 function listCycleFiles(repoRoot: string): string[] {
-  const dir = resolve(repoRoot, CYCLES_RELATIVE_PATH);
-  if (!existsSync(dir)) return [];
+  const dir = safeAbsoluteCyclesDir(repoRoot);
+  if (dir === null) return [];
   return readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isFile() && CYCLE_FILE_PATTERN.test(e.name))
     .map((e) => e.name)
@@ -149,11 +294,14 @@ function fileToCycleId(filename: string): string | null {
 }
 
 export async function listCycleDocs(repoRoot: string): Promise<CycleSummary[]> {
+  const cyclesDir = safeAbsoluteCyclesDir(repoRoot);
+  if (cyclesDir === null) return [];
+
   const out: CycleSummary[] = [];
   for (const filename of listCycleFiles(repoRoot)) {
     const id = fileToCycleId(filename);
     if (!id) continue;
-    const fullPath = resolve(repoRoot, CYCLES_RELATIVE_PATH, filename);
+    const fullPath = resolve(cyclesDir, filename);
     const source = readFileSync(fullPath, "utf8");
     const { frontmatter } = splitFrontmatter(source);
     const summary: CycleSummary = {
@@ -176,9 +324,12 @@ export async function readCycleDoc(
   repoRoot: string,
   cycleId: string,
 ): Promise<ParsedCycleDoc | null> {
+  const cyclesDir = safeAbsoluteCyclesDir(repoRoot);
+  if (cyclesDir === null) return null;
+
   for (const filename of listCycleFiles(repoRoot)) {
     if (fileToCycleId(filename) !== cycleId) continue;
-    const fullPath = resolve(repoRoot, CYCLES_RELATIVE_PATH, filename);
+    const fullPath = resolve(cyclesDir, filename);
     const source = readFileSync(fullPath, "utf8");
     const { frontmatter, body } = splitFrontmatter(source);
     const sections = splitSections(body);
@@ -205,9 +356,9 @@ export const __test = {
 // constant the python validator uses (CONFIG-shaped duplication is
 // fine — the path is a public convention, not an implementation
 // detail.).
-export const CYCLE_DOCS_RELATIVE_PATH = CYCLES_RELATIVE_PATH;
+export const CYCLE_DOCS_RELATIVE_PATH = DEFAULT_CYCLES_RELATIVE_PATH;
 
 // Path helper for test fixtures + production code.
 export function cycleDocsDir(repoRoot: string): string {
-  return join(repoRoot, CYCLES_RELATIVE_PATH);
+  return join(repoRoot, resolveCyclesDir(repoRoot));
 }

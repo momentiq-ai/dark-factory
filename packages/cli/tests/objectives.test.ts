@@ -483,6 +483,104 @@ describe("df objectives derive", () => {
     expect(cap.stderr).toContain("--cycle is required");
   });
 
+  describe("cycle-docs directory resolution (#252)", () => {
+    // Build a throwaway repo with the cycle doc at an arbitrary relative path.
+    function fixtureRepoAt(
+      cyclesRelPath: string,
+      cycleNum: string,
+      exitCriteriaBody: string,
+    ): string {
+      const root = mkdtempSync(join(tmpdir(), "df-objectives-derive-dir-"));
+      tmpDirs.push(root);
+      const cyclesDir = join(root, ...cyclesRelPath.split("/"));
+      mkdirSync(cyclesDir, { recursive: true });
+      const doc = [
+        "---",
+        `title: Cycle ${cycleNum} — fixture`,
+        "status: active",
+        "---",
+        "",
+        `# Cycle ${cycleNum} — fixture`,
+        "",
+        "## Exit criteria",
+        "",
+        exitCriteriaBody,
+        "",
+      ].join("\n");
+      writeFileSync(join(cyclesDir, `cycle${cycleNum}-fixture.md`), doc, "utf8");
+      return root;
+    }
+
+    function writeDarkFactoryYaml(root: string, content: string): void {
+      writeFileSync(join(root, "darkfactory.yaml"), content, "utf8");
+    }
+
+    it("auto-detects docs/cycles/ when docs/roadmap/cycles/ is absent", async () => {
+      const root = fixtureRepoAt("docs/cycles", "25", "- `EC1` Dashboard loads.");
+      const cap = makeIo();
+
+      const code = await cmdObjectives(["derive", "--cycle", "25", "--cwd", root], cap.io);
+      expect(code).toBe(0);
+      expect(cap.stderr).toBe("");
+      const manifest = parseObjectivesManifest(yamlParse(cap.stdout));
+      expect(manifest.objectives.map((o) => o.id)).toEqual(["cycle25#ec1"]);
+    });
+
+    it("honors darkfactory.yaml#docs.cycleDocsDir override", async () => {
+      const root = fixtureRepoAt("planning/cycles", "26", "- `EC1` Override works.");
+      writeDarkFactoryYaml(
+        root,
+        ["docs:", '  cycleDocsDir: "planning/cycles"'].join("\n"),
+      );
+      const cap = makeIo();
+
+      const code = await cmdObjectives(["derive", "--cycle", "26", "--cwd", root], cap.io);
+      expect(code).toBe(0);
+      expect(cap.stderr).toBe("");
+      const manifest = parseObjectivesManifest(yamlParse(cap.stdout));
+      expect(manifest.objectives.map((o) => o.id)).toEqual(["cycle26#ec1"]);
+    });
+
+    it("prefers darkfactory.yaml override over auto-detected docs/cycles", async () => {
+      // Both docs/cycles and docs/roadmap/cycles exist under the same root;
+      // the explicit config wins.
+      const root = fixtureRepoAt("docs/cycles", "27", "- `EC1` Wrong dir.");
+      const canonicalDir = join(root, "docs", "roadmap", "cycles");
+      mkdirSync(canonicalDir, { recursive: true });
+      writeFileSync(
+        join(canonicalDir, "cycle27-fixture.md"),
+        [
+          "---", "title: Cycle 27 — fixture", "status: active", "---", "",
+          "## Exit criteria", "", "- `EC1` Right dir.", "",
+        ].join("\n"),
+        "utf8",
+      );
+      writeDarkFactoryYaml(
+        root,
+        ["docs:", '  cycleDocsDir: "docs/roadmap/cycles"'].join("\n"),
+      );
+      const cap = makeIo();
+
+      const code = await cmdObjectives(["derive", "--cycle", "27", "--cwd", root], cap.io);
+      expect(code).toBe(0);
+      expect(cap.stderr).toBe("");
+      const manifest = parseObjectivesManifest(yamlParse(cap.stdout));
+      expect(manifest.objectives[0]?.text).toBe("Right dir.");
+    });
+
+    it("error message names the auto-detected directory when the doc is missing", async () => {
+      const root = fixtureRepoAt("docs/cycles", "28", "- `EC1` Present.");
+      const cap = makeIo();
+
+      const code = await cmdObjectives(["derive", "--cycle", "999", "--cwd", root], cap.io);
+      expect(code).toBe(1);
+      expect(cap.stderr).toContain("cycle999");
+      expect(cap.stderr).toContain("not found");
+      expect(cap.stderr).toContain(join(root, "docs", "cycles"));
+      expect(cap.stderr).not.toContain(join(root, "docs", "roadmap", "cycles"));
+    });
+  });
+
   // Fail-loud on multi-line criteria: the hash unit is the single marker line,
   // so a continuation line would be silently excluded from the binding (editing
   // it would not change the sha256). The design intends single-line atomic
@@ -843,5 +941,29 @@ describe("df objectives check", () => {
     const code = await cmdObjectives(["check", "--unknown-flag"], cap.io);
     expect(code).toBe(2);
     expect(cap.stderr).toContain("unknown flag");
+  });
+
+  it("checks objectives from auto-detected docs/cycles/ directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "df-objectives-check-alt-dir-"));
+    tmpDirs.push(root);
+    const cyclesDir = join(root, "docs", "cycles");
+    mkdirSync(cyclesDir, { recursive: true });
+    writeFileSync(
+      join(cyclesDir, "cycle42-fixture.md"),
+      [
+        "---", "title: Cycle 42", "status: active", "---", "",
+        "## Exit criteria", "", "- **EC1**: It works.", "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    expect(await cmdObjectives(["derive", "--cycle", "42", "--cwd", root, "--apply"], makeIo().io)).toBe(0);
+
+    const cap = makeIo();
+    const code = await cmdObjectives(["check", "--cwd", root], cap.io);
+    expect(code).toBe(0);
+    expect(cap.stderr).toBe("");
+    expect(cap.stdout).toContain("cycle42#ec1");
+    expect(cap.stdout).toContain("ok");
   });
 });

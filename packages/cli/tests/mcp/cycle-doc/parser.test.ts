@@ -2,9 +2,14 @@
 //
 // Pins:
 //   - listCycleDocs returns summaries (id, title, status, owner?, target?)
-//     for every `docs/roadmap/cycles/cycleN[.M]-slug.md`.
+//     for every cycle doc in the resolved cycle-docs directory.
 //   - readCycleDoc returns { id, frontmatter, sections } where sections
 //     keys are the h2 section names lowercased and snake_cased.
+//   - resolveCyclesDir picks the directory by precedence:
+//       1. darkfactory.yaml#docs.cycleDocsDir
+//       2. docs/roadmap/cycles/ (when it exists)
+//       3. docs/cycles/ (when it exists)
+//       4. docs/roadmap/cycles/ (fallback)
 //   - Filenames matching cycleN-slug.md OR cycleN.M-slug.md parse the
 //     cycle id correctly (dotted variants used by sage-style cycles).
 //   - Frontmatter parses YAML scalars + arrays + null/booleans.
@@ -15,7 +20,7 @@
 // the parser's contract IS "read these files," and a fixture-on-disk
 // test catches encoding/glob/path edge cases real-world consumers hit.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +29,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   listCycleDocs,
   readCycleDoc,
+  resolveCyclesDir,
 } from "../../../src/mcp/cycle-doc/parser.js";
 
 let workdir: string;
@@ -297,5 +303,130 @@ Just body text, no h2 headers.
     const doc = await readCycleDoc(workdir, "cycle7");
     expect(doc?.frontmatter).toMatchObject({ title: "No sections" });
     expect(doc?.sections).toEqual({});
+  });
+});
+
+describe("resolveCyclesDir (gh#252)", () => {
+  let workdir: string;
+  const outsideDirs: string[] = [];
+
+  beforeEach(() => {
+    workdir = mkdtempSync(join(tmpdir(), "df-cycle-doc-resolve-"));
+  });
+
+  afterEach(() => {
+    rmSync(workdir, { recursive: true, force: true });
+    for (const d of outsideDirs.splice(0)) {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  function writeConfig(content: string): void {
+    writeFileSync(join(workdir, "darkfactory.yaml"), content, "utf8");
+  }
+
+  it("defaults to docs/roadmap/cycles when no config and no directories exist", () => {
+    expect(resolveCyclesDir(workdir)).toBe("docs/roadmap/cycles");
+  });
+
+  it("defaults to docs/roadmap/cycles when only that directory exists", () => {
+    mkdirSync(join(workdir, "docs", "roadmap", "cycles"), { recursive: true });
+    expect(resolveCyclesDir(workdir)).toBe("docs/roadmap/cycles");
+  });
+
+  it("auto-detects docs/cycles when docs/roadmap/cycles is absent", () => {
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("prefers docs/roadmap/cycles when both conventions exist", () => {
+    mkdirSync(join(workdir, "docs", "roadmap", "cycles"), { recursive: true });
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    expect(resolveCyclesDir(workdir)).toBe("docs/roadmap/cycles");
+  });
+
+  it("honors darkfactory.yaml#docs.cycleDocsDir override", () => {
+    mkdirSync(join(workdir, "custom", "cycles"), { recursive: true });
+    writeConfig(["docs:", '  cycleDocsDir: "custom/cycles"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("custom/cycles");
+  });
+
+  it("config override wins even when docs/roadmap/cycles exists", () => {
+    mkdirSync(join(workdir, "docs", "roadmap", "cycles"), { recursive: true });
+    mkdirSync(join(workdir, "custom", "cycles"), { recursive: true });
+    writeConfig(["docs:", '  cycleDocsDir: "custom/cycles"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("custom/cycles");
+  });
+
+  it("falls back to auto-detection when configured cycleDocsDir escapes repoRoot", () => {
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    writeConfig(["docs:", '  cycleDocsDir: "../outside"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("falls back to auto-detection when configured cycleDocsDir is an absolute outside path", () => {
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    writeConfig(["docs:", '  cycleDocsDir: "/tmp/outside"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("falls back to auto-detection when configured cycleDocsDir uses '..' mid-path", () => {
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    writeConfig(["docs:", '  cycleDocsDir: "foo/../../outside"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("allows configured cycleDocsDir resolving to repoRoot itself", () => {
+    writeConfig(["docs:", '  cycleDocsDir: "."'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe(".");
+  });
+
+  it("falls back to auto-detection when configured cycleDocsDir is a symlink to outside repoRoot", () => {
+    const outside = mkdtempSync(join(tmpdir(), "df-cycle-doc-outside-"));
+    outsideDirs.push(outside);
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    symlinkSync(outside, join(workdir, "symlinked-cycles"), "dir");
+    writeConfig(["docs:", '  cycleDocsDir: "symlinked-cycles"'].join("\n"));
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("falls back to docs/cycles when docs/roadmap/cycles is a symlink to outside repoRoot", () => {
+    const outside = mkdtempSync(join(tmpdir(), "df-cycle-doc-outside-"));
+    outsideDirs.push(outside);
+    mkdirSync(join(workdir, "docs", "cycles"), { recursive: true });
+    mkdirSync(join(workdir, "docs", "roadmap"), { recursive: true });
+    symlinkSync(outside, join(workdir, "docs", "roadmap", "cycles"), "dir");
+    expect(resolveCyclesDir(workdir)).toBe("docs/cycles");
+  });
+
+  it("returns a locked fallback when both conventional dirs are symlinks to outside repoRoot", () => {
+    const outside = mkdtempSync(join(tmpdir(), "df-cycle-doc-outside-"));
+    outsideDirs.push(outside);
+    mkdirSync(join(workdir, "docs"), { recursive: true });
+    mkdirSync(join(workdir, "docs", "roadmap"), { recursive: true });
+    symlinkSync(outside, join(workdir, "docs", "cycles"), "dir");
+    symlinkSync(outside, join(workdir, "docs", "roadmap", "cycles"), "dir");
+    expect(resolveCyclesDir(workdir)).toBe(join(".darkfactory", "cycle-docs-locked"));
+  });
+
+  it("reads nothing when configured cycleDocsDir points at a file, not a directory", async () => {
+    writeFileSync(join(workdir, "not-a-dir.md"), "---\ntitle: Not a dir\nstatus: active\n---\n\n## Exit criteria\n\n- `EC1` No-op.\n", "utf8");
+    writeConfig(["docs:", '  cycleDocsDir: "not-a-dir.md"'].join("\n"));
+    const docs = await listCycleDocs(workdir);
+    expect(docs).toEqual([]);
+    const doc = await readCycleDoc(workdir, "cycle99");
+    expect(doc).toBeNull();
+  });
+
+  it("reads nothing when the conventional directory is a symlink to outside repoRoot", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "df-cycle-doc-outside-"));
+    outsideDirs.push(outside);
+    mkdirSync(join(workdir, "docs", "roadmap"), { recursive: true });
+    symlinkSync(outside, join(workdir, "docs", "roadmap", "cycles"), "dir");
+    writeFileSync(join(outside, "cycle99-outside.md"), "---\ntitle: Outside\nstatus: active\n---\n\n## Exit criteria\n\n- `EC1` Outside.\n", "utf8");
+    const docs = await listCycleDocs(workdir);
+    expect(docs).toEqual([]);
+    const doc = await readCycleDoc(workdir, "cycle99");
+    expect(doc).toBeNull();
   });
 });
