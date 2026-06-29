@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.16.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.15.0...dark-factory-cli-v2.16.0) (2026-06-29)
+
+
+### Features
+
+* **cli:** export computePerCriticDeadlineMs + PER_CRITIC_DEADLINE_GRACE_MS from the package root ([#255](https://github.com/momentiq-ai/dark-factory/issues/255)) ([#262](https://github.com/momentiq-ai/dark-factory/issues/262)) ([1fae236](https://github.com/momentiq-ai/dark-factory/commit/1fae236de28b906b489ccd62f03ad43b6a1c95a5))
+
+
+### Bug Fixes
+
+* **cli:** demote bare result-level requiresHumanJudgment from unconditional gate veto ([#241](https://github.com/momentiq-ai/dark-factory/issues/241)) ([#242](https://github.com/momentiq-ai/dark-factory/issues/242)) ([0382e24](https://github.com/momentiq-ai/dark-factory/commit/0382e2443a18aec5ba32795dc929300ca88ad4df))
+* **cycle-doc-validation:** treat unresolvable cross-repo `Cycle: N` as a non-blocking forward-reference ([#265](https://github.com/momentiq-ai/dark-factory/issues/265)) ([c3b7b22](https://github.com/momentiq-ai/dark-factory/commit/c3b7b2247415056608efb88e7f23b757ebff2d0f)), closes [#257](https://github.com/momentiq-ai/dark-factory/issues/257)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @momentiq/dark-factory-schemas bumped from 0.13.0 to 0.13.1
+
 ## [2.15.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.14.0...dark-factory-cli-v2.15.0) (2026-06-25)
 
 
