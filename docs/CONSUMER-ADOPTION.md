@@ -16,7 +16,7 @@ This document is the canonical adoption guide. Two early pilot consumers have ru
 Phase 1 — the agent-context set is baked into the template). Otherwise, run
 `df onboard` against your repo BEFORE wiring the critic gate. Rationale: the
 critic is one half of the loop; the "code creator" half (Claude Code, Cursor,
-Codex, Gemini) needs `CLAUDE.md` + `AGENTS.md` + `docs/` to produce
+Codex, OpenCode, Gemini) needs `CLAUDE.md` + `AGENTS.md` + `docs/` to produce
 architecturally coherent code in the first place. A repo onboarded to the
 critic without an agent-context set produces worse AI output than one with both.
 
@@ -961,7 +961,9 @@ The `--json` outputs are **byte-equivalent** with their MCP-tool counterparts' `
 
 ## 13. Wire the MCP server into your agent
 
-`@momentiq/dark-factory-cli` ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini) can connect over stdio and get a structured tool + resource + prompt catalog instead of shelling out to `df` and parsing stdout. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
+`@momentiq/dark-factory-cli` ships a [Model Context Protocol](https://modelcontextprotocol.io) server as the `df mcp` subcommand. Any MCP-speaking agent (Claude Code, Cursor, Codex, OpenCode, Gemini) can connect over stdio and get a structured tool + resource + prompt catalog instead of shelling out to `df` and parsing stdout. See [cycle 5](https://github.com/momentiq-ai/dark-factory-platform/blob/main/docs/roadmap/cycles/cycle5-mcp-server.md) for the spec.
+
+> **Capability varies by client.** Not every client surfaces every catalog kind. Tool-only clients (OpenCode, Codex, Cursor) surface the **tools** but not the MCP **prompts** — so judgment that ships as a prompt (e.g. the handoff note format) is embedded in the relevant tool's input schema instead. See [`getting-started-opencode.md`](getting-started-opencode.md) for how a tool-only client composes a valid handoff note from tool metadata alone.
 
 ### What you get
 
@@ -1041,6 +1043,39 @@ env = { AGENT_REVIEW_PROFILE = "local" }
   }
 }
 ```
+
+### Configuration — OpenCode (`opencode.json`)
+
+OpenCode reads its **own** config only (global `~/.config/opencode/` + per-project
+`./opencode.json`, merged) — not `.mcp.json`. The schema differs from the others:
+the key is **`mcp`** (not `mcpServers`), a local server is **`"type": "local"`**,
+`command` is an **array**, and env vars live under **`environment`**:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "dark-factory": {
+      "type": "local",
+      "command": ["npx", "df", "mcp"],
+      "enabled": true,
+      "environment": { "AGENT_REVIEW_PROFILE": "local" }
+    }
+  }
+}
+```
+
+The snippet carries **only** the MCP wiring; **model selection is per-author**,
+not baked into a checked-in project config (which would override a contributor's
+own OpenCode model preference). The reference arm is **Kimi K2.7-Code** via
+OpenRouter (`openrouter/moonshotai/kimi-k2.7-code`) — set it in your *own*
+`opencode.json`'s `"model"` key, your global `~/.config/opencode/`, or
+interactively in a session.
+
+OpenCode is the reference harness for authoring with an outside-family creator
+model (the gate judges output, not author). For the full flow — model auth via
+your secret manager, the worktree+gate loop, and the handoff verbs via MCP — see
+[`getting-started-opencode.md`](getting-started-opencode.md).
 
 ### Smoke-test the wiring
 

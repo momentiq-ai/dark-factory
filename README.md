@@ -70,8 +70,8 @@ per-call API tokens — see
 ## Agentic surface — `df mcp`
 
 The CLI ships a [Model Context Protocol](https://modelcontextprotocol.io) server
-as `df mcp`. Connect any MCP-speaking agent (Claude Code, Cursor, Codex, Gemini)
-over stdio:
+as `df mcp`. Connect any MCP-speaking agent (Claude Code, Cursor, Codex,
+OpenCode, Gemini) over stdio:
 
 - **21 tools** — `df_doctor`, `df_findings`, `df_show_run`, `df_cycle_list`,
   `df_cycle_read`, `df_adr_list`, `df_adr_read`, `df_critics_config`, `df_stats`,
@@ -95,6 +95,11 @@ over stdio:
 - **Logging notifications** — long-running tools emit `notifications/message`
   so the user sees `[df] running cursor critic...` → `[df] critic finished:
   APPROVED` inline
+
+Capability varies by client: tool-only clients (OpenCode, Codex, Cursor) surface
+the **tools** but not the MCP **prompts**, so prompt-borne judgment (e.g. the
+`df.handoff` note format) is embedded in the corresponding tool's input schema —
+see [`docs/getting-started-opencode.md`](docs/getting-started-opencode.md).
 
 Pinned MCP protocol version: `2025-06-18`. See
 [`CONSUMER-ADOPTION.md §13`](docs/CONSUMER-ADOPTION.md#13-wire-the-mcp-server-into-your-agent)
