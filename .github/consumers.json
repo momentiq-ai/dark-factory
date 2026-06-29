@@ -4,7 +4,6 @@
     { "repo": "momentiq-ai/sage3c", "note": "W2 migration target; pins df-cli devDep + dark-factory-pr.yml literals." },
     { "repo": "momentiq-ai/cerebe-platform", "note": "W2 migration target." },
     { "repo": "momentiq-ai/taxpilot2a", "note": "first external consumer (F.5a, PRs #45/#46)." },
-    { "repo": "momentiq-ai/dark-factory-dashboard", "note": "carries the original Renovate config (#214); dispatch supersedes the inert poll." },
-    { "repo": "momentiq-ai/lyra", "note": "F.5b external consumer." }
+    { "repo": "momentiq-ai/dark-factory-dashboard", "note": "carries the original Renovate config (#214); dispatch supersedes the inert poll." }
   ]
 }
