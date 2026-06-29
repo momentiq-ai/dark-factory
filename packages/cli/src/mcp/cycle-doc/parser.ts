@@ -10,11 +10,11 @@
 //      repoRoot lexically and via realpath).
 //   2. `docs/roadmap/cycles/` when it exists and is not a symlink escape.
 //   3. `docs/cycles/` when it exists and is not a symlink escape.
-//   4. `docs/roadmap/cycles/` as the canonical fallback when neither convention
-//      exists.
-//   5. A locked fallback path (`.darkfactory/cycle-docs-locked`) when both
-//      conventional directories exist only as symlinks that escape repoRoot, so
-//      reads fail closed instead of following an unsafe symlink.
+//   4. `docs/roadmap/cycles/` when it is lexically safe and does not exist.
+//   5. `docs/cycles/` when it is lexically safe and does not exist.
+//   6. `.darkfactory/cycle-docs-locked` when both conventional directories exist
+//      only as symlinks that escape repoRoot, so reads fail closed instead of
+//      following an unsafe symlink.
 //
 // Actual reads are additionally guarded by `safeAbsoluteCyclesDir`, which
 // re-validates the resolved directory via `realpathSync` before `readdirSync`.
@@ -50,10 +50,10 @@ const FRONTMATTER_DELIMITER = "---";
  *      so symlinks to outside the repo are rejected).
  *   2. `docs/roadmap/cycles` when it exists and is not a symlink escape.
  *   3. `docs/cycles` when it exists and is not a symlink escape.
- *   4. `docs/roadmap/cycles` as the canonical fallback when neither convention
- *      exists safely.
- *   5. `.darkfactory/cycle-docs-locked` as a final fallback when both
- *      conventional directories exist only as symlinks escaping `repoRoot`.
+ *   4. `docs/roadmap/cycles` when it is lexically safe and does not exist.
+ *   5. `docs/cycles` when it is lexically safe and does not exist.
+ *   6. `.darkfactory/cycle-docs-locked` when both conventional directories exist
+ *      but fail the realpath containment check.
  *
  * A malformed `darkfactory.yaml` is intentionally non-fatal here: the cycle-doc
  * parser is a low-level utility used by MCP resources and `df objectives`, and
