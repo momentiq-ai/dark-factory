@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.17.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.16.0...dark-factory-cli-v2.17.0) (2026-06-29)
+
+
+### Features
+
+* **agents:** make AGENTS.md the canonical contract; CLAUDE.md a thin [@import](https://github.com/import) (non-Claude context parity) ([#276](https://github.com/momentiq-ai/dark-factory/issues/276)) ([12efc99](https://github.com/momentiq-ai/dark-factory/commit/12efc9987ef45be99c7783355b4cb43571da5030))
+
+
+### Bug Fixes
+
+* **cli:** resolve cycle-docs dir from darkfactory.yaml and auto-detect docs/cycles ([#252](https://github.com/momentiq-ai/dark-factory/issues/252)) ([#272](https://github.com/momentiq-ai/dark-factory/issues/272)) ([5fe16ea](https://github.com/momentiq-ai/dark-factory/commit/5fe16ea3cccf23d1a582490dccc91e9d3d8df502))
+
 ## [2.16.0](https://github.com/momentiq-ai/dark-factory/compare/dark-factory-cli-v2.15.0...dark-factory-cli-v2.16.0) (2026-06-29)
 
 
