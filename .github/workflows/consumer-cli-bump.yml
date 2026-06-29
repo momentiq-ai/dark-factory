@@ -19,10 +19,11 @@ name: Consumer — bump @momentiq/dark-factory-cli
 # on a publish event; for a first-party package whose release cadence we control,
 # the dispatch pattern is strictly better.
 #
-# Consumers reference this by FULL COMMIT SHA — matching the pin convention for
-# every other dark-factory reusable workflow (pr-status-check, agent-critic,
-# cycle-doc-validation, branch-protection-audit), so a moving upstream can never
-# silently alter consumer CI:
+# Consumers pin this with the SAME exact ref they already use for every other
+# dark-factory reusable workflow (pr-status-check, agent-critic, cycle-doc-
+# validation, branch-protection-audit) in their dark-factory PR workflow — a
+# full commit SHA in current practice — so a moving upstream can never silently
+# alter consumer CI:
 #   uses: momentiq-ai/dark-factory/.github/workflows/consumer-cli-bump.yml@<sha>
 #
 # Security note: all `${{ ... }}` values used inside `run:` blocks are routed
