@@ -343,3 +343,83 @@ jobs:
           else
             npm publish --access public
           fi
+
+  # On-publish auto-bump fan-out (#280). After @momentiq/dark-factory-cli is
+  # published, POST a repository_dispatch{df-cli-released, version} to every
+  # consumer in .github/consumers.json. Each consumer's thin df-cli-bump.yml
+  # receiver (`uses:` .github/workflows/consumer-cli-bump.yml) then opens a
+  # co-bump PR. This is the publish-triggered path PJ chose over Renovate
+  # polling: vanilla Renovate cannot fire on a publish event, and for a
+  # first-party package whose release cadence we control, dispatch is strictly
+  # tighter (PR opens within minutes of publish, no Mend dependency).
+  dispatch-consumers:
+    name: Dispatch on-publish bump to consumers
+    needs: [release-please, publish-cli]
+    if: needs.release-please.outputs.cli_released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # Reuse the momentiq-ci-bot App identity (same secrets release-please
+      # uses) to POST cross-repo dispatches. The App must be installed on each
+      # consumer in .github/consumers.json with `contents: write` (the
+      # permission the dispatches endpoint requires). Until it is, this job
+      # graceful-degrades — logs a notice and exits 0 — so a successful publish
+      # is NEVER blocked by missing cross-repo dispatch auth.
+      - name: Detect dispatch App credentials
+        id: detect-app
+        env:
+          APP_CREDS_SET: ${{ secrets.CI_BOT_APP_ID != '' && secrets.CI_BOT_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$APP_CREDS_SET" = "true" ]; then
+            echo "has_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_app=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CI_BOT_APP_ID/CI_BOT_PRIVATE_KEY not set; skipping consumer dispatch. Consumers must be bumped manually until the App is configured (see .github/consumers.json)."
+          fi
+
+      - name: Mint dispatch token (org-scoped)
+        id: app-token
+        if: steps.detect-app.outputs.has_app == 'true'
+        # continue-on-error covers "creds present but App not installed on the
+        # consumer repos" — token mint 404s; we degrade to skip rather than
+        # failing the release after a successful publish.
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CI_BOT_APP_ID }}
+          private-key: ${{ secrets.CI_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Warn if token mint degraded
+        if: steps.detect-app.outputs.has_app == 'true' && steps.app-token.outcome == 'failure'
+        run: echo "::warning::App creds present but token mint failed (App likely not installed across consumer repos). Skipping dispatch; consumers need manual bump."
+
+      - uses: actions/checkout@v6
+        if: steps.app-token.outputs.token != ''
+
+      - name: Dispatch df-cli-released to each consumer
+        if: steps.app-token.outputs.token != ''
+        env:
+          # Trusted inputs only: the committed consumers.json and the
+          # release-please-emitted version. Nothing here is attacker-controlled.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLI_VERSION: ${{ needs.release-please.outputs.cli_version }}
+        run: |
+          set -euo pipefail
+          mapfile -t REPOS < <(jq -r '.consumers[].repo' .github/consumers.json)
+          echo "Dispatching df-cli-released (version=$CLI_VERSION) to ${#REPOS[@]} consumer(s)."
+          fail=0
+          for repo in "${REPOS[@]}"; do
+            if gh api -X POST "repos/${repo}/dispatches" \
+                 -f "event_type=df-cli-released" \
+                 -f "client_payload[version]=${CLI_VERSION}" 2>/tmp/dispatch_err; then
+              echo "  ok   ${repo}"
+            else
+              echo "  fail ${repo}: $(cat /tmp/dispatch_err)"
+              echo "::warning::repository_dispatch to ${repo} failed (App not installed there, or no df-cli-bump.yml receiver yet). Bump it manually."
+              fail=$((fail + 1))
+            fi
+          done
+          # A consumer that can't receive must NOT fail the release — the
+          # publish already succeeded. Report the count and exit 0.
+          echo "Dispatch complete: $(( ${#REPOS[@]} - fail ))/${#REPOS[@]} succeeded."

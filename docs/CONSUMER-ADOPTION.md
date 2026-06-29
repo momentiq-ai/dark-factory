@@ -184,6 +184,64 @@ npm install
 
 The lockfile (`package-lock.json`) must be committed so CI installs the same version (see [`AGENTS.md` § Reusable Workflow Conventions](../AGENTS.md#reusable-workflow-conventions-consumer-contract) — "two paths converge on the same version pin").
 
+### 4.1 Keep the CLI current — on-publish auto-bump (#280)
+
+When a new `@momentiq/dark-factory-cli` is published, dark-factory's release
+workflow fans out a `repository_dispatch{type: df-cli-released, version}` to
+every repo listed in [`momentiq-ai/dark-factory:.github/consumers.json`](../.github/consumers.json).
+A consumer that opts in gets an automatic co-bump PR within minutes of publish —
+no weekly poll, no Mend/Renovate app. (This supersedes the polling-Renovate
+approach: vanilla Renovate cannot trigger on a publish event, and for a
+first-party package whose release cadence we control, dispatch is tighter.)
+
+To opt in, add a thin receiver workflow that delegates to the authored reusable
+workflow (pinned by **full commit SHA**, like every other dark-factory reusable
+workflow):
+
+```yaml
+# .github/workflows/df-cli-bump.yml
+name: df-cli on-publish bump
+
+on:
+  repository_dispatch:
+    types: [df-cli-released]
+  workflow_dispatch:        # manual trigger; supply the version explicitly
+    inputs:
+      version:
+        description: Target @momentiq/dark-factory-cli version, e.g. 2.17.0
+        required: true
+        type: string
+
+jobs:
+  bump:
+    # Pin to a dark-factory commit SHA (never a moving tag) — same convention
+    # as pr-status-check / agent-critic / cycle-doc-validation.
+    uses: momentiq-ai/dark-factory/.github/workflows/consumer-cli-bump.yml@<dark-factory-sha>
+    with:
+      # client_payload.version is validated as strict semver inside the
+      # reusable workflow before it is used, so a forged dispatch cannot inject.
+      version: ${{ github.event.client_payload.version || inputs.version }}
+      # Override only if your cli-version literals live in a differently named
+      # workflow (default: .github/workflows/dark-factory-pr.yml).
+      # pr-workflow-file: .github/workflows/dark-factory-pr.yml
+    secrets:
+      # Required: updates the package-lock.json entry against the private scope.
+      MOMENTIQ_NPM_READ_TOKEN: ${{ secrets.MOMENTIQ_NPM_READ_TOKEN }}
+      # Optional but recommended: lets the bump PR be authored by your CI App so
+      # required checks run on it (GITHUB_TOKEN-authored PRs do not trigger
+      # workflows). Omit to fall back to GITHUB_TOKEN.
+      CI_BOT_APP_ID: ${{ secrets.CI_BOT_APP_ID }}
+      CI_BOT_PRIVATE_KEY: ${{ secrets.CI_BOT_PRIVATE_KEY }}
+```
+
+**Two org-level prerequisites** (one-time, performed by a momentiq-ai admin):
+
+1. Add your repo to `dark-factory:.github/consumers.json`.
+2. Install the `momentiq-ci-bot` GitHub App on your repo with `contents: write`
+   so dark-factory's release job can POST the dispatch. Until both are done, the
+   dispatch step graceful-degrades (logs a notice, never blocks a publish) and
+   you bump manually.
+
 ## 5. Husky hooks — local critic with subscription auth (the load-bearing piece)
 
 The local critic uses your existing **Cursor / Codex / Claude / Grok SUBSCRIPTIONS** (flat monthly fee, ~$20-200/seat depending on vendor) rather than per-token API keys. This is cost-load-bearing: per-commit critic invocations against pay-per-token APIs cost $1000s/week on busy repos; subscription auth is flat-rate.
